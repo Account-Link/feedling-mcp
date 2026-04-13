@@ -17,7 +17,7 @@ class LiveActivityManager: ObservableObject {
     private let backendURL: String
 
     private init() {
-        backendURL = ProcessInfo.processInfo.environment["FEEDLING_API_URL"] ?? "http://localhost:5001"
+        backendURL = ProcessInfo.processInfo.environment["FEEDLING_API_URL"] ?? "http://54.209.126.4:5001"
 
         // Reconnect to any activity that survived an app restart
         if let existing = Activity<ScreenActivityAttributes>.activities.first {

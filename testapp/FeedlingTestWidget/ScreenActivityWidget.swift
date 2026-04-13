@@ -9,26 +9,51 @@ struct ScreenActivityWidget: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    ExpandedLeading(state: context.state)
+                    HStack(spacing: 5) {
+                        Image(systemName: "sparkles")
+                            .foregroundStyle(.cyan)
+                            .font(.system(size: 12, weight: .bold))
+                        Text("OpenClaw")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(.cyan)
+                    }
+                    .padding(.leading, 6)
+                    .padding(.top, 4)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    ExpandedTrailing(state: context.state)
+                    if context.state.screenTimeMinutes > 0 {
+                        Text("\(context.state.topApp) \(context.state.screenTimeMinutes)m")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.white.opacity(0.5))
+                            .padding(.trailing, 6)
+                            .padding(.top, 4)
+                    }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    ExpandedBottom(state: context.state)
+                    Text(context.state.message)
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(5)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 8)
+                        .padding(.top, 6)
+                        .padding(.bottom, 10)
                 }
             } compactLeading: {
-                Image(systemName: "iphone")
+                Image(systemName: "sparkles")
                     .foregroundStyle(.cyan)
-                    .font(.caption)
+                    .font(.system(size: 11))
             } compactTrailing: {
-                Text("\(context.state.topApp) · \(context.state.screenTimeMinutes)m")
-                    .font(.caption2)
+                Text(context.state.message.prefix(18))
+                    .font(.system(size: 11))
                     .foregroundStyle(.white)
                     .lineLimit(1)
             } minimal: {
-                Image(systemName: "iphone")
+                Image(systemName: "sparkles")
                     .foregroundStyle(.cyan)
+                    .font(.system(size: 10))
             }
             .widgetURL(URL(string: "feedlingtest://live-activity"))
             .keylineTint(.cyan)
@@ -42,72 +67,33 @@ private struct LockScreenView: View {
     let state: ScreenActivityAttributes.ContentState
 
     var body: some View {
-        HStack(spacing: 16) {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "sparkles")
+                .foregroundStyle(.cyan)
+                .font(.title3)
+                .padding(.top, 2)
+
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Image(systemName: "iphone")
-                        .foregroundStyle(.cyan)
-                    Text(state.topApp)
-                        .font(.headline)
-                        .foregroundStyle(.white)
-                    Spacer()
-                    Text("\(state.screenTimeMinutes)m")
-                        .font(.subheadline.bold())
-                        .foregroundStyle(.cyan)
-                }
+                Text("OpenClaw")
+                    .font(.caption.bold())
+                    .foregroundStyle(.cyan)
                 Text(state.message)
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.8))
-                    .lineLimit(2)
+                    .font(.subheadline)
+                    .foregroundStyle(.white)
+                    .lineLimit(4)
+                if state.screenTimeMinutes > 0 {
+                    Text("\(state.topApp) · \(state.screenTimeMinutes)m")
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.5))
+                }
             }
+            Spacer()
         }
         .padding(16)
         .frame(maxWidth: .infinity)
-        .background(.black.opacity(0.85))
+        .background(.black.opacity(0.9))
         .activityBackgroundTint(.black)
         .activitySystemActionForegroundColor(.white)
-    }
-}
-
-// MARK: - Dynamic Island Expanded Regions
-
-private struct ExpandedLeading: View {
-    let state: ScreenActivityAttributes.ContentState
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(state.topApp)
-                .font(.subheadline.bold())
-                .foregroundStyle(.white)
-            Text("\(state.screenTimeMinutes) min today")
-                .font(.caption2)
-                .foregroundStyle(.cyan)
-        }
-        .padding(.leading, 4)
-    }
-}
-
-private struct ExpandedTrailing: View {
-    let state: ScreenActivityAttributes.ContentState
-
-    var body: some View {
-        Image(systemName: "iphone")
-            .font(.title2)
-            .foregroundStyle(.cyan)
-            .padding(.trailing, 4)
-    }
-}
-
-private struct ExpandedBottom: View {
-    let state: ScreenActivityAttributes.ContentState
-
-    var body: some View {
-        Text(state.message)
-            .font(.caption)
-            .foregroundStyle(.white.opacity(0.85))
-            .multilineTextAlignment(.center)
-            .lineLimit(2)
-            .padding(.bottom, 4)
     }
 }
 
@@ -122,25 +108,7 @@ extension ScreenActivityAttributes {
 extension ScreenActivityAttributes.ContentState {
     static var preview: ScreenActivityAttributes.ContentState {
         .init(topApp: "TikTok", screenTimeMinutes: 45,
-              message: "45 min on TikTok. That's your entertainment budget.",
+              message: "你今天刷了 45 分钟 TikTok，差不多该歇一歇了。",
               updatedAt: Date())
     }
-}
-
-#Preview("Compact", as: .dynamicIsland(.compact), using: ScreenActivityAttributes.preview) {
-    ScreenActivityWidget()
-} contentStates: {
-    ScreenActivityAttributes.ContentState.preview
-}
-
-#Preview("Expanded", as: .dynamicIsland(.expanded), using: ScreenActivityAttributes.preview) {
-    ScreenActivityWidget()
-} contentStates: {
-    ScreenActivityAttributes.ContentState.preview
-}
-
-#Preview("Lock Screen", as: .content, using: ScreenActivityAttributes.preview) {
-    ScreenActivityWidget()
-} contentStates: {
-    ScreenActivityAttributes.ContentState.preview
 }

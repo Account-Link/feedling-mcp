@@ -256,29 +256,113 @@ Content-Type: application/json
 
 ---
 
-### POST /v1/push/live-activity
+### GET /v1/screen/frames
 
-Start or update a Live Activity on the lock screen.
+List recently captured iPhone screen frames (metadata only, no image data).
 
 **Request**
 ```
-POST {FEEDLING_API_URL}/v1/push/live-activity
-X-API-Key: {FEEDLING_API_KEY}
-Content-Type: application/json
-
-{
-  "activity_id": "focus-session-1",
-  "state": "active",
-  "title": "Deep work",
-  "body": "2h 55m in Figma + Cursor",
-  "progress": 0.72,
-  "ends_at": "2026-04-11T18:00:00Z"
-}
+GET {FEEDLING_API_URL}/v1/screen/frames?limit=20
 ```
 
 **Response**
 ```json
-{ "status": "updated", "activity_id": "focus-session-1" }
+{
+  "frames": [
+    {
+      "filename": "frame_1744123456789.jpg",
+      "ts": 1744123456.789,
+      "app": "com.zhiliaoapp.musically",
+      "ocr_text": "For You\nTikTok video caption here...",
+      "w": 960,
+      "h": 2079,
+      "url": "http://54.209.126.4:5001/v1/screen/frames/frame_1744123456789.jpg"
+    }
+  ],
+  "total": 87
+}
+```
+
+Use `ocr_text` to understand what the user is reading/watching without loading the image. Use `url` to load the actual image when you need visual context.
+
+---
+
+### GET /v1/screen/frames/latest
+
+Get the single most recent frame, including the base64 image. Use this when you want to visually see what the user is currently doing.
+
+**Request**
+```
+GET {FEEDLING_API_URL}/v1/screen/frames/latest
+```
+
+**Response**
+```json
+{
+  "filename": "frame_1744123456789.jpg",
+  "ts": 1744123456.789,
+  "app": "com.zhiliaoapp.musically",
+  "ocr_text": "For You\n...",
+  "w": 960,
+  "h": 2079,
+  "url": "http://54.209.126.4:5001/v1/screen/frames/frame_1744123456789.jpg",
+  "image_base64": "/9j/4AAQ..."
+}
+```
+
+---
+
+### GET /v1/push/tokens
+
+List all registered push tokens. Call this first to get the current `activity_id` before sending a Live Activity push.
+
+**Request**
+```
+GET {FEEDLING_API_URL}/v1/push/tokens
+```
+
+**Response**
+```json
+{
+  "tokens": [
+    { "type": "device", "token": "abc123...", "registered_at": "..." },
+    { "type": "live_activity", "token": "def456...", "activity_id": "FE137E4B-...", "registered_at": "..." },
+    { "type": "push_to_start", "token": "ghi789...", "registered_at": "..." }
+  ]
+}
+```
+
+---
+
+### POST /v1/push/live-activity
+
+Update the Live Activity shown on the Dynamic Island and lock screen. The `message` field is what gets displayed prominently — write whatever you want to say here. `topApp` and `screenTimeMinutes` are optional context shown in the corner.
+
+**Workflow:** Call `GET /v1/push/tokens` first to get the current `activity_id`, then send this request.
+
+**Request**
+```
+POST {FEEDLING_API_URL}/v1/push/live-activity
+Content-Type: application/json
+
+{
+  "activity_id": "FE137E4B-A7E5-4B04-8527-7B1D2D6A56A9",
+  "message": "你今天刷了 45 分钟 TikTok，差不多该歇一歇了。",
+  "topApp": "TikTok",
+  "screenTimeMinutes": 45
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `activity_id` | Yes | From `GET /v1/push/tokens` |
+| `message` | Yes | What you want to say — shown prominently in expanded Dynamic Island |
+| `topApp` | No | App name shown in corner (omit if not relevant) |
+| `screenTimeMinutes` | No | Duration shown in corner (omit if not relevant) |
+
+**Response**
+```json
+{ "status": "delivered", "activity_id": "FE137E4B-..." }
 ```
 
 ---

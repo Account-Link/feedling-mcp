@@ -1,8 +1,151 @@
-from flask import Flask, jsonify, request
-from datetime import datetime
+import asyncio
+import base64
+import json
+import os
+import threading
+import time
 import uuid
+from datetime import datetime
+from pathlib import Path
+
+import httpx
+import jwt
+import websockets
+from flask import Flask, jsonify, request, send_file
+
+# ---------------------------------------------------------------------------
+# Frames storage
+# ---------------------------------------------------------------------------
+
+FRAMES_DIR = Path.home() / "feedling" / "frames"
+FRAMES_DIR.mkdir(parents=True, exist_ok=True)
+MAX_FRAMES = 200  # keep last 200 frames on disk
+
+_frames_meta: list[dict] = []  # in-memory index: [{filename, ts, app, ocr_text, w, h}]
+_frames_lock = threading.Lock()
+
+
+def _save_frame(payload: dict):
+    ts = payload.get("ts", time.time())
+    img_b64 = payload.get("image", "")
+    if not img_b64:
+        return
+    try:
+        img_bytes = base64.b64decode(img_b64)
+    except Exception:
+        return
+
+    filename = f"frame_{int(ts * 1000)}.jpg"
+    fpath = FRAMES_DIR / filename
+    fpath.write_bytes(img_bytes)
+
+    meta = {
+        "filename": filename,
+        "ts": ts,
+        "app": payload.get("app") or payload.get("bundle"),
+        "ocr_text": payload.get("ocr_text", ""),
+        "w": payload.get("w", 0),
+        "h": payload.get("h", 0),
+    }
+
+    with _frames_lock:
+        _frames_meta.append(meta)
+        # trim in-memory index
+        if len(_frames_meta) > MAX_FRAMES:
+            removed = _frames_meta.pop(0)
+            old = FRAMES_DIR / removed["filename"]
+            if old.exists():
+                old.unlink()
+
+    print(f"[ingest] saved {filename} app={meta['app']} ocr={len(meta['ocr_text'])}chars")
+
+
+# ---------------------------------------------------------------------------
+# WebSocket ingest server (port 9999)
+# ---------------------------------------------------------------------------
+
+async def _ws_handler(websocket):
+    print(f"[ws] client connected: {websocket.remote_address}")
+    try:
+        async for message in websocket:
+            try:
+                data = json.loads(message)
+                if data.get("type") == "frame":
+                    threading.Thread(target=_save_frame, args=(data,), daemon=True).start()
+            except Exception as e:
+                print(f"[ws] parse error: {e}")
+    except websockets.exceptions.ConnectionClosed:
+        pass
+    print(f"[ws] client disconnected")
+
+
+def _run_ws_server():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    server = loop.run_until_complete(
+        websockets.serve(_ws_handler, "0.0.0.0", 9998)
+    )
+    print("[ws] WebSocket ingest server running on ws://0.0.0.0:9999/ingest")
+    loop.run_forever()
+
+
+threading.Thread(target=_run_ws_server, daemon=True).start()
 
 app = Flask(__name__)
+
+# ---------------------------------------------------------------------------
+# APNs config
+# ---------------------------------------------------------------------------
+
+TEAM_ID = "DC9JH5DRMY"
+KEY_ID = "5TH55X5U7T"
+BUNDLE_ID = "com.feedling.mcp"
+APNS_SANDBOX = True  # True for dev/TestFlight, False for App Store
+
+_KEY_SEARCH = [
+    Path.home() / "feedling" / f"AuthKey_{KEY_ID}.p8",
+    Path(__file__).parent / f"AuthKey_{KEY_ID}.p8",
+]
+APNS_KEY = None
+for _p in _KEY_SEARCH:
+    if _p.exists():
+        APNS_KEY = _p.read_text()
+        print(f"[apns] key loaded from {_p}")
+        break
+if not APNS_KEY:
+    print("[apns] WARNING: .p8 key not found — push endpoints will log only, not deliver")
+
+
+def _make_apns_jwt() -> str:
+    return jwt.encode(
+        {"iss": TEAM_ID, "iat": int(time.time())},
+        APNS_KEY,
+        algorithm="ES256",
+        headers={"kid": KEY_ID},
+    )
+
+
+def _send_apns(device_token: str, payload: dict, push_type: str, topic: str) -> dict:
+    if not APNS_KEY:
+        print(f"[apns] no key — logged only → {device_token[:16]}… {payload}")
+        return {"status": "logged_only"}
+    host = "api.sandbox.push.apple.com" if APNS_SANDBOX else "api.push.apple.com"
+    url = f"https://{host}/3/device/{device_token}"
+    headers = {
+        "authorization": f"bearer {_make_apns_jwt()}",
+        "apns-push-type": push_type,
+        "apns-topic": topic,
+        "apns-expiration": "0",
+        "apns-priority": "10",
+    }
+    try:
+        with httpx.Client(http2=True, timeout=10) as client:
+            resp = client.post(url, json=payload, headers=headers)
+        if resp.status_code == 200:
+            return {"status": "delivered"}
+        return {"status": "error", "code": resp.status_code, "reason": resp.text}
+    except Exception as e:
+        return {"status": "error", "reason": str(e)}
 
 # ---------------------------------------------------------------------------
 # Mock data
@@ -248,24 +391,69 @@ def get_sources():
 
 @app.route("/v1/push/dynamic-island", methods=["POST"])
 def push_dynamic_island():
+    """Alias for live-activity — Dynamic Island is driven by Live Activity pushes."""
     payload = request.get_json(silent=True) or {}
-    print(f"[dynamic-island] {payload}")
-    return jsonify({"status": "delivered", "push_id": f"pi_{uuid.uuid4().hex[:8]}"})
+    return push_live_activity_inner(payload)
 
 
 @app.route("/v1/push/live-activity", methods=["POST"])
 def push_live_activity():
     payload = request.get_json(silent=True) or {}
-    print(f"[live-activity] {payload}")
-    activity_id = payload.get("activity_id", f"la_{uuid.uuid4().hex[:8]}")
-    return jsonify({"status": "updated", "activity_id": activity_id})
+    return push_live_activity_inner(payload)
+
+
+def push_live_activity_inner(payload: dict):
+    activity_id = payload.get("activity_id")
+    entry = next(
+        (t for t in REGISTERED_TOKENS
+         if t["type"] in ("live-activity", "live_activity")
+         and (not activity_id or t.get("activity_id") == activity_id)),
+        None,
+    )
+    if not entry:
+        print(f"[live-activity] no token registered — logged: {payload}")
+        return jsonify({"status": "logged", "activity_id": activity_id or f"la_{uuid.uuid4().hex[:8]}"})
+
+    top_app = payload.get("topApp", "")
+    minutes = payload.get("screenTimeMinutes", 0)
+    message = payload.get("message", "")
+    apns_payload = {
+        "aps": {
+            "timestamp": int(time.time()),
+            "event": payload.get("event", "update"),
+            "content-state": {
+                "topApp": top_app,
+                "screenTimeMinutes": minutes,
+                "message": message,
+                "updatedAt": time.time(),
+            },
+            "alert": {"title": "", "body": ""},
+        }
+    }
+    topic = f"{BUNDLE_ID}.push-type.liveactivity"
+    result = _send_apns(entry["token"], apns_payload, push_type="liveactivity", topic=topic)
+    print(f"[live-activity] {result}")
+    return jsonify({"status": result["status"], "activity_id": activity_id})
 
 
 @app.route("/v1/push/notification", methods=["POST"])
 def push_notification():
     payload = request.get_json(silent=True) or {}
-    print(f"[notification] {payload}")
-    return jsonify({"status": "sent", "message_id": f"msg_{uuid.uuid4().hex[:8]}"})
+    device_token = next((t["token"] for t in REGISTERED_TOKENS if t["type"] == "apns"), None)
+    if not device_token:
+        print(f"[notification] no device token — logged: {payload}")
+        return jsonify({"status": "logged", "message_id": f"msg_{uuid.uuid4().hex[:8]}"})
+
+    apns_payload = {
+        "aps": {
+            "alert": {"title": payload.get("title", ""), "body": payload.get("body", "")},
+            "sound": "default",
+        }
+    }
+    result = _send_apns(device_token, apns_payload, push_type="alert", topic=BUNDLE_ID)
+    msg_id = f"msg_{uuid.uuid4().hex[:8]}"
+    print(f"[notification] {result}")
+    return jsonify({"status": result["status"], "message_id": msg_id})
 
 
 # In-memory store for push tokens (mock — no real APNs yet)
@@ -296,6 +484,44 @@ def register_token():
 def list_tokens():
     """Debug endpoint — shows all registered push tokens."""
     return jsonify({"tokens": REGISTERED_TOKENS})
+
+
+@app.route("/v1/screen/frames", methods=["GET"])
+def list_frames():
+    """List recent captured frames (metadata only)."""
+    limit = min(int(request.args.get("limit", 20)), 100)
+    with _frames_lock:
+        recent = list(reversed(_frames_meta))[:limit]
+    for f in recent:
+        f["url"] = f"http://54.209.126.4:5001/v1/screen/frames/{f['filename']}"
+    return jsonify({"frames": recent, "total": len(_frames_meta)})
+
+
+@app.route("/v1/screen/frames/latest", methods=["GET"])
+def latest_frame():
+    """Get the most recent frame with base64 image for OpenClaw to view."""
+    with _frames_lock:
+        if not _frames_meta:
+            return jsonify({"error": "no frames yet"}), 404
+        meta = _frames_meta[-1].copy()
+
+    fpath = FRAMES_DIR / meta["filename"]
+    if not fpath.exists():
+        return jsonify({"error": "file missing"}), 404
+
+    img_b64 = base64.b64encode(fpath.read_bytes()).decode()
+    meta["image_base64"] = img_b64
+    meta["url"] = f"http://54.209.126.4:5001/v1/screen/frames/{meta['filename']}"
+    return jsonify(meta)
+
+
+@app.route("/v1/screen/frames/<filename>", methods=["GET"])
+def serve_frame(filename):
+    """Serve a frame image file."""
+    fpath = FRAMES_DIR / filename
+    if not fpath.exists():
+        return jsonify({"error": "not found"}), 404
+    return send_file(fpath, mimetype="image/jpeg")
 
 
 if __name__ == "__main__":

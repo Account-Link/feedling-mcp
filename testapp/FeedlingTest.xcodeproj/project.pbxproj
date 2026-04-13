@@ -8,22 +8,43 @@
 
 /* Begin PBXBuildFile section */
 		17B110E5A293426BC46750B6 /* ScreenActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 059AB22EE40CB3F08CADCAE2 /* ScreenActivityAttributes.swift */; };
+		2D6C4681A184D00774C9AAD3 /* SampleHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8585B7EF732F6D6EF2D5BEE6 /* SampleHandler.swift */; };
 		413572B886A6EB4E8F6A3587 /* LiveActivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E760771C17EAF8147D096B4E /* LiveActivityManager.swift */; };
+		56BEDBB90CCEE5017A47D79C /* WebSocketManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DB161EB74DB2AA3F40F30E0 /* WebSocketManager.swift */; };
+		59D5D2A66B66C1BE35C4AF74 /* FeedlingBroadcastSetupUI.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 163932C9DCA1AD2D29756AA4 /* FeedlingBroadcastSetupUI.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		61F24F4911D4423B125600EF /* SharedConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CDD8AF63E3E29635CACE24C /* SharedConfig.swift */; };
+		8008026851A69E377E0C9937 /* SampleHandler+WebSocketQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 408A6FFA15EE70ECF1B9E9DA /* SampleHandler+WebSocketQueue.swift */; };
 		8444956D16998579C3D74FAB /* FeedlingTestWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B47B840768263FD66F28FB11 /* FeedlingTestWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		97421A140CE8899782DE1375 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5D4282756E211274D73C148 /* ContentView.swift */; };
+		9D3B3F0CBA67EEEE5B6F0867 /* BroadcastSetupViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81D822BE1140DD59ADE787AD /* BroadcastSetupViewController.swift */; };
 		A3AA0B796AD846E609C8715A /* ScreenActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8485AF4D5CF32FCD3BD19600 /* ScreenActivityWidget.swift */; };
 		A3CDDB2378A71F1A511E1A9D /* FeedlingTestApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14B773D2531DF1548E7C3C63 /* FeedlingTestApp.swift */; };
 		CB2DF8DCA51CEF662CF65FAB /* ScreenActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 059AB22EE40CB3F08CADCAE2 /* ScreenActivityAttributes.swift */; };
+		E5572F9376D197D99DF91E67 /* FeedlingBroadcast.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = C33E21075035F8499B243C1B /* FeedlingBroadcast.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		E5C880EB40DFDE9E3719B474 /* FeedlingTestWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = E807384089044501BDD54BFA /* FeedlingTestWidgetBundle.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		3A7C6A9930FD12611CA185A9 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 7666E9E4F7C671C82EBD8484 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 143528F74119840BD515D293;
+			remoteInfo = FeedlingBroadcast;
+		};
 		9FC01A447C5F280A995C6CBA /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 7666E9E4F7C671C82EBD8484 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 40F0E8EF6FA85277D76C29E3;
 			remoteInfo = FeedlingTestWidget;
+		};
+		E1A037C481922382AE45E3D6 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 7666E9E4F7C671C82EBD8484 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B0C63F767F63B43C47A6CE60;
+			remoteInfo = FeedlingBroadcastSetupUI;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -35,6 +56,8 @@
 			dstSubfolderSpec = 13;
 			files = (
 				8444956D16998579C3D74FAB /* FeedlingTestWidget.appex in Embed Foundation Extensions */,
+				E5572F9376D197D99DF91E67 /* FeedlingBroadcast.appex in Embed Foundation Extensions */,
+				59D5D2A66B66C1BE35C4AF74 /* FeedlingBroadcastSetupUI.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -44,11 +67,22 @@
 /* Begin PBXFileReference section */
 		059AB22EE40CB3F08CADCAE2 /* ScreenActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenActivityAttributes.swift; sourceTree = "<group>"; };
 		14B773D2531DF1548E7C3C63 /* FeedlingTestApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedlingTestApp.swift; sourceTree = "<group>"; };
+		163932C9DCA1AD2D29756AA4 /* FeedlingBroadcastSetupUI.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FeedlingBroadcastSetupUI.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		2889F890552F556700BB6ACD /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		28A4834DDC516FBDFC2E61DA /* FeedlingBroadcastSetupUI.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FeedlingBroadcastSetupUI.entitlements; sourceTree = "<group>"; };
+		2CDD8AF63E3E29635CACE24C /* SharedConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedConfig.swift; sourceTree = "<group>"; };
+		3909F8C0719509F4F8260943 /* FeedlingBroadcast.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FeedlingBroadcast.entitlements; sourceTree = "<group>"; };
+		408A6FFA15EE70ECF1B9E9DA /* SampleHandler+WebSocketQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SampleHandler+WebSocketQueue.swift"; sourceTree = "<group>"; };
 		55823AFBDF473E1DBABB4A3E /* FeedlingTestWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FeedlingTestWidget.entitlements; sourceTree = "<group>"; };
+		660D2AEB7DB9C066DED5AD94 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		81D822BE1140DD59ADE787AD /* BroadcastSetupViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BroadcastSetupViewController.swift; sourceTree = "<group>"; };
 		8485AF4D5CF32FCD3BD19600 /* ScreenActivityWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenActivityWidget.swift; sourceTree = "<group>"; };
+		8585B7EF732F6D6EF2D5BEE6 /* SampleHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleHandler.swift; sourceTree = "<group>"; };
 		8C308EE0153161454F66B92E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		9BEDE1B24252F0AF7E4B9A09 /* FeedlingTest.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = FeedlingTest.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		9DB161EB74DB2AA3F40F30E0 /* WebSocketManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketManager.swift; sourceTree = "<group>"; };
 		B47B840768263FD66F28FB11 /* FeedlingTestWidget.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FeedlingTestWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		C33E21075035F8499B243C1B /* FeedlingBroadcast.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FeedlingBroadcast.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		E399D1BD2C8215413FDD2675 /* FeedlingTest.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FeedlingTest.entitlements; sourceTree = "<group>"; };
 		E760771C17EAF8147D096B4E /* LiveActivityManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityManager.swift; sourceTree = "<group>"; };
 		E807384089044501BDD54BFA /* FeedlingTestWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedlingTestWidgetBundle.swift; sourceTree = "<group>"; };
@@ -83,6 +117,8 @@
 		21135111837BEE77BC26B938 /* Products */ = {
 			isa = PBXGroup;
 			children = (
+				C33E21075035F8499B243C1B /* FeedlingBroadcast.appex */,
+				163932C9DCA1AD2D29756AA4 /* FeedlingBroadcastSetupUI.appex */,
 				9BEDE1B24252F0AF7E4B9A09 /* FeedlingTest.app */,
 				B47B840768263FD66F28FB11 /* FeedlingTestWidget.appex */,
 			);
@@ -100,6 +136,8 @@
 		C831B4CFDB28B188E676559F = {
 			isa = PBXGroup;
 			children = (
+				F1DBCEF6E245A9D5B9B4D198 /* FeedlingBroadcast */,
+				E2A4CBFE3B81EA82329D4D55 /* FeedlingBroadcastSetupUI */,
 				0E9CF1DFFEF7EBFABD8DA3E0 /* FeedlingTest */,
 				0E6B0860E646F7727F69845C /* FeedlingTestWidget */,
 				4A631C3321DAE9C14E2D63C2 /* Shared */,
@@ -107,9 +145,49 @@
 			);
 			sourceTree = "<group>";
 		};
+		E2A4CBFE3B81EA82329D4D55 /* FeedlingBroadcastSetupUI */ = {
+			isa = PBXGroup;
+			children = (
+				81D822BE1140DD59ADE787AD /* BroadcastSetupViewController.swift */,
+				28A4834DDC516FBDFC2E61DA /* FeedlingBroadcastSetupUI.entitlements */,
+				660D2AEB7DB9C066DED5AD94 /* Info.plist */,
+			);
+			path = FeedlingBroadcastSetupUI;
+			sourceTree = "<group>";
+		};
+		F1DBCEF6E245A9D5B9B4D198 /* FeedlingBroadcast */ = {
+			isa = PBXGroup;
+			children = (
+				3909F8C0719509F4F8260943 /* FeedlingBroadcast.entitlements */,
+				2889F890552F556700BB6ACD /* Info.plist */,
+				8585B7EF732F6D6EF2D5BEE6 /* SampleHandler.swift */,
+				408A6FFA15EE70ECF1B9E9DA /* SampleHandler+WebSocketQueue.swift */,
+				2CDD8AF63E3E29635CACE24C /* SharedConfig.swift */,
+				9DB161EB74DB2AA3F40F30E0 /* WebSocketManager.swift */,
+			);
+			path = FeedlingBroadcast;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		143528F74119840BD515D293 /* FeedlingBroadcast */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AFB024797D588A76444F24A7 /* Build configuration list for PBXNativeTarget "FeedlingBroadcast" */;
+			buildPhases = (
+				906B594661979FEDF0B4057C /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = FeedlingBroadcast;
+			packageProductDependencies = (
+			);
+			productName = FeedlingBroadcast;
+			productReference = C33E21075035F8499B243C1B /* FeedlingBroadcast.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		282D06B399CCE088372449A9 /* FeedlingTest */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = D2EFF8A7C1291089CCC4638E /* Build configuration list for PBXNativeTarget "FeedlingTest" */;
@@ -121,6 +199,8 @@
 			);
 			dependencies = (
 				84358B4470F16D89F9CC5DB4 /* PBXTargetDependency */,
+				49B62DB44CC90114BF941EA4 /* PBXTargetDependency */,
+				AB425D8EF6D7B7F0046B13CC /* PBXTargetDependency */,
 			);
 			name = FeedlingTest;
 			packageProductDependencies = (
@@ -146,6 +226,23 @@
 			productReference = B47B840768263FD66F28FB11 /* FeedlingTestWidget.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		B0C63F767F63B43C47A6CE60 /* FeedlingBroadcastSetupUI */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2E4094369FC262BD249A0C9A /* Build configuration list for PBXNativeTarget "FeedlingBroadcastSetupUI" */;
+			buildPhases = (
+				AA065692AA47F1A8168C8E5C /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = FeedlingBroadcastSetupUI;
+			packageProductDependencies = (
+			);
+			productName = FeedlingBroadcastSetupUI;
+			productReference = 163932C9DCA1AD2D29756AA4 /* FeedlingBroadcastSetupUI.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -155,10 +252,16 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1500;
 				TargetAttributes = {
+					143528F74119840BD515D293 = {
+						DevelopmentTeam = DC9JH5DRMY;
+					};
 					282D06B399CCE088372449A9 = {
 						DevelopmentTeam = DC9JH5DRMY;
 					};
 					40F0E8EF6FA85277D76C29E3 = {
+						DevelopmentTeam = DC9JH5DRMY;
+					};
+					B0C63F767F63B43C47A6CE60 = {
 						DevelopmentTeam = DC9JH5DRMY;
 					};
 				};
@@ -177,6 +280,8 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				143528F74119840BD515D293 /* FeedlingBroadcast */,
+				B0C63F767F63B43C47A6CE60 /* FeedlingBroadcastSetupUI */,
 				282D06B399CCE088372449A9 /* FeedlingTest */,
 				40F0E8EF6FA85277D76C29E3 /* FeedlingTestWidget */,
 			);
@@ -184,6 +289,25 @@
 /* End PBXProject section */
 
 /* Begin PBXSourcesBuildPhase section */
+		906B594661979FEDF0B4057C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8008026851A69E377E0C9937 /* SampleHandler+WebSocketQueue.swift in Sources */,
+				2D6C4681A184D00774C9AAD3 /* SampleHandler.swift in Sources */,
+				61F24F4911D4423B125600EF /* SharedConfig.swift in Sources */,
+				56BEDBB90CCEE5017A47D79C /* WebSocketManager.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA065692AA47F1A8168C8E5C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9D3B3F0CBA67EEEE5B6F0867 /* BroadcastSetupViewController.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		CC4F879D8D0429D4613015B2 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -208,14 +332,42 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		49B62DB44CC90114BF941EA4 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 143528F74119840BD515D293 /* FeedlingBroadcast */;
+			targetProxy = 3A7C6A9930FD12611CA185A9 /* PBXContainerItemProxy */;
+		};
 		84358B4470F16D89F9CC5DB4 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 40F0E8EF6FA85277D76C29E3 /* FeedlingTestWidget */;
 			targetProxy = 9FC01A447C5F280A995C6CBA /* PBXContainerItemProxy */;
 		};
+		AB425D8EF6D7B7F0046B13CC /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B0C63F767F63B43C47A6CE60 /* FeedlingBroadcastSetupUI */;
+			targetProxy = E1A037C481922382AE45E3D6 /* PBXContainerItemProxy */;
+		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		14B3B835EFF9750F11FAE73F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = FeedlingBroadcastSetupUI/FeedlingBroadcastSetupUI.entitlements;
+				DEVELOPMENT_TEAM = DC9JH5DRMY;
+				INFOPLIST_FILE = FeedlingBroadcastSetupUI/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.feedling.mcp.broadcastSetupUI;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		2C428C1431E2DAE1BF932153 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -262,7 +414,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -325,7 +477,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -345,7 +497,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				DEVELOPMENT_TEAM = DC9JH5DRMY;
 				INFOPLIST_FILE = FeedlingTest/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -362,7 +514,7 @@
 				CODE_SIGN_ENTITLEMENTS = FeedlingTestWidget/FeedlingTestWidget.entitlements;
 				DEVELOPMENT_TEAM = DC9JH5DRMY;
 				INFOPLIST_FILE = FeedlingTestWidget/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -382,7 +534,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				DEVELOPMENT_TEAM = DC9JH5DRMY;
 				INFOPLIST_FILE = FeedlingTest/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -399,7 +551,7 @@
 				CODE_SIGN_ENTITLEMENTS = FeedlingTestWidget/FeedlingTestWidget.entitlements;
 				DEVELOPMENT_TEAM = DC9JH5DRMY;
 				INFOPLIST_FILE = FeedlingTestWidget/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -411,14 +563,86 @@
 			};
 			name = Release;
 		};
+		B750BD50EFB028DD77498C06 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = FeedlingBroadcastSetupUI/FeedlingBroadcastSetupUI.entitlements;
+				DEVELOPMENT_TEAM = DC9JH5DRMY;
+				INFOPLIST_FILE = FeedlingBroadcastSetupUI/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.feedling.mcp.broadcastSetupUI;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		D6C8509A80E309C02C7984CA /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = FeedlingBroadcast/FeedlingBroadcast.entitlements;
+				DEVELOPMENT_TEAM = DC9JH5DRMY;
+				INFOPLIST_FILE = FeedlingBroadcast/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.feedling.mcp.broadcast;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		DA1A52DE82AB49760F1D1DA2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = FeedlingBroadcast/FeedlingBroadcast.entitlements;
+				DEVELOPMENT_TEAM = DC9JH5DRMY;
+				INFOPLIST_FILE = FeedlingBroadcast/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.feedling.mcp.broadcast;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		2E4094369FC262BD249A0C9A /* Build configuration list for PBXNativeTarget "FeedlingBroadcastSetupUI" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B750BD50EFB028DD77498C06 /* Debug */,
+				14B3B835EFF9750F11FAE73F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		5C7A44734ECB7FD48F277D7B /* Build configuration list for PBXProject "FeedlingTest" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				2E9D77041FFEC5C98F259AB4 /* Debug */,
 				2C428C1431E2DAE1BF932153 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		AFB024797D588A76444F24A7 /* Build configuration list for PBXNativeTarget "FeedlingBroadcast" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D6C8509A80E309C02C7984CA /* Debug */,
+				DA1A52DE82AB49760F1D1DA2 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
