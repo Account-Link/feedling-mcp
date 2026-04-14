@@ -8,7 +8,7 @@ class SharedConfig {
     static let frameUpdateNotificationName = "com.feedling.frameUpdate"
     static let stopBroadcastNotificationName = "com.feedling.stopBroadcast"
     static let captureIntervalMsKey = "capture_interval_ms"
-    static let captureIntervalMsDefault: Int = 3000  // 3 seconds default
+    static let captureIntervalMsDefault: Int = 1000  // 1 second default
     static let ingestTokenKey = "ingest_ws_token"
 
     static var sharedDefaults: UserDefaults? {

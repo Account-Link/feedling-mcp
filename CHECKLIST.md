@@ -57,7 +57,7 @@
 - [x] 在 FeedlingTest App 内集成 Broadcast Upload Extension（`FeedlingBroadcast`）
 - [x] `RPSystemBroadcastPickerView` 嵌入 ContentView（在 List 外，触摸可响应）
 - [x] 系统广播弹出后选择 FeedlingTest，触发 `SampleHandler`
-- [x] 每 3 秒抓一帧视频，转 JPEG（960px max edge，quality 0.6）
+- [x] 每 1 秒抓一帧视频，转 JPEG（960px max edge，quality 0.6）（原 3s，已改为 1s）
 - [x] Vision OCR：提取截屏中的文字和 URL（fast mode）
 - [x] `WebSocketManager`：`URLSessionWebSocketTask`，自动重连，指数退避
 - [x] 后端 WebSocket server 跑在 port 9998（`/ingest`）
@@ -67,12 +67,30 @@
 - [x] 验证：tcpdump 确认手机（104.28.243.105）连上 VPS:9998 ✅
 - [x] 验证：frames total 从 0 增长到 11，OCR 能看到主屏 App 名称 ✅
 
-### 3b. OpenClaw 读取截屏（待完成）
+### 3b. OpenClaw 心跳读取截屏 ✅ 已完成（2026-04-14）
 
-- [ ] OpenClaw 心跳任务：定期调用 `/v1/screen/frames/latest`
-- [ ] 分析 OCR 内容 → 推断用户在做什么
-- [ ] 基于真实行为主动推送灵动岛消息
-- [ ] 替换 mock 数据：`/v1/screen/ios` 从真实帧元数据聚合
+- [x] 后端新增 `GET /v1/screen/analyze` 心跳端点
+  - 参数：`window_sec`（默认 300）、`min_continuous_min`（默认 3）
+  - 返回：`active`、`current_app`、`continuous_minutes`、`ocr_summary`、`should_notify`、`cooldown_remaining_seconds`、`reason`、`latest_ts`、`frame_count_in_window`
+  - 支持短抖动容错（MAX_JITTER_FRAMES=2）
+  - OCR 取最近 3 帧非空去重拼接
+- [x] Push cooldown 线程安全 + 持久化
+  - `_last_push_epoch` / `_last_push_mono` / `_last_push_lock`
+  - 支持 `FEEDLING_PUSH_COOLDOWN_SEC` 环境变量（默认 300s）
+  - `push_state.json` 持久化，重启后 cooldown 恢复
+  - `_record_successful_push()` + `_cooldown_remaining_seconds()` helper
+- [x] SKILL.md Heartbeat 指令更新：3 步流程（analyze → 判断 → push）
+- [x] 截帧间隔从 3s 改为 1s（`captureIntervalMsDefault=1000`）
+- [ ] OpenClaw 加载更新后的 SKILL.md，验证心跳推送端到端
+
+### 3c. 替换 mock 数据（待完成）
+
+- [ ] `/v1/screen/ios` 从真实帧元数据聚合替换 mock 数据
+
+### 3d. Mac 屏幕监控（待完成）
+
+- [ ] Mac 屏幕监控数据 → 真实上传到后端
+- [ ] 与 iOS 数据合并到 `/v1/screen/summary`
 
 ### 3c. Mac 屏幕监控（待完成）
 

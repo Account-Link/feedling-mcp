@@ -20,7 +20,7 @@ feedling-mcp-v1/
 
 ---
 
-## Status (as of 2026-04-12)
+## Status (as of 2026-04-14)
 
 - [x] SKILL.md written and loaded into OpenClaw ✅
 - [x] Backend running on VPS (HTTP port 5001, WebSocket port 9998) ✅
@@ -32,7 +32,11 @@ feedling-mcp-v1/
 - [x] iOS Broadcast Extension captures screen every 3s → WebSocket → VPS storage ✅
 - [x] Vision OCR on captured frames — real app names visible in metadata ✅
 - [x] `/v1/screen/frames/latest` endpoint — OpenClaw can see what user is doing on phone ✅
-- [ ] OpenClaw heartbeat reading screenshots → behavior analysis → proactive push
+- [x] `/v1/screen/analyze` heartbeat endpoint — push cooldown, jitter-tolerant continuous time, OCR dedup ✅
+- [x] Push cooldown: thread-safe + persisted to `push_state.json` (survives restarts) ✅
+- [x] Capture interval: 1s per frame (down from 3s) ✅
+- [ ] OpenClaw heartbeat validated end-to-end (SKILL.md loaded, analyze → push confirmed)
+- [ ] Replace mock `/v1/screen/ios` with real frame aggregation
 - [ ] Mac screen monitoring data → real upload to backend
 
 ---
@@ -104,6 +108,7 @@ nohup ~/feedling/venv/bin/python ~/feedling/app.py > ~/feedling/server.log 2>&1 
 | GET | `/v1/screen/frames` | List captured screen frames with OCR metadata |
 | GET | `/v1/screen/frames/latest` | Latest frame: base64 JPEG + OCR text + URLs |
 | GET | `/v1/screen/frames/<filename>` | Retrieve specific frame |
+| GET | `/v1/screen/analyze` | Heartbeat: current app, continuous time, OCR summary, should_notify (with cooldown) |
 
 ### WebSocket Ingest
 
@@ -200,7 +205,7 @@ struct ScreenActivityAttributes: ActivityAttributes {
 1. Open the app → tap **Start Screen Recording**
 2. System picker appears → select **FeedlingTest** → tap **Start Broadcast**
 3. The `FeedlingBroadcast` extension starts capturing:
-   - Every 3 seconds: grab video frame → resize to 960px → JPEG @ 0.6 quality
+   - Every 1 second: grab video frame → resize to 960px → JPEG @ 0.6 quality
    - Vision OCR: extract text + URLs from frame
    - WebSocket: send JSON payload to `ws://54.209.126.4:9998/ingest`
 4. Backend stores frames in `~/feedling/frames/<session_id>/`
