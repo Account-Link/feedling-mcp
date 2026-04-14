@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import errno
 import json
 import os
 import threading
@@ -14,22 +15,73 @@ import websockets
 from flask import Flask, jsonify, request, send_file
 
 # ---------------------------------------------------------------------------
-# Frames storage
+# Directories
 # ---------------------------------------------------------------------------
 
-FRAMES_DIR = Path.home() / "feedling" / "frames"
+FEEDLING_DIR = Path.home() / "feedling"
+FEEDLING_DIR.mkdir(parents=True, exist_ok=True)
+
+FRAMES_DIR = FEEDLING_DIR / "frames"
 FRAMES_DIR.mkdir(parents=True, exist_ok=True)
 MAX_FRAMES = 200  # keep last 200 frames on disk
 
+# ---------------------------------------------------------------------------
+# Frames storage
+# ---------------------------------------------------------------------------
+
 _frames_meta: list[dict] = []  # in-memory index: [{filename, ts, app, ocr_text, w, h}]
 _frames_lock = threading.Lock()
+
+
+def _frame_url(filename: str) -> str:
+    """Build a public URL for a frame. Prefers FEEDLING_PUBLIC_BASE_URL env var."""
+    base = os.environ.get("FEEDLING_PUBLIC_BASE_URL", "").rstrip("/")
+    if not base:
+        base = request.host_url.rstrip("/")
+    return f"{base}/v1/screen/frames/{filename}"
+
+
+def _save_frame(payload: dict):
+    ts = payload.get("ts", time.time())
+    img_b64 = payload.get("image", "")
+    if not img_b64:
+        return
+    try:
+        img_bytes = base64.b64decode(img_b64)
+    except Exception:
+        return
+
+    filename = f"frame_{int(ts * 1000)}.jpg"
+    fpath = FRAMES_DIR / filename
+    fpath.write_bytes(img_bytes)
+
+    meta = {
+        "filename": filename,
+        "ts": ts,
+        "app": payload.get("app") or payload.get("bundle"),
+        "ocr_text": payload.get("ocr_text", ""),
+        "w": payload.get("w", 0),
+        "h": payload.get("h", 0),
+    }
+
+    with _frames_lock:
+        _frames_meta.append(meta)
+        if len(_frames_meta) > MAX_FRAMES:
+            removed = _frames_meta.pop(0)
+            old = FRAMES_DIR / removed["filename"]
+            if old.exists():
+                old.unlink()
+
+    print(f"[ingest] saved {filename} app={meta['app']} ocr={len(meta['ocr_text'])}chars")
+
 
 # ---------------------------------------------------------------------------
 # Push cooldown state (thread-safe + persistent)
 # ---------------------------------------------------------------------------
 
 PUSH_COOLDOWN_SECONDS = int(os.environ.get("FEEDLING_PUSH_COOLDOWN_SEC", 300))
-PUSH_STATE_FILE = Path.home() / "feedling" / "push_state.json"
+PUSH_STATE_FILE = FEEDLING_DIR / "push_state.json"
+PUSH_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)  # P1: defensive mkdir
 
 _last_push_epoch: float = 0.0   # wall-clock time of last push (for persistence)
 _last_push_mono: float = 0.0    # monotonic time of last push (for duration math)
@@ -45,7 +97,6 @@ def _load_push_state():
             epoch = float(data.get("last_push_epoch", 0.0))
             elapsed = time.time() - epoch
             if 0 <= elapsed < PUSH_COOLDOWN_SECONDS:
-                # Cooldown still active — reconstruct monotonic offset
                 _last_push_epoch = epoch
                 _last_push_mono = time.monotonic() - elapsed
                 print(f"[push_state] loaded — cooldown {round(PUSH_COOLDOWN_SECONDS - elapsed)}s remaining")
@@ -76,45 +127,41 @@ def _cooldown_remaining_seconds() -> float:
 
 _load_push_state()
 
+# ---------------------------------------------------------------------------
+# Push token persistence
+# ---------------------------------------------------------------------------
 
-def _save_frame(payload: dict):
-    ts = payload.get("ts", time.time())
-    img_b64 = payload.get("image", "")
-    if not img_b64:
-        return
+TOKENS_FILE = FEEDLING_DIR / "tokens.json"
+REGISTERED_TOKENS: list[dict] = []
+
+
+def _load_tokens():
+    global REGISTERED_TOKENS
     try:
-        img_bytes = base64.b64decode(img_b64)
-    except Exception:
-        return
+        if TOKENS_FILE.exists():
+            data = json.loads(TOKENS_FILE.read_text())
+            REGISTERED_TOKENS = data if isinstance(data, list) else []
+            print(f"[tokens] loaded {len(REGISTERED_TOKENS)} token(s)")
+    except Exception as e:
+        print(f"[tokens] failed to load (starting empty): {e}")
+        REGISTERED_TOKENS = []
 
-    filename = f"frame_{int(ts * 1000)}.jpg"
-    fpath = FRAMES_DIR / filename
-    fpath.write_bytes(img_bytes)
 
-    meta = {
-        "filename": filename,
-        "ts": ts,
-        "app": payload.get("app") or payload.get("bundle"),
-        "ocr_text": payload.get("ocr_text", ""),
-        "w": payload.get("w", 0),
-        "h": payload.get("h", 0),
-    }
+def _save_tokens():
+    try:
+        TOKENS_FILE.write_text(json.dumps(REGISTERED_TOKENS))
+    except Exception as e:
+        print(f"[tokens] failed to save: {e}")
 
-    with _frames_lock:
-        _frames_meta.append(meta)
-        # trim in-memory index
-        if len(_frames_meta) > MAX_FRAMES:
-            removed = _frames_meta.pop(0)
-            old = FRAMES_DIR / removed["filename"]
-            if old.exists():
-                old.unlink()
 
-    print(f"[ingest] saved {filename} app={meta['app']} ocr={len(meta['ocr_text'])}chars")
-
+_load_tokens()
 
 # ---------------------------------------------------------------------------
-# WebSocket ingest server (port 9999)
+# WebSocket ingest server
 # ---------------------------------------------------------------------------
+
+WS_PORT = int(os.environ.get("FEEDLING_WS_PORT", 9998))
+
 
 async def _ws_handler(websocket):
     print(f"[ws] client connected: {websocket.remote_address}")
@@ -128,17 +175,23 @@ async def _ws_handler(websocket):
                 print(f"[ws] parse error: {e}")
     except websockets.exceptions.ConnectionClosed:
         pass
-    print(f"[ws] client disconnected")
+    print("[ws] client disconnected")
+
+
+async def _ws_main():
+    try:
+        async with websockets.serve(_ws_handler, "0.0.0.0", WS_PORT):
+            print(f"[ws] WebSocket ingest server running on ws://0.0.0.0:{WS_PORT}/ingest")
+            await asyncio.Future()  # run forever
+    except OSError as e:
+        if e.errno == errno.EADDRINUSE:
+            print(f"[ws] WARNING: port {WS_PORT} already in use — WebSocket ingest disabled, HTTP continues")
+        else:
+            raise
 
 
 def _run_ws_server():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    server = loop.run_until_complete(
-        websockets.serve(_ws_handler, "0.0.0.0", 9998)
-    )
-    print("[ws] WebSocket ingest server running on ws://0.0.0.0:9998/ingest")
-    loop.run_forever()
+    asyncio.run(_ws_main())
 
 
 threading.Thread(target=_run_ws_server, daemon=True).start()
@@ -155,7 +208,7 @@ BUNDLE_ID = "com.feedling.mcp"
 APNS_SANDBOX = True  # True for dev/TestFlight, False for App Store
 
 _KEY_SEARCH = [
-    Path.home() / "feedling" / f"AuthKey_{KEY_ID}.p8",
+    FEEDLING_DIR / f"AuthKey_{KEY_ID}.p8",
     Path(__file__).parent / f"AuthKey_{KEY_ID}.p8",
 ]
 APNS_KEY = None
@@ -211,96 +264,27 @@ IOS_DATA = {
     "scroll_distance_meters": 2.3,
     "pickups": 47,
     "apps": [
-        {
-            "name": "TikTok",
-            "bundle_id": "com.zhiliaoapp.musically",
-            "category": "Entertainment",
-            "duration_minutes": 45,
-            "sessions": 6,
-            "first_used": "08:14",
-            "last_used": "22:31",
-        },
-        {
-            "name": "YouTube",
-            "bundle_id": "com.google.ios.youtube",
-            "category": "Entertainment",
-            "duration_minutes": 35,
-            "sessions": 4,
-            "first_used": "12:02",
-            "last_used": "21:45",
-        },
-        {
-            "name": "Instagram",
-            "bundle_id": "com.burbn.instagram",
-            "category": "Social",
-            "duration_minutes": 28,
-            "sessions": 8,
-            "first_used": "09:30",
-            "last_used": "22:10",
-        },
-        {
-            "name": "Messages",
-            "bundle_id": "com.apple.MobileSMS",
-            "category": "Communication",
-            "duration_minutes": 22,
-            "sessions": 15,
-            "first_used": "08:05",
-            "last_used": "22:48",
-        },
-        {
-            "name": "Safari",
-            "bundle_id": "com.apple.mobilesafari",
-            "category": "Browsing",
-            "duration_minutes": 18,
-            "sessions": 7,
-            "first_used": "10:15",
-            "last_used": "20:30",
-        },
-        {
-            "name": "WeChat",
-            "bundle_id": "com.tencent.xin",
-            "category": "Communication",
-            "duration_minutes": 15,
-            "sessions": 9,
-            "first_used": "08:30",
-            "last_used": "22:00",
-        },
-        {
-            "name": "Maps",
-            "bundle_id": "com.apple.Maps",
-            "category": "Navigation",
-            "duration_minutes": 8,
-            "sessions": 2,
-            "first_used": "13:20",
-            "last_used": "14:10",
-        },
-        {
-            "name": "Camera",
-            "bundle_id": "com.apple.camera",
-            "category": "Utility",
-            "duration_minutes": 5,
-            "sessions": 3,
-            "first_used": "11:45",
-            "last_used": "17:22",
-        },
-        {
-            "name": "Settings",
-            "bundle_id": "com.apple.Preferences",
-            "category": "Utility",
-            "duration_minutes": 3,
-            "sessions": 2,
-            "first_used": "09:10",
-            "last_used": "09:13",
-        },
+        {"name": "TikTok", "bundle_id": "com.zhiliaoapp.musically", "category": "Entertainment",
+         "duration_minutes": 45, "sessions": 6, "first_used": "08:14", "last_used": "22:31"},
+        {"name": "YouTube", "bundle_id": "com.google.ios.youtube", "category": "Entertainment",
+         "duration_minutes": 35, "sessions": 4, "first_used": "12:02", "last_used": "21:45"},
+        {"name": "Instagram", "bundle_id": "com.burbn.instagram", "category": "Social",
+         "duration_minutes": 28, "sessions": 8, "first_used": "09:30", "last_used": "22:10"},
+        {"name": "Messages", "bundle_id": "com.apple.MobileSMS", "category": "Communication",
+         "duration_minutes": 22, "sessions": 15, "first_used": "08:05", "last_used": "22:48"},
+        {"name": "Safari", "bundle_id": "com.apple.mobilesafari", "category": "Browsing",
+         "duration_minutes": 18, "sessions": 7, "first_used": "10:15", "last_used": "20:30"},
+        {"name": "WeChat", "bundle_id": "com.tencent.xin", "category": "Communication",
+         "duration_minutes": 15, "sessions": 9, "first_used": "08:30", "last_used": "22:00"},
+        {"name": "Maps", "bundle_id": "com.apple.Maps", "category": "Navigation",
+         "duration_minutes": 8, "sessions": 2, "first_used": "13:20", "last_used": "14:10"},
+        {"name": "Camera", "bundle_id": "com.apple.camera", "category": "Utility",
+         "duration_minutes": 5, "sessions": 3, "first_used": "11:45", "last_used": "17:22"},
+        {"name": "Settings", "bundle_id": "com.apple.Preferences", "category": "Utility",
+         "duration_minutes": 3, "sessions": 2, "first_used": "09:10", "last_used": "09:13"},
     ],
-    "categories": {
-        "Entertainment": 80,
-        "Social": 28,
-        "Communication": 37,
-        "Browsing": 18,
-        "Navigation": 8,
-        "Utility": 8,
-    },
+    "categories": {"Entertainment": 80, "Social": 28, "Communication": 37,
+                   "Browsing": 18, "Navigation": 8, "Utility": 8},
 }
 
 MAC_DATA = {
@@ -310,86 +294,29 @@ MAC_DATA = {
     "focus_score": 72,
     "context_switches": 34,
     "apps": [
-        {
-            "name": "Google Chrome",
-            "bundle_id": "com.google.Chrome",
-            "category": "Browsing",
-            "duration_minutes": 120,
-            "window_titles": [
-                "Notion – feedling roadmap",
-                "Linear – Sprint 3",
-                "Figma Community",
-                "Stack Overflow",
-            ],
-        },
-        {
-            "name": "Figma",
-            "bundle_id": "com.figma.Desktop",
-            "category": "Design",
-            "duration_minutes": 95,
-            "window_titles": [
-                "Feedling iOS – v2 screens",
-                "Component library",
-                "Onboarding flow",
-            ],
-        },
-        {
-            "name": "Cursor",
-            "bundle_id": "com.todesktop.230313mzl4w4u92",
-            "category": "Development",
-            "duration_minutes": 85,
-            "window_titles": [
-                "feedling-mcp-v1 – app.py",
-                "feedling-ios – LiveActivity.swift",
-                "feedling-mcp-v1 – SKILL.md",
-            ],
-        },
-        {
-            "name": "Zoom",
-            "bundle_id": "us.zoom.xos",
-            "category": "Communication",
-            "duration_minutes": 45,
-            "window_titles": ["Weekly sync", "Design review"],
-        },
-        {
-            "name": "Slack",
-            "bundle_id": "com.tinyspeck.slackmacgap",
-            "category": "Communication",
-            "duration_minutes": 40,
-            "window_titles": ["#design", "#eng", "#general", "DMs"],
-        },
-        {
-            "name": "Terminal",
-            "bundle_id": "com.apple.Terminal",
-            "category": "Development",
-            "duration_minutes": 10,
-            "window_titles": ["zsh – feedling-mcp-v1"],
-        },
+        {"name": "Google Chrome", "bundle_id": "com.google.Chrome", "category": "Browsing",
+         "duration_minutes": 120, "window_titles": ["Notion – feedling roadmap", "Linear – Sprint 3",
+                                                      "Figma Community", "Stack Overflow"]},
+        {"name": "Figma", "bundle_id": "com.figma.Desktop", "category": "Design",
+         "duration_minutes": 95, "window_titles": ["Feedling iOS – v2 screens", "Component library"]},
+        {"name": "Cursor", "bundle_id": "com.todesktop.230313mzl4w4u92", "category": "Development",
+         "duration_minutes": 85, "window_titles": ["feedling-mcp-v1 – app.py", "feedling-mcp-v1 – SKILL.md"]},
+        {"name": "Zoom", "bundle_id": "us.zoom.xos", "category": "Communication",
+         "duration_minutes": 45, "window_titles": ["Weekly sync", "Design review"]},
+        {"name": "Slack", "bundle_id": "com.tinyspeck.slackmacgap", "category": "Communication",
+         "duration_minutes": 40, "window_titles": ["#design", "#eng", "#general", "DMs"]},
+        {"name": "Terminal", "bundle_id": "com.apple.Terminal", "category": "Development",
+         "duration_minutes": 10, "window_titles": ["zsh – feedling-mcp-v1"]},
     ],
-    "categories": {
-        "Browsing": 120,
-        "Design": 95,
-        "Development": 95,
-        "Communication": 85,
-    },
+    "categories": {"Browsing": 120, "Design": 95, "Development": 95, "Communication": 85},
 }
 
 SOURCES_DATA = {
     "sources": [
-        {
-            "id": "ios_pip",
-            "name": "iPhone PIP Recording",
-            "status": "connected",
-            "last_sync": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "device": "iPhone 16 Pro",
-        },
-        {
-            "id": "mac_monitor",
-            "name": "Mac Screen Monitor",
-            "status": "connected",
-            "last_sync": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "device": "MacBook Pro M3",
-        },
+        {"id": "ios_pip", "name": "iPhone PIP Recording", "status": "connected",
+         "last_sync": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"), "device": "iPhone 16 Pro"},
+        {"id": "mac_monitor", "name": "Mac Screen Monitor", "status": "connected",
+         "last_sync": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"), "device": "MacBook Pro M3"},
     ]
 }
 
@@ -415,9 +342,7 @@ def get_summary():
         "ios": {
             "total_screen_time_minutes": IOS_DATA["total_screen_time_minutes"],
             "top_app": IOS_DATA["apps"][0]["name"],
-            "top_category": max(
-                IOS_DATA["categories"], key=lambda k: IOS_DATA["categories"][k]
-            ),
+            "top_category": max(IOS_DATA["categories"], key=lambda k: IOS_DATA["categories"][k]),
             "pickups": IOS_DATA["pickups"],
         },
         "mac": {
@@ -428,8 +353,7 @@ def get_summary():
             "context_switches": MAC_DATA["context_switches"],
         },
         "combined": {
-            "total_screen_minutes": IOS_DATA["total_screen_time_minutes"]
-            + MAC_DATA["total_active_minutes"],
+            "total_screen_minutes": IOS_DATA["total_screen_time_minutes"] + MAC_DATA["total_active_minutes"],
             "insight": "Heavy design + dev session on Mac. Phone usage mostly entertainment in evenings.",
         },
     }
@@ -466,17 +390,14 @@ def push_live_activity_inner(payload: dict):
         print(f"[live-activity] no token registered — logged: {payload}")
         return jsonify({"status": "logged", "activity_id": activity_id or f"la_{uuid.uuid4().hex[:8]}"})
 
-    top_app = payload.get("topApp", "")
-    minutes = payload.get("screenTimeMinutes", 0)
-    message = payload.get("message", "")
     apns_payload = {
         "aps": {
             "timestamp": int(time.time()),
             "event": payload.get("event", "update"),
             "content-state": {
-                "topApp": top_app,
-                "screenTimeMinutes": minutes,
-                "message": message,
+                "topApp": payload.get("topApp", ""),
+                "screenTimeMinutes": payload.get("screenTimeMinutes", 0),
+                "message": payload.get("message", ""),
                 "updatedAt": time.time(),
             },
             "alert": {"title": "", "body": ""},
@@ -505,13 +426,8 @@ def push_notification():
         }
     }
     result = _send_apns(device_token, apns_payload, push_type="alert", topic=BUNDLE_ID)
-    msg_id = f"msg_{uuid.uuid4().hex[:8]}"
     print(f"[notification] {result}")
-    return jsonify({"status": result["status"], "message_id": msg_id})
-
-
-# In-memory store for push tokens (mock — no real APNs yet)
-REGISTERED_TOKENS: list[dict] = []
+    return jsonify({"status": result["status"], "message_id": f"msg_{uuid.uuid4().hex[:8]}"})
 
 
 @app.route("/v1/push/register-token", methods=["POST"])
@@ -525,10 +441,14 @@ def register_token():
     if activity_id:
         entry["activity_id"] = activity_id
 
-    # Keep latest per type
-    REGISTERED_TOKENS[:] = [t for t in REGISTERED_TOKENS if t.get("type") != token_type or
-                             (activity_id and t.get("activity_id") != activity_id)]
+    # Keep latest per type (replace existing entry of same type/activity_id)
+    REGISTERED_TOKENS[:] = [
+        t for t in REGISTERED_TOKENS
+        if not (t.get("type") == token_type and
+                (not activity_id or t.get("activity_id") == activity_id))
+    ]
     REGISTERED_TOKENS.append(entry)
+    _save_tokens()
 
     print(f"[register-token] {token_type}: {token[:16]}…")
     return jsonify({"status": "registered", "type": token_type})
@@ -536,7 +456,6 @@ def register_token():
 
 @app.route("/v1/push/tokens", methods=["GET"])
 def list_tokens():
-    """Debug endpoint — shows all registered push tokens."""
     return jsonify({"tokens": REGISTERED_TOKENS})
 
 
@@ -545,9 +464,9 @@ def list_frames():
     """List recent captured frames (metadata only)."""
     limit = min(int(request.args.get("limit", 20)), 100)
     with _frames_lock:
-        recent = list(reversed(_frames_meta))[:limit]
+        recent = [f.copy() for f in reversed(_frames_meta)][:limit]
     for f in recent:
-        f["url"] = f"http://54.209.126.4:5001/v1/screen/frames/{f['filename']}"
+        f["url"] = _frame_url(f["filename"])
     return jsonify({"frames": recent, "total": len(_frames_meta)})
 
 
@@ -563,15 +482,13 @@ def latest_frame():
     if not fpath.exists():
         return jsonify({"error": "file missing"}), 404
 
-    img_b64 = base64.b64encode(fpath.read_bytes()).decode()
-    meta["image_base64"] = img_b64
-    meta["url"] = f"http://54.209.126.4:5001/v1/screen/frames/{meta['filename']}"
+    meta["image_base64"] = base64.b64encode(fpath.read_bytes()).decode()
+    meta["url"] = _frame_url(meta["filename"])
     return jsonify(meta)
 
 
 @app.route("/v1/screen/frames/<filename>", methods=["GET"])
 def serve_frame(filename):
-    """Serve a frame image file."""
     fpath = FRAMES_DIR / filename
     if not fpath.exists():
         return jsonify({"error": "not found"}), 404
@@ -585,12 +502,13 @@ def analyze_screen():
     Used by OpenClaw heartbeat to decide whether to push a Dynamic Island message.
 
     Query params:
-      window_sec (int):         seconds of frame history to consider (default 300)
-      min_continuous_min (float): minimum continuous minutes on app to allow notify (default 3)
+      window_sec (int):           seconds of frame history to consider (default 300, clamped [30,3600])
+      min_continuous_min (float): minimum continuous minutes on app to allow notify (default 3, clamped [1,120])
     """
     now = time.time()
-    window_sec = float(request.args.get("window_sec", 300))
-    min_continuous_min = float(request.args.get("min_continuous_min", 3))
+    # P1: clamp parameters to safe ranges
+    window_sec = max(30.0, min(3600.0, float(request.args.get("window_sec", 300))))
+    min_continuous_min = max(1.0, min(120.0, float(request.args.get("min_continuous_min", 3))))
 
     with _frames_lock:
         recent = [f for f in _frames_meta if now - f["ts"] <= window_sec]
@@ -611,13 +529,21 @@ def analyze_screen():
     latest = recent[-1]
     current_app = latest.get("app") or "unknown"
 
-    # Continuous time on current app, with jitter tolerance.
-    # Up to MAX_JITTER_FRAMES consecutive frames of a different app are ignored
-    # (e.g. a system alert or keyboard briefly covering the screen).
+    # Continuous time on current app.
+    # Two safeguards:
+    #   MAX_GAP_SECONDS: if adjacent frames are >8s apart, recording was interrupted — stop counting
+    #   MAX_JITTER_FRAMES: up to 2 consecutive frames of a different app are tolerated (e.g. keyboard)
+    MAX_GAP_SECONDS = 8
     MAX_JITTER_FRAMES = 2
+
     continuous_start_ts = latest["ts"]
     jitter_count = 0
+    prev_ts = latest["ts"]
+
     for frame in reversed(recent[:-1]):
+        # Gap check: break if recording was interrupted
+        if prev_ts - frame["ts"] > MAX_GAP_SECONDS:
+            break
         app = frame.get("app") or "unknown"
         if app == current_app:
             continuous_start_ts = frame["ts"]
@@ -626,10 +552,11 @@ def analyze_screen():
             jitter_count += 1
             if jitter_count > MAX_JITTER_FRAMES:
                 break
+        prev_ts = frame["ts"]
 
     continuous_minutes = round((latest["ts"] - continuous_start_ts) / 60, 1)
 
-    # OCR summary: last 3 non-empty, deduplicated, newest-first then reversed to chron order
+    # OCR summary: last 3 non-empty, deduplicated, in chronological order
     seen_ocr: set[str] = set()
     ocr_parts: list[str] = []
     for f in reversed(recent):
@@ -641,7 +568,7 @@ def analyze_screen():
                 break
     ocr_summary = " | ".join(reversed(ocr_parts))[:500]
 
-    # Cooldown + min_continuous_min checks → should_notify + reason
+    # Determine should_notify and reason
     cooldown_remaining = _cooldown_remaining_seconds()
 
     if cooldown_remaining > 0:
@@ -668,5 +595,5 @@ def analyze_screen():
 
 
 if __name__ == "__main__":
-    print("Feedling mock server running at http://localhost:5001")
-    app.run(host="0.0.0.0", port=5001, debug=True)
+    print("Feedling server running at http://0.0.0.0:5001")
+    app.run(host="0.0.0.0", port=5001, debug=False)
