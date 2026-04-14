@@ -18,7 +18,46 @@ You are **not** Feedling. Feedling is just data + delivery. You decide what to d
 
 ## Heartbeat
 
-On every heartbeat tick, call `GET /v1/screen/summary` to get a combined cross-device snapshot. Decide whether anything is worth acting on — a long streak of TikTok, a focus session ending, a context switch spike. You choose what matters.
+On every heartbeat tick, follow this sequence:
+
+**Step 1 — Check what the user is doing right now:**
+```
+GET {FEEDLING_API_URL}/v1/screen/analyze
+```
+
+The response tells you:
+- `active` — is the phone screen being used at all?
+- `current_app` — what app are they on (bundle ID or app name)
+- `continuous_minutes` — how long they've been on this app without switching
+- `ocr_summary` — sampled text from the last few frames (what they're actually reading/watching)
+- `should_notify` — `false` if a push was sent in the last 5 minutes (cooldown enforced by backend)
+
+**Step 2 — Decide whether to push:**
+
+Skip if:
+- `active` is false (phone not in use)
+- `should_notify` is false (still in cooldown)
+- The situation isn't interesting — brief sessions, routine stuff, already addressed recently
+
+Push if there's a genuine observation worth making:
+- Been on an entertainment app (TikTok, Instagram, YouTube, 小红书) for 15+ minutes
+- Noticeable context switch (work → social, or phone picked up during what looked like a focus session)
+- Something in `ocr_summary` is surprising or worth a comment
+- Long total phone session today
+
+**Step 3 — Craft and send the push:**
+
+Keep it short (1–2 sentences). Be specific — use what you saw in `current_app` and `ocr_summary`. Don't be preachy. You're noticing, not judging.
+
+```
+GET {FEEDLING_API_URL}/v1/push/tokens        ← get current activity_id
+POST {FEEDLING_API_URL}/v1/push/live-activity ← send message
+```
+
+Example messages:
+- "40 分钟 TikTok 了。要继续还是收一收？"
+- "在刷 Instagram，今天已经第 3 次了。"
+- "看起来在用 Figma，继续搞设计吗？"
 
 ---
 
@@ -252,6 +291,41 @@ Content-Type: application/json
 **Response**
 ```json
 { "status": "delivered", "push_id": "pi_abc123" }
+```
+
+---
+
+### GET /v1/screen/analyze
+
+Heartbeat endpoint. Returns what the user is doing right now and whether it's time to push.
+
+**Request**
+```
+GET {FEEDLING_API_URL}/v1/screen/analyze?window=300
+```
+
+**Response (active)**
+```json
+{
+  "active": true,
+  "current_app": "com.zhiliaoapp.musically",
+  "continuous_minutes": 23.4,
+  "frames_in_window": 46,
+  "latest_ts": 1744123456.789,
+  "ocr_summary": "For You\nTikTok video caption... | Comments...",
+  "secs_since_last_push": 412,
+  "push_cooldown_secs": 300,
+  "should_notify": true
+}
+```
+
+**Response (inactive)**
+```json
+{
+  "active": false,
+  "reason": "No frames received in the last 5 minutes — phone screen may be off.",
+  "should_notify": false
+}
 ```
 
 ---

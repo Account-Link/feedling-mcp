@@ -24,6 +24,10 @@ MAX_FRAMES = 200  # keep last 200 frames on disk
 _frames_meta: list[dict] = []  # in-memory index: [{filename, ts, app, ocr_text, w, h}]
 _frames_lock = threading.Lock()
 
+_last_push_time: float = 0.0
+_last_push_lock = threading.Lock()
+PUSH_COOLDOWN_SECONDS = 300  # 5 minutes between pushes
+
 
 def _save_frame(payload: dict):
     ts = payload.get("ts", time.time())
@@ -85,7 +89,7 @@ def _run_ws_server():
     server = loop.run_until_complete(
         websockets.serve(_ws_handler, "0.0.0.0", 9998)
     )
-    print("[ws] WebSocket ingest server running on ws://0.0.0.0:9999/ingest")
+    print("[ws] WebSocket ingest server running on ws://0.0.0.0:9998/ingest")
     loop.run_forever()
 
 
@@ -403,6 +407,7 @@ def push_live_activity():
 
 
 def push_live_activity_inner(payload: dict):
+    global _last_push_time
     activity_id = payload.get("activity_id")
     entry = next(
         (t for t in REGISTERED_TOKENS
@@ -432,6 +437,9 @@ def push_live_activity_inner(payload: dict):
     }
     topic = f"{BUNDLE_ID}.push-type.liveactivity"
     result = _send_apns(entry["token"], apns_payload, push_type="liveactivity", topic=topic)
+    if result.get("status") == "delivered":
+        with _last_push_lock:
+            _last_push_time = time.time()
     print(f"[live-activity] {result}")
     return jsonify({"status": result["status"], "activity_id": activity_id})
 
@@ -522,6 +530,63 @@ def serve_frame(filename):
     if not fpath.exists():
         return jsonify({"error": "not found"}), 404
     return send_file(fpath, mimetype="image/jpeg")
+
+
+@app.route("/v1/screen/analyze", methods=["GET"])
+def analyze_screen():
+    """
+    Structured analysis of what the user is currently doing on their phone.
+    Used by OpenClaw heartbeat to decide whether to push a Dynamic Island message.
+
+    Query params:
+      window (int): how many seconds of history to look at (default 300 = 5 min)
+    """
+    now = time.time()
+    window = float(request.args.get("window", 300))
+
+    with _frames_lock:
+        recent = [f for f in _frames_meta if now - f["ts"] <= window]
+
+    if not recent:
+        return jsonify({
+            "active": False,
+            "reason": "No frames received in the last 5 minutes — phone screen may be off.",
+            "should_notify": False,
+        })
+
+    latest = recent[-1]
+    current_app = latest.get("app") or "unknown"
+
+    # How long has the user been on the current app continuously (in this window)?
+    continuous_secs = 0.0
+    for frame in reversed(recent):
+        app = frame.get("app") or "unknown"
+        if app == current_app or app == "unknown":
+            continuous_secs = latest["ts"] - frame["ts"]
+        else:
+            break
+
+    # OCR summary: concatenate text from last 3 frames, truncate to 500 chars
+    ocr_snippets = [f["ocr_text"][:200] for f in recent[-3:] if f.get("ocr_text")]
+    ocr_summary = " | ".join(ocr_snippets)[:500]
+
+    # Cooldown check
+    with _last_push_lock:
+        secs_since_last_push = now - _last_push_time
+
+    should_notify = secs_since_last_push >= PUSH_COOLDOWN_SECONDS
+
+    return jsonify({
+        "active": True,
+        "current_app": current_app,
+        "continuous_minutes": round(continuous_secs / 60, 1),
+        "frames_in_window": len(recent),
+        "latest_ts": latest["ts"],
+        "ocr_summary": ocr_summary,
+        "secs_since_last_push": round(secs_since_last_push),
+        "push_cooldown_secs": PUSH_COOLDOWN_SECONDS,
+        "should_notify": should_notify,
+    })
 
 
 if __name__ == "__main__":
