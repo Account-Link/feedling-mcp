@@ -24,9 +24,57 @@ MAX_FRAMES = 200  # keep last 200 frames on disk
 _frames_meta: list[dict] = []  # in-memory index: [{filename, ts, app, ocr_text, w, h}]
 _frames_lock = threading.Lock()
 
-_last_push_time: float = 0.0
+# ---------------------------------------------------------------------------
+# Push cooldown state (thread-safe + persistent)
+# ---------------------------------------------------------------------------
+
+PUSH_COOLDOWN_SECONDS = int(os.environ.get("FEEDLING_PUSH_COOLDOWN_SEC", 300))
+PUSH_STATE_FILE = Path.home() / "feedling" / "push_state.json"
+
+_last_push_epoch: float = 0.0   # wall-clock time of last push (for persistence)
+_last_push_mono: float = 0.0    # monotonic time of last push (for duration math)
 _last_push_lock = threading.Lock()
-PUSH_COOLDOWN_SECONDS = 300  # 5 minutes between pushes
+
+
+def _load_push_state():
+    """Load persisted push state on startup so cooldown survives restarts."""
+    global _last_push_epoch, _last_push_mono
+    try:
+        if PUSH_STATE_FILE.exists():
+            data = json.loads(PUSH_STATE_FILE.read_text())
+            epoch = float(data.get("last_push_epoch", 0.0))
+            elapsed = time.time() - epoch
+            if 0 <= elapsed < PUSH_COOLDOWN_SECONDS:
+                # Cooldown still active — reconstruct monotonic offset
+                _last_push_epoch = epoch
+                _last_push_mono = time.monotonic() - elapsed
+                print(f"[push_state] loaded — cooldown {round(PUSH_COOLDOWN_SECONDS - elapsed)}s remaining")
+            else:
+                print("[push_state] loaded — cooldown already expired")
+    except Exception as e:
+        print(f"[push_state] failed to load: {e}")
+
+
+def _record_successful_push():
+    """Record a successful push delivery. Thread-safe. Persists to disk."""
+    global _last_push_epoch, _last_push_mono
+    with _last_push_lock:
+        _last_push_epoch = time.time()
+        _last_push_mono = time.monotonic()
+    try:
+        PUSH_STATE_FILE.write_text(json.dumps({"last_push_epoch": _last_push_epoch}))
+    except Exception as e:
+        print(f"[push_state] failed to save: {e}")
+
+
+def _cooldown_remaining_seconds() -> float:
+    """Seconds left in push cooldown. Returns 0.0 if cooldown has expired."""
+    with _last_push_lock:
+        elapsed = time.monotonic() - _last_push_mono
+    return max(0.0, PUSH_COOLDOWN_SECONDS - elapsed)
+
+
+_load_push_state()
 
 
 def _save_frame(payload: dict):
@@ -407,7 +455,6 @@ def push_live_activity():
 
 
 def push_live_activity_inner(payload: dict):
-    global _last_push_time
     activity_id = payload.get("activity_id")
     entry = next(
         (t for t in REGISTERED_TOKENS
@@ -438,8 +485,7 @@ def push_live_activity_inner(payload: dict):
     topic = f"{BUNDLE_ID}.push-type.liveactivity"
     result = _send_apns(entry["token"], apns_payload, push_type="liveactivity", topic=topic)
     if result.get("status") == "delivered":
-        with _last_push_lock:
-            _last_push_time = time.time()
+        _record_successful_push()
     print(f"[live-activity] {result}")
     return jsonify({"status": result["status"], "activity_id": activity_id})
 
@@ -539,53 +585,85 @@ def analyze_screen():
     Used by OpenClaw heartbeat to decide whether to push a Dynamic Island message.
 
     Query params:
-      window (int): how many seconds of history to look at (default 300 = 5 min)
+      window_sec (int):         seconds of frame history to consider (default 300)
+      min_continuous_min (float): minimum continuous minutes on app to allow notify (default 3)
     """
     now = time.time()
-    window = float(request.args.get("window", 300))
+    window_sec = float(request.args.get("window_sec", 300))
+    min_continuous_min = float(request.args.get("min_continuous_min", 3))
 
     with _frames_lock:
-        recent = [f for f in _frames_meta if now - f["ts"] <= window]
+        recent = [f for f in _frames_meta if now - f["ts"] <= window_sec]
 
     if not recent:
         return jsonify({
             "active": False,
-            "reason": "No frames received in the last 5 minutes — phone screen may be off.",
             "should_notify": False,
+            "reason": "No frames in window — phone screen may be off or recording stopped.",
+            "current_app": None,
+            "continuous_minutes": 0,
+            "ocr_summary": "",
+            "cooldown_remaining_seconds": round(_cooldown_remaining_seconds()),
+            "latest_ts": None,
+            "frame_count_in_window": 0,
         })
 
     latest = recent[-1]
     current_app = latest.get("app") or "unknown"
 
-    # How long has the user been on the current app continuously (in this window)?
-    continuous_secs = 0.0
-    for frame in reversed(recent):
+    # Continuous time on current app, with jitter tolerance.
+    # Up to MAX_JITTER_FRAMES consecutive frames of a different app are ignored
+    # (e.g. a system alert or keyboard briefly covering the screen).
+    MAX_JITTER_FRAMES = 2
+    continuous_start_ts = latest["ts"]
+    jitter_count = 0
+    for frame in reversed(recent[:-1]):
         app = frame.get("app") or "unknown"
-        if app == current_app or app == "unknown":
-            continuous_secs = latest["ts"] - frame["ts"]
+        if app == current_app:
+            continuous_start_ts = frame["ts"]
+            jitter_count = 0
         else:
-            break
+            jitter_count += 1
+            if jitter_count > MAX_JITTER_FRAMES:
+                break
 
-    # OCR summary: concatenate text from last 3 frames, truncate to 500 chars
-    ocr_snippets = [f["ocr_text"][:200] for f in recent[-3:] if f.get("ocr_text")]
-    ocr_summary = " | ".join(ocr_snippets)[:500]
+    continuous_minutes = round((latest["ts"] - continuous_start_ts) / 60, 1)
 
-    # Cooldown check
-    with _last_push_lock:
-        secs_since_last_push = now - _last_push_time
+    # OCR summary: last 3 non-empty, deduplicated, newest-first then reversed to chron order
+    seen_ocr: set[str] = set()
+    ocr_parts: list[str] = []
+    for f in reversed(recent):
+        text = (f.get("ocr_text") or "").strip()
+        if text and text not in seen_ocr:
+            seen_ocr.add(text)
+            ocr_parts.append(text[:200])
+            if len(ocr_parts) >= 3:
+                break
+    ocr_summary = " | ".join(reversed(ocr_parts))[:500]
 
-    should_notify = secs_since_last_push >= PUSH_COOLDOWN_SECONDS
+    # Cooldown + min_continuous_min checks → should_notify + reason
+    cooldown_remaining = _cooldown_remaining_seconds()
+
+    if cooldown_remaining > 0:
+        should_notify = False
+        reason = f"cooldown: {round(cooldown_remaining)}s remaining"
+    elif continuous_minutes < min_continuous_min:
+        should_notify = False
+        reason = f"continuous_minutes {continuous_minutes} < min_continuous_min {min_continuous_min}"
+    else:
+        should_notify = True
+        reason = "ok"
 
     return jsonify({
         "active": True,
         "current_app": current_app,
-        "continuous_minutes": round(continuous_secs / 60, 1),
-        "frames_in_window": len(recent),
-        "latest_ts": latest["ts"],
+        "continuous_minutes": continuous_minutes,
         "ocr_summary": ocr_summary,
-        "secs_since_last_push": round(secs_since_last_push),
-        "push_cooldown_secs": PUSH_COOLDOWN_SECONDS,
         "should_notify": should_notify,
+        "cooldown_remaining_seconds": round(cooldown_remaining),
+        "reason": reason,
+        "latest_ts": latest["ts"],
+        "frame_count_in_window": len(recent),
     })
 
 
