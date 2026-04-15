@@ -7,12 +7,15 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0C85193D472663A67369BAB1 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D833B2E56FA8C84DA0950F72 /* ChatView.swift */; };
 		17B110E5A293426BC46750B6 /* ScreenActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 059AB22EE40CB3F08CADCAE2 /* ScreenActivityAttributes.swift */; };
 		2D6C4681A184D00774C9AAD3 /* SampleHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8585B7EF732F6D6EF2D5BEE6 /* SampleHandler.swift */; };
+		34C90373E432EB5F0EA34BCC /* ChatMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEE35E8B1037B48E755426C1 /* ChatMessage.swift */; };
 		413572B886A6EB4E8F6A3587 /* LiveActivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E760771C17EAF8147D096B4E /* LiveActivityManager.swift */; };
 		56BEDBB90CCEE5017A47D79C /* WebSocketManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DB161EB74DB2AA3F40F30E0 /* WebSocketManager.swift */; };
 		59D5D2A66B66C1BE35C4AF74 /* FeedlingBroadcastSetupUI.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 163932C9DCA1AD2D29756AA4 /* FeedlingBroadcastSetupUI.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		61F24F4911D4423B125600EF /* SharedConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CDD8AF63E3E29635CACE24C /* SharedConfig.swift */; };
+		6B69634A47BFB6AA70AF1609 /* FeedlingAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3DB0E6C7C11B4B979F67492 /* FeedlingAPI.swift */; };
 		8008026851A69E377E0C9937 /* SampleHandler+WebSocketQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 408A6FFA15EE70ECF1B9E9DA /* SampleHandler+WebSocketQueue.swift */; };
 		8444956D16998579C3D74FAB /* FeedlingTestWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B47B840768263FD66F28FB11 /* FeedlingTestWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		97421A140CE8899782DE1375 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5D4282756E211274D73C148 /* ContentView.swift */; };
@@ -22,6 +25,7 @@
 		CB2DF8DCA51CEF662CF65FAB /* ScreenActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 059AB22EE40CB3F08CADCAE2 /* ScreenActivityAttributes.swift */; };
 		E5572F9376D197D99DF91E67 /* FeedlingBroadcast.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = C33E21075035F8499B243C1B /* FeedlingBroadcast.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		E5C880EB40DFDE9E3719B474 /* FeedlingTestWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = E807384089044501BDD54BFA /* FeedlingTestWidgetBundle.swift */; };
+		F4DA5CC70FEBED4D031AE19D /* ChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F3C6BFE5F5FF06EF002CFD3 /* ChatViewModel.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -74,6 +78,7 @@
 		3909F8C0719509F4F8260943 /* FeedlingBroadcast.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FeedlingBroadcast.entitlements; sourceTree = "<group>"; };
 		408A6FFA15EE70ECF1B9E9DA /* SampleHandler+WebSocketQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SampleHandler+WebSocketQueue.swift"; sourceTree = "<group>"; };
 		55823AFBDF473E1DBABB4A3E /* FeedlingTestWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FeedlingTestWidget.entitlements; sourceTree = "<group>"; };
+		5F3C6BFE5F5FF06EF002CFD3 /* ChatViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatViewModel.swift; sourceTree = "<group>"; };
 		660D2AEB7DB9C066DED5AD94 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		81D822BE1140DD59ADE787AD /* BroadcastSetupViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BroadcastSetupViewController.swift; sourceTree = "<group>"; };
 		8485AF4D5CF32FCD3BD19600 /* ScreenActivityWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenActivityWidget.swift; sourceTree = "<group>"; };
@@ -81,8 +86,11 @@
 		8C308EE0153161454F66B92E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		9BEDE1B24252F0AF7E4B9A09 /* FeedlingTest.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = FeedlingTest.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9DB161EB74DB2AA3F40F30E0 /* WebSocketManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketManager.swift; sourceTree = "<group>"; };
+		B3DB0E6C7C11B4B979F67492 /* FeedlingAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedlingAPI.swift; sourceTree = "<group>"; };
 		B47B840768263FD66F28FB11 /* FeedlingTestWidget.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FeedlingTestWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		C33E21075035F8499B243C1B /* FeedlingBroadcast.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FeedlingBroadcast.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		D833B2E56FA8C84DA0950F72 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		DEE35E8B1037B48E755426C1 /* ChatMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMessage.swift; sourceTree = "<group>"; };
 		E399D1BD2C8215413FDD2675 /* FeedlingTest.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FeedlingTest.entitlements; sourceTree = "<group>"; };
 		E760771C17EAF8147D096B4E /* LiveActivityManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityManager.swift; sourceTree = "<group>"; };
 		E807384089044501BDD54BFA /* FeedlingTestWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedlingTestWidgetBundle.swift; sourceTree = "<group>"; };
@@ -105,7 +113,11 @@
 		0E9CF1DFFEF7EBFABD8DA3E0 /* FeedlingTest */ = {
 			isa = PBXGroup;
 			children = (
+				DEE35E8B1037B48E755426C1 /* ChatMessage.swift */,
+				D833B2E56FA8C84DA0950F72 /* ChatView.swift */,
+				5F3C6BFE5F5FF06EF002CFD3 /* ChatViewModel.swift */,
 				F5D4282756E211274D73C148 /* ContentView.swift */,
+				B3DB0E6C7C11B4B979F67492 /* FeedlingAPI.swift */,
 				E399D1BD2C8215413FDD2675 /* FeedlingTest.entitlements */,
 				14B773D2531DF1548E7C3C63 /* FeedlingTestApp.swift */,
 				ED7965843E2AE2F74B88A5FC /* Info.plist */,
@@ -322,7 +334,11 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				34C90373E432EB5F0EA34BCC /* ChatMessage.swift in Sources */,
+				0C85193D472663A67369BAB1 /* ChatView.swift in Sources */,
+				F4DA5CC70FEBED4D031AE19D /* ChatViewModel.swift in Sources */,
 				97421A140CE8899782DE1375 /* ContentView.swift in Sources */,
+				6B69634A47BFB6AA70AF1609 /* FeedlingAPI.swift in Sources */,
 				A3CDDB2378A71F1A511E1A9D /* FeedlingTestApp.swift in Sources */,
 				413572B886A6EB4E8F6A3587 /* LiveActivityManager.swift in Sources */,
 				CB2DF8DCA51CEF662CF65FAB /* ScreenActivityAttributes.swift in Sources */,

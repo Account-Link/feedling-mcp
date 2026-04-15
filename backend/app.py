@@ -157,6 +157,55 @@ def _save_tokens():
 _load_tokens()
 
 # ---------------------------------------------------------------------------
+# Chat history (persistent)
+# ---------------------------------------------------------------------------
+
+CHAT_FILE = FEEDLING_DIR / "chat.json"
+MAX_CHAT_MESSAGES = 500
+
+_chat_messages: list[dict] = []
+_chat_lock = threading.Lock()
+
+
+def _load_chat():
+    global _chat_messages
+    try:
+        if CHAT_FILE.exists():
+            data = json.loads(CHAT_FILE.read_text())
+            _chat_messages = data if isinstance(data, list) else []
+            print(f"[chat] loaded {len(_chat_messages)} message(s)")
+    except Exception as e:
+        print(f"[chat] failed to load (starting empty): {e}")
+        _chat_messages = []
+
+
+def _persist_chat():
+    try:
+        CHAT_FILE.write_text(json.dumps(_chat_messages))
+    except Exception as e:
+        print(f"[chat] failed to save: {e}")
+
+
+def _append_chat(role: str, content: str, source: str = "chat") -> dict:
+    """Append a message. Thread-safe, persists immediately."""
+    msg = {
+        "id": uuid.uuid4().hex,
+        "role": role,
+        "content": content,
+        "ts": time.time(),
+        "source": source,
+    }
+    with _chat_lock:
+        _chat_messages.append(msg)
+        if len(_chat_messages) > MAX_CHAT_MESSAGES:
+            _chat_messages[:] = _chat_messages[-MAX_CHAT_MESSAGES:]
+        _persist_chat()
+    return msg
+
+
+_load_chat()
+
+# ---------------------------------------------------------------------------
 # WebSocket ingest server
 # ---------------------------------------------------------------------------
 
@@ -407,6 +456,10 @@ def push_live_activity_inner(payload: dict):
     result = _send_apns(entry["token"], apns_payload, push_type="liveactivity", topic=topic)
     if result.get("status") == "delivered":
         _record_successful_push()
+        # Mirror to chat so user sees context when opening the app
+        if apns_payload["aps"]["content-state"].get("message"):
+            _append_chat("openclaw", apns_payload["aps"]["content-state"]["message"],
+                         source="live_activity")
     print(f"[live-activity] {result}")
     return jsonify({"status": result["status"], "activity_id": activity_id})
 
@@ -592,6 +645,61 @@ def analyze_screen():
         "latest_ts": latest["ts"],
         "frame_count_in_window": len(recent),
     })
+
+
+@app.route("/v1/chat/history", methods=["GET"])
+def chat_history():
+    """
+    Get chat history.
+    Query params:
+      limit (int):   max messages to return (default 50, max 200)
+      since (float): only return messages with ts > since (unix timestamp)
+    """
+    limit = min(int(request.args.get("limit", 50)), 200)
+    since = float(request.args.get("since", 0))
+    with _chat_lock:
+        msgs = [m for m in _chat_messages if m["ts"] > since]
+    msgs = msgs[-limit:]
+    return jsonify({"messages": msgs, "total": len(_chat_messages)})
+
+
+@app.route("/v1/chat/message", methods=["POST"])
+def chat_message():
+    """User sends a message to OpenClaw."""
+    payload = request.get_json(silent=True) or {}
+    content = (payload.get("content") or "").strip()
+    if not content:
+        return jsonify({"error": "content required"}), 400
+    msg = _append_chat("user", content, source="chat")
+    print(f"[chat] user: {content[:80]}")
+    return jsonify({"id": msg["id"], "ts": msg["ts"]})
+
+
+@app.route("/v1/chat/response", methods=["POST"])
+def chat_response():
+    """
+    OpenClaw posts a chat response.
+    Body: { "content": "...", "push_live_activity": false,
+            "topApp": "...", "screenTimeMinutes": 0 }
+    If push_live_activity is true, also triggers a Live Activity push.
+    """
+    payload = request.get_json(silent=True) or {}
+    content = (payload.get("content") or "").strip()
+    if not content:
+        return jsonify({"error": "content required"}), 400
+
+    msg = _append_chat("openclaw", content, source="chat")
+    print(f"[chat] openclaw: {content[:80]}")
+
+    if payload.get("push_live_activity"):
+        push_payload = {
+            "message": content,
+            "topApp": payload.get("topApp", ""),
+            "screenTimeMinutes": payload.get("screenTimeMinutes", 0),
+        }
+        push_live_activity_inner(push_payload)
+
+    return jsonify({"id": msg["id"], "ts": msg["ts"]})
 
 
 if __name__ == "__main__":

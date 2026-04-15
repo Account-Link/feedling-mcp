@@ -2,11 +2,47 @@ import ActivityKit
 import ReplayKit
 import SwiftUI
 
+// MARK: - Tab enum
+
+enum AppTab: Int {
+    case chat = 0
+    case settings = 1
+}
+
+// MARK: - Root view (TabView)
+
 struct ContentView: View {
+    @EnvironmentObject var router: AppRouter
+    @EnvironmentObject var chatViewModel: ChatViewModel
+
+    var body: some View {
+        TabView(selection: $router.selectedTab) {
+            ChatView()
+                .environmentObject(chatViewModel)
+                .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right.fill") }
+                .tag(AppTab.chat)
+
+            SettingsView()
+                .tabItem { Label("Settings", systemImage: "gearshape.fill") }
+                .tag(AppTab.settings)
+        }
+        .tint(.cyan)
+        .preferredColorScheme(.dark)
+    }
+}
+
+// MARK: - Router
+
+class AppRouter: ObservableObject {
+    @Published var selectedTab: AppTab = .chat
+}
+
+// MARK: - Settings View (former ContentView content)
+
+struct SettingsView: View {
     @EnvironmentObject var lam: LiveActivityManager
     @State private var showBroadcastPicker = false
 
-    // Mock data options for local simulation
     private let mockStates: [ScreenActivityAttributes.ContentState] = [
         .init(topApp: "TikTok", screenTimeMinutes: 45,
               message: "45 min on TikTok. That's your entertainment budget.", updatedAt: Date()),
@@ -21,7 +57,7 @@ struct ContentView: View {
         NavigationStack {
             VStack(spacing: 0) {
 
-                // MARK: — Screen Recording Button
+                // Screen Recording Button
                 VStack(spacing: 6) {
                     Text("SCREEN RECORDING")
                         .font(.caption)
@@ -33,7 +69,6 @@ struct ContentView: View {
                         BroadcastPickerView()
                             .frame(maxWidth: .infinity)
                             .frame(height: 52)
-                        // Invisible overlay to ensure touches pass through to the picker
                     }
                     .background(Color(UIColor.secondarySystemGroupedBackground))
                     .clipShape(RoundedRectangle(cornerRadius: 10))
@@ -43,66 +78,62 @@ struct ContentView: View {
                 .background(Color(UIColor.systemGroupedBackground))
 
                 List {
-
-                // MARK: — Status
-                Section("Live Activity") {
-                    HStack {
-                        Circle()
-                            .fill(lam.isActive ? Color.green : Color.gray)
-                            .frame(width: 10, height: 10)
-                        Text(lam.isActive ? "Active" : "Inactive")
-                            .foregroundStyle(lam.isActive ? .primary : .secondary)
-                    }
-
-                    if let state = lam.lastState {
-                        LabeledContent("Top App", value: state.topApp)
-                        LabeledContent("Screen Time", value: "\(state.screenTimeMinutes) min")
-                        LabeledContent("Message", value: state.message)
-                    }
-                }
-
-                // MARK: — Controls
-                Section("Controls") {
-                    if !lam.isActive {
-                        Button {
-                            Task { await lam.startActivity() }
-                        } label: {
-                            Label("Start Live Activity", systemImage: "play.fill")
+                    // Live Activity status
+                    Section("Live Activity") {
+                        HStack {
+                            Circle()
+                                .fill(lam.isActive ? Color.green : Color.gray)
+                                .frame(width: 10, height: 10)
+                            Text(lam.isActive ? "Active" : "Inactive")
+                                .foregroundStyle(lam.isActive ? .primary : .secondary)
                         }
-                    } else {
-                        Button(role: .destructive) {
-                            Task { await lam.stopActivity() }
-                        } label: {
-                            Label("Stop Live Activity", systemImage: "stop.fill")
-                        }
-
-                        Button {
-                            let state = mockStates[mockIndex % mockStates.count]
-                            mockIndex += 1
-                            Task { await lam.updateActivity(state: state) }
-                        } label: {
-                            Label("Simulate Push Update", systemImage: "arrow.clockwise")
+                        if let state = lam.lastState {
+                            LabeledContent("Top App", value: state.topApp)
+                            LabeledContent("Screen Time", value: "\(state.screenTimeMinutes) min")
+                            LabeledContent("Message", value: state.message)
                         }
                     }
-                }
 
-                // MARK: — Tokens (for wiring up real APNs)
-                Section("Push Tokens") {
-                    tokenRow(label: "Device Token", value: lam.deviceToken)
-                    tokenRow(label: "Activity Token", value: lam.activityPushToken)
-                    if #available(iOS 17.2, *) {
-                        tokenRow(label: "Push-to-Start Token", value: lam.pushToStartToken)
+                    // Controls
+                    Section("Controls") {
+                        if !lam.isActive {
+                            Button {
+                                Task { await lam.startActivity() }
+                            } label: {
+                                Label("Start Live Activity", systemImage: "play.fill")
+                            }
+                        } else {
+                            Button(role: .destructive) {
+                                Task { await lam.stopActivity() }
+                            } label: {
+                                Label("Stop Live Activity", systemImage: "stop.fill")
+                            }
+                            Button {
+                                let state = mockStates[mockIndex % mockStates.count]
+                                mockIndex += 1
+                                Task { await lam.updateActivity(state: state) }
+                            } label: {
+                                Label("Simulate Push Update", systemImage: "arrow.clockwise")
+                            }
+                        }
+                    }
+
+                    // Push tokens
+                    Section("Push Tokens") {
+                        tokenRow(label: "Device Token", value: lam.deviceToken)
+                        tokenRow(label: "Activity Token", value: lam.activityPushToken)
+                        if #available(iOS 17.2, *) {
+                            tokenRow(label: "Push-to-Start Token", value: lam.pushToStartToken)
+                        }
                     }
                 }
-                } // List
-            } // VStack
-            .navigationTitle("Feedling Test")
+            }
+            .navigationTitle("Feedling")
         }
     }
 
     @ViewBuilder
     private func tokenRow(label: String, value: String?) -> some View {
-
         if let value {
             VStack(alignment: .leading, spacing: 4) {
                 Text(label)
@@ -139,7 +170,6 @@ struct BroadcastPickerView: UIViewRepresentable {
         picker.preferredExtension = "com.feedling.mcp.broadcast"
         picker.showsMicrophoneButton = false
         picker.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        // Style the inner button
         for subview in picker.subviews {
             if let button = subview as? UIButton {
                 button.imageView?.tintColor = .white

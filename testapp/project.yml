@@ -36,6 +36,10 @@ targets:
         NSSupportsLiveActivitiesFrequentUpdates: true
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
+        CFBundleURLTypes:
+          - CFBundleURLName: com.feedling.mcp
+            CFBundleURLSchemes:
+              - feedlingtest
         UILaunchScreen:
           UIColorName: ""
         UIBackgroundModes:

@@ -20,6 +20,15 @@ You are **not** Feedling. Feedling is just data + delivery. You decide what to d
 
 On every heartbeat tick, follow this sequence:
 
+**Step 0 — Check if the user sent you a message:**
+```
+GET {FEEDLING_API_URL}/v1/chat/history?since=<timestamp of your last response>
+```
+- If there are new messages with `role: "user"`, respond to them first via `POST /v1/chat/response`
+- Your response will appear in the user's Chat tab in real time
+- Set `push_live_activity: true` if the reply is important enough to surface on Dynamic Island
+- Memory and tone carry over — treat the chat as a continuous conversation, not isolated prompts
+
 **Step 1 — Check what the user is doing right now:**
 ```
 GET {FEEDLING_API_URL}/v1/screen/analyze
@@ -310,6 +319,62 @@ Content-Type: application/json
 ```json
 { "status": "delivered", "push_id": "pi_abc123" }
 ```
+
+---
+
+### GET /v1/chat/history
+
+Fetch chat history. Use `since` on heartbeat to only get new messages.
+
+**Request**
+```
+GET {FEEDLING_API_URL}/v1/chat/history?limit=50&since=1744123456.0
+```
+
+**Response**
+```json
+{
+  "messages": [
+    {"id": "abc", "role": "user", "content": "帮我分析一下", "ts": 1744123500.0, "source": "chat"},
+    {"id": "def", "role": "openclaw", "content": "好的…", "ts": 1744123520.0, "source": "chat"}
+  ],
+  "total": 42
+}
+```
+
+`source` values: `"chat"` (typed message), `"live_activity"` (mirrored from a push you sent)
+
+---
+
+### POST /v1/chat/response
+
+Post your reply to the user. Appears in their Chat tab immediately via polling.
+
+**Request**
+```
+POST {FEEDLING_API_URL}/v1/chat/response
+Content-Type: application/json
+
+{
+  "content": "你今天在 TikTok 上花了 40 分钟，比昨天多了 15 分钟。",
+  "push_live_activity": false,
+  "topApp": "TikTok",
+  "screenTimeMinutes": 40
+}
+```
+
+Set `push_live_activity: true` to simultaneously push to Dynamic Island for important messages.
+
+**Response**
+```json
+{ "id": "ghi", "ts": 1744123530.0 }
+```
+
+---
+
+### POST /v1/chat/message
+
+*(Internal — sent by the iOS app when the user types a message. You read this via `/v1/chat/history`.)*
 
 ---
 
