@@ -6,6 +6,7 @@ import os
 import threading
 import time
 import uuid
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -126,6 +127,76 @@ def _cooldown_remaining_seconds() -> float:
 
 
 _load_push_state()
+
+# ---------------------------------------------------------------------------
+# Live Activity message dedupe state
+# ---------------------------------------------------------------------------
+
+LIVE_ACTIVITY_DEDUPE_SEC = int(os.environ.get("FEEDLING_LIVE_ACTIVITY_DEDUPE_SEC", 900))
+LIVE_ACTIVITY_STATE_FILE = FEEDLING_DIR / "live_activity_state.json"
+_live_activity_state_lock = threading.Lock()
+_live_activity_state = {
+    "last_message": "",
+    "last_top_app": "",
+    "last_sent_epoch": 0.0,
+}
+
+
+def _load_live_activity_state():
+    global _live_activity_state
+    try:
+        if LIVE_ACTIVITY_STATE_FILE.exists():
+            data = json.loads(LIVE_ACTIVITY_STATE_FILE.read_text())
+            if isinstance(data, dict):
+                _live_activity_state = {
+                    "last_message": str(data.get("last_message", "")),
+                    "last_top_app": str(data.get("last_top_app", "")),
+                    "last_sent_epoch": float(data.get("last_sent_epoch", 0.0)),
+                }
+    except Exception as e:
+        print(f"[live-activity] failed to load dedupe state: {e}")
+
+
+def _save_live_activity_state():
+    try:
+        LIVE_ACTIVITY_STATE_FILE.write_text(json.dumps(_live_activity_state))
+    except Exception as e:
+        print(f"[live-activity] failed to save dedupe state: {e}")
+
+
+def _should_suppress_live_activity(message: str, top_app: str) -> tuple[bool, str]:
+    normalized_message = " ".join((message or "").strip().split())
+    normalized_app = (top_app or "").strip().lower()
+    if not normalized_message:
+        return True, "empty_message"
+
+    with _live_activity_state_lock:
+        last_message = " ".join((_live_activity_state.get("last_message") or "").strip().split())
+        last_app = (_live_activity_state.get("last_top_app") or "").strip().lower()
+        last_sent = float(_live_activity_state.get("last_sent_epoch", 0.0))
+
+    elapsed = max(0.0, time.time() - last_sent)
+
+    # Suppress exact same wording for 30 minutes.
+    if normalized_message == last_message and elapsed < 1800:
+        return True, f"duplicate_message_within_30m:{int(1800 - elapsed)}s"
+
+    # Suppress same app + same wording bursts in shorter dedupe window.
+    if normalized_message == last_message and normalized_app == last_app and elapsed < LIVE_ACTIVITY_DEDUPE_SEC:
+        return True, f"same_app_duplicate:{int(LIVE_ACTIVITY_DEDUPE_SEC - elapsed)}s"
+
+    return False, "ok"
+
+
+def _record_live_activity_sent(message: str, top_app: str):
+    with _live_activity_state_lock:
+        _live_activity_state["last_message"] = " ".join((message or "").strip().split())
+        _live_activity_state["last_top_app"] = (top_app or "").strip().lower()
+        _live_activity_state["last_sent_epoch"] = time.time()
+    _save_live_activity_state()
+
+
+_load_live_activity_state()
 
 # ---------------------------------------------------------------------------
 # Push token persistence
@@ -314,39 +385,157 @@ def _send_apns(device_token: str, payload: dict, push_type: str, topic: str) -> 
         return {"status": "error", "reason": str(e)}
 
 # ---------------------------------------------------------------------------
-# Mock data
+# Data models / aggregation
 # ---------------------------------------------------------------------------
 
 TODAY = datetime.now().strftime("%Y-%m-%d")
 
-IOS_DATA = {
+IOS_FALLBACK_DATA = {
     "date": TODAY,
-    "total_screen_time_minutes": 179,
-    "scroll_distance_meters": 2.3,
-    "pickups": 47,
-    "apps": [
-        {"name": "TikTok", "bundle_id": "com.zhiliaoapp.musically", "category": "Entertainment",
-         "duration_minutes": 45, "sessions": 6, "first_used": "08:14", "last_used": "22:31"},
-        {"name": "YouTube", "bundle_id": "com.google.ios.youtube", "category": "Entertainment",
-         "duration_minutes": 35, "sessions": 4, "first_used": "12:02", "last_used": "21:45"},
-        {"name": "Instagram", "bundle_id": "com.burbn.instagram", "category": "Social",
-         "duration_minutes": 28, "sessions": 8, "first_used": "09:30", "last_used": "22:10"},
-        {"name": "Messages", "bundle_id": "com.apple.MobileSMS", "category": "Communication",
-         "duration_minutes": 22, "sessions": 15, "first_used": "08:05", "last_used": "22:48"},
-        {"name": "Safari", "bundle_id": "com.apple.mobilesafari", "category": "Browsing",
-         "duration_minutes": 18, "sessions": 7, "first_used": "10:15", "last_used": "20:30"},
-        {"name": "WeChat", "bundle_id": "com.tencent.xin", "category": "Communication",
-         "duration_minutes": 15, "sessions": 9, "first_used": "08:30", "last_used": "22:00"},
-        {"name": "Maps", "bundle_id": "com.apple.Maps", "category": "Navigation",
-         "duration_minutes": 8, "sessions": 2, "first_used": "13:20", "last_used": "14:10"},
-        {"name": "Camera", "bundle_id": "com.apple.camera", "category": "Utility",
-         "duration_minutes": 5, "sessions": 3, "first_used": "11:45", "last_used": "17:22"},
-        {"name": "Settings", "bundle_id": "com.apple.Preferences", "category": "Utility",
-         "duration_minutes": 3, "sessions": 2, "first_used": "09:10", "last_used": "09:13"},
-    ],
-    "categories": {"Entertainment": 80, "Social": 28, "Communication": 37,
-                   "Browsing": 18, "Navigation": 8, "Utility": 8},
+    "total_screen_time_minutes": 0,
+    "scroll_distance_meters": 0.0,
+    "pickups": 0,
+    "unlock_count": 0,
+    "apps": [],
+    "categories": {},
+    "frame_count": 0,
+    "data_source": "mock_fallback",
 }
+
+
+def _humanize_app_name(raw: str) -> str:
+    value = (raw or "unknown").strip()
+    if not value:
+        return "Unknown"
+    if value.startswith("com."):
+        tail = value.split(".")[-1]
+        if not tail:
+            return value
+        return tail.replace("_", " ").replace("-", " ").title()
+    return value
+
+
+def _category_for_app(app_name_or_bundle: str) -> str:
+    key = (app_name_or_bundle or "").lower()
+    if any(x in key for x in ["tiktok", "youtube", "bili", "netflix"]):
+        return "Entertainment"
+    if any(x in key for x in ["instagram", "twitter", "x.com", "xiaohong", "reddit"]):
+        return "Social"
+    if any(x in key for x in ["wechat", "telegram", "whatsapp", "messages", "slack", "feishu", "lark"]):
+        return "Communication"
+    if any(x in key for x in ["safari", "chrome", "browser"]):
+        return "Browsing"
+    if any(x in key for x in ["maps", "map", "gaode", "waze"]):
+        return "Navigation"
+    if any(x in key for x in ["camera", "photos", "settings", "preference", "clock", "calendar"]):
+        return "Utility"
+    return "Other"
+
+
+def _to_hhmm(ts: float) -> str:
+    return datetime.fromtimestamp(ts).strftime("%H:%M")
+
+
+def _build_ios_data(window_sec: float = 86400.0) -> dict:
+    now = time.time()
+    with _frames_lock:
+        frames = [f.copy() for f in _frames_meta if now - float(f.get("ts", 0)) <= window_sec]
+
+    if not frames:
+        fallback = IOS_FALLBACK_DATA.copy()
+        fallback["date"] = datetime.now().strftime("%Y-%m-%d")
+        return fallback
+
+    frames.sort(key=lambda f: float(f.get("ts", 0)))
+
+    per_app = defaultdict(lambda: {
+        "name": "Unknown",
+        "bundle_id": "",
+        "category": "Other",
+        "duration_seconds": 0.0,
+        "sessions": 0,
+        "first_ts": 0.0,
+        "last_ts": 0.0,
+    })
+    categories_seconds = defaultdict(float)
+
+    MAX_STEP_SECONDS = 8.0
+    NEW_SESSION_GAP_SECONDS = 45.0
+
+    session_count = 0
+    prev_app_key = None
+    prev_ts = None
+
+    for i, frame in enumerate(frames):
+        ts = float(frame.get("ts", 0.0))
+        app_raw = frame.get("app") or "unknown"
+        app_key = str(app_raw)
+
+        row = per_app[app_key]
+        row["name"] = _humanize_app_name(app_key)
+        row["bundle_id"] = app_key
+        row["category"] = _category_for_app(app_key)
+        row["last_ts"] = ts
+        if not row["first_ts"]:
+            row["first_ts"] = ts
+
+        if prev_ts is None:
+            session_count += 1
+            row["sessions"] += 1
+        else:
+            gap = max(0.0, ts - prev_ts)
+            if app_key != prev_app_key or gap > NEW_SESSION_GAP_SECONDS:
+                session_count += 1
+                row["sessions"] += 1
+
+            if prev_app_key is not None:
+                step = min(gap, MAX_STEP_SECONDS)
+                per_app[prev_app_key]["duration_seconds"] += step
+                categories_seconds[per_app[prev_app_key]["category"]] += step
+
+        prev_app_key = app_key
+        prev_ts = ts
+
+    if prev_app_key is not None:
+        per_app[prev_app_key]["duration_seconds"] += 1.0
+        categories_seconds[per_app[prev_app_key]["category"]] += 1.0
+
+    apps = []
+    total_seconds = 0.0
+    for app_key, row in per_app.items():
+        dur_min = round(row["duration_seconds"] / 60.0, 1)
+        total_seconds += row["duration_seconds"]
+        apps.append({
+            "name": row["name"],
+            "bundle_id": row["bundle_id"],
+            "category": row["category"],
+            "duration_minutes": dur_min,
+            "sessions": int(row["sessions"]),
+            "first_used": _to_hhmm(row["first_ts"]),
+            "last_used": _to_hhmm(row["last_ts"]),
+        })
+
+    apps.sort(key=lambda a: a["duration_minutes"], reverse=True)
+
+    categories = {
+        cat: round(sec / 60.0, 1)
+        for cat, sec in sorted(categories_seconds.items(), key=lambda kv: kv[1], reverse=True)
+        if sec > 0
+    }
+
+    total_minutes = round(total_seconds / 60.0, 1)
+    return {
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "total_screen_time_minutes": total_minutes,
+        "scroll_distance_meters": round(total_minutes * 0.02, 2),
+        "pickups": int(session_count),
+        "unlock_count": int(session_count),
+        "apps": apps,
+        "categories": categories,
+        "frame_count": len(frames),
+        "window_sec": int(window_sec),
+        "data_source": "real_frames",
+    }
 
 MAC_DATA = {
     "date": TODAY,
@@ -388,7 +577,12 @@ SOURCES_DATA = {
 
 @app.route("/v1/screen/ios", methods=["GET"])
 def get_ios():
-    return jsonify(IOS_DATA)
+    """iOS usage aggregated from real frame stream in the selected window."""
+    try:
+        window_sec = max(300.0, min(172800.0, float(request.args.get("window_sec", 86400))))
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid window_sec"}), 400
+    return jsonify(_build_ios_data(window_sec=window_sec))
 
 
 @app.route("/v1/screen/mac", methods=["GET"])
@@ -398,13 +592,20 @@ def get_mac():
 
 @app.route("/v1/screen/summary", methods=["GET"])
 def get_summary():
+    ios_data = _build_ios_data(window_sec=86400)
+    top_app = ios_data["apps"][0]["name"] if ios_data.get("apps") else "Unknown"
+    categories = ios_data.get("categories") or {}
+    top_category = max(categories, key=categories.get) if categories else "Other"
+
     summary = {
-        "date": TODAY,
+        "date": datetime.now().strftime("%Y-%m-%d"),
         "ios": {
-            "total_screen_time_minutes": IOS_DATA["total_screen_time_minutes"],
-            "top_app": IOS_DATA["apps"][0]["name"],
-            "top_category": max(IOS_DATA["categories"], key=lambda k: IOS_DATA["categories"][k]),
-            "pickups": IOS_DATA["pickups"],
+            "total_screen_time_minutes": ios_data.get("total_screen_time_minutes", 0),
+            "top_app": top_app,
+            "top_category": top_category,
+            "pickups": ios_data.get("pickups", 0),
+            "data_source": ios_data.get("data_source", "unknown"),
+            "frame_count": ios_data.get("frame_count", 0),
         },
         "mac": {
             "total_active_minutes": MAC_DATA["total_active_minutes"],
@@ -414,8 +615,8 @@ def get_summary():
             "context_switches": MAC_DATA["context_switches"],
         },
         "combined": {
-            "total_screen_minutes": IOS_DATA["total_screen_time_minutes"] + MAC_DATA["total_active_minutes"],
-            "insight": "Heavy design + dev session on Mac. Phone usage mostly entertainment in evenings.",
+            "total_screen_minutes": ios_data.get("total_screen_time_minutes", 0) + MAC_DATA["total_active_minutes"],
+            "insight": "Phone side now comes from real frame aggregation; Mac remains mocked.",
         },
     }
     return jsonify(summary)
@@ -451,14 +652,22 @@ def push_live_activity_inner(payload: dict):
         print(f"[live-activity] no token registered — logged: {payload}")
         return jsonify({"status": "logged", "activity_id": activity_id or f"la_{uuid.uuid4().hex[:8]}"})
 
+    message = (payload.get("message") or "").strip()
+    top_app = payload.get("topApp", "")
+
+    suppress, reason = _should_suppress_live_activity(message=message, top_app=top_app)
+    if suppress:
+        print(f"[live-activity] suppressed: {reason} message={message[:60]}")
+        return jsonify({"status": "suppressed", "reason": reason, "activity_id": activity_id})
+
     apns_payload = {
         "aps": {
             "timestamp": int(time.time()),
             "event": payload.get("event", "update"),
             "content-state": {
-                "topApp": payload.get("topApp", ""),
+                "topApp": top_app,
                 "screenTimeMinutes": payload.get("screenTimeMinutes", 0),
-                "message": payload.get("message", ""),
+                "message": message,
                 "updatedAt": time.time(),
             },
             "alert": {"title": "", "body": ""},
@@ -468,10 +677,10 @@ def push_live_activity_inner(payload: dict):
     result = _send_apns(entry["token"], apns_payload, push_type="liveactivity", topic=topic)
     if result.get("status") == "delivered":
         _record_successful_push()
+        _record_live_activity_sent(message=message, top_app=top_app)
         # Mirror to chat so user sees context when opening the app
-        if apns_payload["aps"]["content-state"].get("message"):
-            _append_chat("openclaw", apns_payload["aps"]["content-state"]["message"],
-                         source="live_activity")
+        if message:
+            _append_chat("openclaw", message, source="live_activity")
     print(f"[live-activity] {result}")
     return jsonify({"status": result["status"], "activity_id": activity_id})
 

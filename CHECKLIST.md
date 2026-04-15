@@ -83,9 +83,12 @@
 - [x] 截帧间隔从 3s 改为 1s（`captureIntervalMsDefault=1000`）
 - [x] OpenClaw SKILL.md 已更新，端到端验证待 OpenClaw 下次加载
 
-### 3c. 替换 mock 数据（待完成）
+### 3c. 替换 mock 数据 ✅ 已完成（2026-04-15）
 
-- [ ] `/v1/screen/ios` 从真实帧元数据聚合替换 mock 数据
+- [x] `/v1/screen/ios` 从真实帧元数据聚合替换 mock 数据
+  - `window_sec` 可配置（默认 24h）
+  - 输出包含 `data_source`, `frame_count`, `unlock_count`，可区分 real vs fallback
+  - `/v1/screen/summary` 已切到 iOS 实时聚合结果（Mac 仍为 mock）
 
 ### 3d. Mac 屏幕监控（待完成）
 
@@ -105,6 +108,7 @@
   - 用户发消息时立即唤醒所有等待中的 poll 请求
   - timeout 内无消息返回 `timed_out: true`，OpenClaw 顺势做屏幕检查
 - [x] Live Activity push 自动镜像到 Chat（`source: "live_activity"`）
+- [x] Live Activity 去重抑制：同文案短时间重复发送会返回 `status: suppressed`（防刷屏）
 - [x] 聊天记录持久化到 `chat.json`，最多保留 500 条
 
 ### 4b. iOS Chat UI ✅
