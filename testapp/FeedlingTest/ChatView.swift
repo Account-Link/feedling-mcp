@@ -166,6 +166,7 @@ struct MessageBubble: View {
 
 struct TypingIndicator: View {
     @State private var phase: Int = 0
+    @State private var tickerTask: Task<Void, Never>?
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 0) {
@@ -183,12 +184,18 @@ struct TypingIndicator: View {
             Spacer(minLength: 56)
         }
         .onAppear {
-            withAnimation(.linear(duration: 0.5).repeatForever(autoreverses: false)) {
-                phase = (phase + 1) % 3
+            tickerTask?.cancel()
+            tickerTask = Task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    guard !Task.isCancelled else { break }
+                    phase = (phase + 1) % 3
+                }
             }
-            Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
-                phase = (phase + 1) % 3
-            }
+        }
+        .onDisappear {
+            tickerTask?.cancel()
+            tickerTask = nil
         }
     }
 }

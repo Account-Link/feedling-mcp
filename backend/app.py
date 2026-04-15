@@ -655,12 +655,22 @@ def chat_history():
       limit (int):   max messages to return (default 50, max 200)
       since (float): only return messages with ts > since (unix timestamp)
     """
-    limit = min(int(request.args.get("limit", 50)), 200)
-    since = float(request.args.get("since", 0))
+    try:
+        limit = int(request.args.get("limit", 50))
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid limit"}), 400
+    limit = max(1, min(limit, 200))
+
+    try:
+        since = float(request.args.get("since", 0))
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid since"}), 400
+
     with _chat_lock:
         msgs = [m for m in _chat_messages if m["ts"] > since]
+        total = len(_chat_messages)
     msgs = msgs[-limit:]
-    return jsonify({"messages": msgs, "total": len(_chat_messages)})
+    return jsonify({"messages": msgs, "total": total})
 
 
 @app.route("/v1/chat/message", methods=["POST"])
