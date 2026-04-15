@@ -20,7 +20,7 @@ feedling-mcp-v1/
 
 ---
 
-## Status (as of 2026-04-14)
+## Status (as of 2026-04-15)
 
 - [x] SKILL.md written and loaded into OpenClaw ✅
 - [x] Backend running on VPS (HTTP port 5001, WebSocket port 9998) ✅
@@ -29,13 +29,16 @@ feedling-mcp-v1/
 - [x] Real APNs push to Dynamic Island (JWT + `.p8` key) ✅
 - [x] OpenClaw self-drives full push chain: query token → Feedling API → APNs → Dynamic Island ✅
 - [x] Dynamic Island expanded view with OpenClaw message (up to 5 lines) ✅
-- [x] iOS Broadcast Extension captures screen every 3s → WebSocket → VPS storage ✅
+- [x] iOS Broadcast Extension captures screen every 1s → WebSocket → VPS storage ✅
 - [x] Vision OCR on captured frames — real app names visible in metadata ✅
 - [x] `/v1/screen/frames/latest` endpoint — OpenClaw can see what user is doing on phone ✅
 - [x] `/v1/screen/analyze` heartbeat endpoint — push cooldown, jitter-tolerant continuous time, OCR dedup ✅
 - [x] Push cooldown: thread-safe + persisted to `push_state.json` (survives restarts) ✅
-- [x] Capture interval: 1s per frame (down from 3s) ✅
-- [ ] OpenClaw heartbeat validated end-to-end (SKILL.md loaded, analyze → push confirmed)
+- [x] **Chat window in iOS app** — user ↔ OpenClaw real-time conversation ✅
+- [x] **Live Activity pushes mirror to Chat** — full conversation context in one place ✅
+- [x] **Long-poll endpoint** `/v1/chat/poll` — OpenClaw notified instantly when user sends message ✅
+- [x] **Tap Dynamic Island → opens Chat tab** directly ✅
+- [ ] OpenClaw long-poll loop validated end-to-end
 - [ ] Replace mock `/v1/screen/ios` with real frame aggregation
 - [ ] Mac screen monitoring data → real upload to backend
 
@@ -109,6 +112,10 @@ nohup ~/feedling/venv/bin/python ~/feedling/app.py > ~/feedling/server.log 2>&1 
 | GET | `/v1/screen/frames/latest` | Latest frame: base64 JPEG + OCR text + URLs |
 | GET | `/v1/screen/frames/<filename>` | Retrieve specific frame |
 | GET | `/v1/screen/analyze` | Heartbeat: current app, continuous time, OCR summary, should_notify (with cooldown) |
+| GET | `/v1/chat/history` | Fetch chat history (`limit`, `since` params) |
+| POST | `/v1/chat/message` | User sends a message (called by iOS app) |
+| POST | `/v1/chat/response` | OpenClaw posts a reply (optionally triggers Live Activity push) |
+| GET | `/v1/chat/poll` | Long-poll: blocks until user message arrives or timeout (`since`, `timeout` params) |
 
 ### WebSocket Ingest
 
@@ -149,8 +156,12 @@ testapp/
 ├── Shared/
 │   └── ScreenActivityAttributes.swift       ← ActivityKit data model
 ├── FeedlingTest/
-│   ├── FeedlingTestApp.swift                ← App entry + APNs registration
-│   ├── ContentView.swift                    ← Status UI + BroadcastPickerView
+│   ├── FeedlingTestApp.swift                ← App entry + APNs + URL scheme handler
+│   ├── ContentView.swift                    ← TabView root (Chat + Settings) + AppRouter
+│   ├── FeedlingAPI.swift                    ← Base URL config (env var or default)
+│   ├── ChatMessage.swift                    ← Chat message model (role/content/ts/source)
+│   ├── ChatViewModel.swift                  ← Chat state: polling, send, optimistic insert
+│   ├── ChatView.swift                       ← Chat UI: bubbles, typing indicator, input bar
 │   ├── LiveActivityManager.swift            ← Start/update/stop Live Activity
 │   └── FeedlingTest.entitlements            ← App Groups + APNs
 ├── FeedlingBroadcast/                       ← Broadcast Upload Extension
@@ -218,17 +229,24 @@ struct ScreenActivityAttributes: ActivityAttributes {
 ```
 iPhone (Broadcast Extension)
   ↓ WebSocket (port 9998)
-Feedling Backend (VPS)  ←── OpenClaw reads screen data via Skill
+Feedling Backend (VPS)  ←── OpenClaw long-polls /v1/chat/poll (real-time chat)
+  ↓                     ←── OpenClaw reads /v1/screen/analyze (every ~30s)
   ↓ APNs (JWT + .p8)
-Dynamic Island / Live Activity / Notifications
+Dynamic Island / Live Activity
   ↑
-OpenClaw calls /v1/push/live-activity with message
+OpenClaw: POST /v1/chat/response (chat reply, optionally also pushes to Dynamic Island)
+          POST /v1/push/live-activity (proactive push, auto-mirrored to Chat)
+
+iOS App (Chat Tab)
+  ↑ 2s polling /v1/chat/history
+  → tap Dynamic Island → opens Chat tab directly (feedlingtest:// URL scheme)
 ```
 
 - **Feedling** = data capture + delivery pipeline. No opinions, no persona.
 - **OpenClaw** = the brain. Decides what to say, when to push, what tone.
 - **Screen data flow**: phone records → WebSocket → VPS stores → OpenClaw reads via API
-- **Push flow**: OpenClaw decides → calls Feedling API → Feedling signs APNs JWT → Dynamic Island updates
+- **Chat flow**: user types → `POST /v1/chat/message` → wakes long-poll → OpenClaw responds → iOS polls → shows in Chat
+- **Proactive flow**: OpenClaw sees something → pushes Live Activity → auto-saved to Chat → user sees both on Dynamic Island and in Chat tab
 
 ---
 

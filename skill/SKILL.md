@@ -16,18 +16,43 @@ You are **not** Feedling. Feedling is just data + delivery. You decide what to d
 - `FEEDLING_API_URL` — Base URL of the Feedling backend (e.g. `http://localhost:5000`)
 - `FEEDLING_API_KEY` — API key for authentication (sent as `X-API-Key` header)
 
-## Heartbeat
+## Main Loop
 
-On every heartbeat tick, follow this sequence:
+Run this loop continuously. It handles both real-time chat and proactive screen-aware pushes in a single flow.
 
-**Step 0 — Check if the user sent you a message:**
+**Startup — get initial timestamp:**
 ```
-GET {FEEDLING_API_URL}/v1/chat/history?since=<timestamp of your last response>
+GET {FEEDLING_API_URL}/v1/chat/history?limit=1
 ```
-- If there are new messages with `role: "user"`, respond to them first via `POST /v1/chat/response`
-- Your response will appear in the user's Chat tab in real time
-- Set `push_live_activity: true` if the reply is important enough to surface on Dynamic Island
+Set `last_ts` = the `ts` of the last message (or 0 if empty). This prevents re-processing old messages.
+
+---
+
+**Step 0 — Long-poll for user messages:**
+```
+GET {FEEDLING_API_URL}/v1/chat/poll?since=<last_ts>&timeout=30
+```
+
+The server hangs until a user message arrives or 30 seconds elapse. Two outcomes:
+
+**A. `timed_out: false` — user sent a message:**
+- Read `messages` array (role: "user")
+- Respond via `POST /v1/chat/response` (see below)
+- Update `last_ts` to the latest message `ts`
+- Go back to Step 0 immediately
+
+**B. `timed_out: true` — no message in 30s:**
+- Proceed to Step 1 (screen check)
+- After Step 3, go back to Step 0
+
+This means: you respond to user messages within ~1 second, and check the screen every ~30s when idle.
+
+Chat response guidelines:
+- Reply via `POST /v1/chat/response`
+- Set `push_live_activity: true` only if the reply is important enough to surface on Dynamic Island
 - Memory and tone carry over — treat the chat as a continuous conversation, not isolated prompts
+
+---
 
 **Step 1 — Check what the user is doing right now:**
 ```
@@ -318,6 +343,32 @@ Content-Type: application/json
 **Response**
 ```json
 { "status": "delivered", "push_id": "pi_abc123" }
+```
+
+---
+
+### GET /v1/chat/poll
+
+Long-poll endpoint. Blocks until a user message arrives or timeout elapses. Use this as the main loop instead of polling `/v1/chat/history`.
+
+**Request**
+```
+GET {FEEDLING_API_URL}/v1/chat/poll?since=1744123456.0&timeout=30
+```
+
+| Param | Default | Max | Description |
+|-------|---------|-----|-------------|
+| since | 0 | — | Only return messages with ts > since |
+| timeout | 30 | 60 | Seconds to wait before giving up |
+
+**Response — message received**
+```json
+{ "messages": [{"id": "abc", "role": "user", "content": "你好", "ts": 1744123500.0, "source": "chat"}], "timed_out": false }
+```
+
+**Response — timeout (no user message)**
+```json
+{ "messages": [], "timed_out": true }
 ```
 
 ---

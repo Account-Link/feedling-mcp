@@ -166,6 +166,18 @@ MAX_CHAT_MESSAGES = 500
 _chat_messages: list[dict] = []
 _chat_lock = threading.Lock()
 
+# Long-poll waiters: list of threading.Event, one per waiting request
+_chat_waiters: list[threading.Event] = []
+_chat_waiters_lock = threading.Lock()
+
+
+def _notify_chat_waiters():
+    """Wake up all long-poll waiters when a new user message arrives."""
+    with _chat_waiters_lock:
+        for ev in _chat_waiters:
+            ev.set()
+        _chat_waiters.clear()
+
 
 def _load_chat():
     global _chat_messages
@@ -681,6 +693,7 @@ def chat_message():
     if not content:
         return jsonify({"error": "content required"}), 400
     msg = _append_chat("user", content, source="chat")
+    _notify_chat_waiters()
     print(f"[chat] user: {content[:80]}")
     return jsonify({"id": msg["id"], "ts": msg["ts"]})
 
@@ -710,6 +723,52 @@ def chat_response():
         push_live_activity_inner(push_payload)
 
     return jsonify({"id": msg["id"], "ts": msg["ts"]})
+
+
+@app.route("/v1/chat/poll", methods=["GET"])
+def chat_poll():
+    """
+    Long-poll endpoint for OpenClaw. Hangs until a new user message arrives or timeout.
+
+    Query params:
+      since   (float): only return messages with ts > since (default 0)
+      timeout (float): max seconds to wait (default 30, max 60)
+
+    Response:
+      { "messages": [...], "timed_out": false }  — new user message(s) arrived
+      { "messages": [],    "timed_out": true  }  — no message within timeout; do screen check
+    """
+    try:
+        since = float(request.args.get("since", 0))
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid since"}), 400
+    timeout = min(float(request.args.get("timeout", 30)), 60)
+
+    # Check for already-pending user messages before blocking
+    with _chat_lock:
+        pending = [m for m in _chat_messages if m["ts"] > since and m["role"] == "user"]
+    if pending:
+        return jsonify({"messages": pending, "timed_out": False})
+
+    # Register a waiter and block
+    ev = threading.Event()
+    with _chat_waiters_lock:
+        _chat_waiters.append(ev)
+
+    notified = ev.wait(timeout=timeout)
+
+    with _chat_waiters_lock:
+        try:
+            _chat_waiters.remove(ev)
+        except ValueError:
+            pass
+
+    if notified:
+        with _chat_lock:
+            pending = [m for m in _chat_messages if m["ts"] > since and m["role"] == "user"]
+        return jsonify({"messages": pending, "timed_out": False})
+    else:
+        return jsonify({"messages": [], "timed_out": True})
 
 
 if __name__ == "__main__":

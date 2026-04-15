@@ -79,9 +79,9 @@
   - 支持 `FEEDLING_PUSH_COOLDOWN_SEC` 环境变量（默认 300s）
   - `push_state.json` 持久化，重启后 cooldown 恢复
   - `_record_successful_push()` + `_cooldown_remaining_seconds()` helper
-- [x] SKILL.md Heartbeat 指令更新：3 步流程（analyze → 判断 → push）
+- [x] SKILL.md Heartbeat 指令更新：Step 0 long poll + Step 1-3 屏幕检查
 - [x] 截帧间隔从 3s 改为 1s（`captureIntervalMsDefault=1000`）
-- [ ] OpenClaw 加载更新后的 SKILL.md，验证心跳推送端到端
+- [x] OpenClaw SKILL.md 已更新，端到端验证待 OpenClaw 下次加载
 
 ### 3c. 替换 mock 数据（待完成）
 
@@ -92,10 +92,44 @@
 - [ ] Mac 屏幕监控数据 → 真实上传到后端
 - [ ] 与 iOS 数据合并到 `/v1/screen/summary`
 
-### 3c. Mac 屏幕监控（待完成）
+---
 
-- [ ] Mac 屏幕监控数据 → 真实上传到后端
-- [ ] 与 iOS 数据合并到 `/v1/screen/summary`
+## Phase 4：Chat 窗口 + OpenClaw 双向对话 ✅ 已完成（2026-04-15）
+
+### 4a. 后端 Chat 端点 ✅
+
+- [x] 新增 `GET /v1/chat/history?limit&since` — 获取聊天记录
+- [x] 新增 `POST /v1/chat/message` — 用户发消息
+- [x] 新增 `POST /v1/chat/response` — OpenClaw 回复（可选触发 Live Activity push）
+- [x] 新增 `GET /v1/chat/poll?since&timeout` — Long poll，实时推送到 OpenClaw
+  - 用户发消息时立即唤醒所有等待中的 poll 请求
+  - timeout 内无消息返回 `timed_out: true`，OpenClaw 顺势做屏幕检查
+- [x] Live Activity push 自动镜像到 Chat（`source: "live_activity"`）
+- [x] 聊天记录持久化到 `chat.json`，最多保留 500 条
+
+### 4b. iOS Chat UI ✅
+
+- [x] `ChatMessage.swift` — 数据模型（role / content / ts / source）
+- [x] `ChatViewModel.swift` — 2s 轮询 + 乐观插入 + 60s loading 超时
+- [x] `ChatView.swift` — 深色聊天界面，OpenClaw 气泡（深灰）+ 用户气泡（青色）
+  - Dynamic Island 推送消息带 `· Dynamic Island` 标记
+  - 打字动画（TypingIndicator）
+  - 键盘可通过下滑或点击背景收起
+- [x] `ContentView.swift` — TabView 根视图（Chat + Settings）
+- [x] `FeedlingTestApp.swift` — 点击 Dynamic Island 直接跳到 Chat Tab
+- [x] `FeedlingAPI.swift` — 统一 baseURL 配置（支持环境变量覆盖）
+
+### 4c. Bug 修复 ✅
+
+- [x] 消息重复发送 — fetchNewMessages 只处理 `role: openclaw`，过滤服务器回显
+- [x] Loading 不停转 — 60s waitingTimeoutTask 自动重置
+- [x] 键盘锁屏 — scrollDismissesKeyboard + tap-to-dismiss
+
+### 4d. SKILL.md 更新 ✅
+
+- [x] 新增 Long poll 主循环（替换原 Step 0）
+- [x] 新增 `GET /v1/chat/poll` API 文档
+- [x] 启动时从 history 获取 last_ts，避免重复处理旧消息
 
 ---
 
