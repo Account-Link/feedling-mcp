@@ -32,6 +32,11 @@ The response tells you:
 - `ocr_summary` — sampled text from the last few frames (what they're actually reading/watching)
 - `should_notify` — `false` if a push was sent in the last 5 minutes (cooldown enforced by backend)
 
+Default interpretation policy (must follow):
+- OCR is only a low-cost filter/router to decide whether a frame is worth deeper analysis.
+- For frames that pass the filter, read the raw screenshot image and use vision semantics as the primary signal.
+- Live Activity content should be generated from image semantics first; OCR text is secondary evidence only.
+
 **Step 2 — Decide whether to push:**
 
 Skip if:
