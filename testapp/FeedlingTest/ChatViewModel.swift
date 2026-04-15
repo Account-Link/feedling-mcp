@@ -10,6 +10,7 @@ class ChatViewModel: ObservableObject {
     @Published var isWaitingForReply: Bool = false
 
     private var pollingTask: Task<Void, Never>?
+    private var waitingTimeoutTask: Task<Void, Never>?
     private var latestTs: Double = 0
 
     // MARK: - Lifecycle
@@ -49,17 +50,17 @@ class ChatViewModel: ObservableObject {
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
             let resp = try JSONDecoder().decode(ChatHistoryResponse.self, from: data)
-            let newMsgs = resp.messages.filter { $0.ts > latestTs }
-            guard !newMsgs.isEmpty else { return }
-            // Remove optimistic duplicates (same content sent by user moments ago)
+            // Only process OpenClaw messages via polling.
+            // User messages are inserted optimistically — ignoring server echoes prevents duplicates.
+            let newFromOpenClaw = resp.messages.filter { $0.ts > latestTs && $0.isFromOpenClaw }
+            guard !newFromOpenClaw.isEmpty else { return }
             let existingIds = Set(messages.map { $0.id })
-            let toAppend = newMsgs.filter { !existingIds.contains($0.id) }
+            let toAppend = newFromOpenClaw.filter { !existingIds.contains($0.id) }
             if !toAppend.isEmpty {
                 messages.append(contentsOf: toAppend)
-                latestTs = newMsgs.last!.ts
-            }
-            if newMsgs.contains(where: { $0.isFromOpenClaw }) {
+                latestTs = newFromOpenClaw.last!.ts
                 isWaitingForReply = false
+                waitingTimeoutTask?.cancel()
             }
         } catch {
             print("[chat] fetchNew error: \(error)")
@@ -86,6 +87,13 @@ class ChatViewModel: ObservableObject {
         messages.append(optimistic)
         latestTs = optimistic.ts
         isWaitingForReply = true
+
+        // Auto-cancel the loading indicator after 60s if no reply arrives
+        waitingTimeoutTask?.cancel()
+        waitingTimeoutTask = Task {
+            try? await Task.sleep(nanoseconds: 60_000_000_000)
+            if !Task.isCancelled { isWaitingForReply = false }
+        }
 
         guard let url = URL(string: "\(FeedlingAPI.baseURL)/v1/chat/message") else {
             isSending = false; return

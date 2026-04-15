@@ -41,6 +41,8 @@ struct ChatView: View {
                 .padding(.bottom, 8)
             }
             .background(Color.black)
+            .scrollDismissesKeyboard(.interactively)
+            .onTapGesture { dismissKeyboard() }
             .onChange(of: vm.messages.count) { _ in
                 scrollToBottom(proxy)
             }
@@ -84,6 +86,13 @@ struct ChatView: View {
         .padding(.top, 8)
         .padding(.bottom, 20)
         .background(Color(white: 0.07))
+    }
+
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil, from: nil, for: nil
+        )
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
