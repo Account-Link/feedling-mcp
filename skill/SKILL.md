@@ -52,17 +52,30 @@ Push if there's a genuine observation worth making:
 
 **Step 3 — Craft and send the push:**
 
-Keep it short (1–2 sentences). Be specific — use what you saw in `current_app` and `ocr_summary`. Don't be preachy. You're noticing, not judging.
+Keep it short (1–2 sentences). Be specific. Don't be preachy.
+
+Message quality policy (for reuse across users):
+- Do not just describe what is visible (robotic "I see X"). Add a lightweight interpretation.
+- Structure: observation -> judgment/hypothesis -> actionable nudge.
+- Use image semantics as primary evidence; OCR is secondary support.
+- Prefer concrete and emotionally legible wording over generic status text.
+- Keep tone companion-like: clear, vivid, slightly opinionated, not moralizing.
+- Privacy boundary: never include personally identifying/private details from raw frames in push text (account IDs, phone numbers, exact addresses, payment/order numbers, OTP-like codes).
+
+Good pattern examples:
+- "你不是在省钱，是在被‘每件都不贵’慢慢抬高总价。今天先锁 1 件，其它 24 小时后再看。"
+- "你现在像在信息流里找灵感，不像在下单。先收藏 3 个最像你的，再决定要不要买。"
+- "看起来节奏开始散了：再刷 10 分钟会更空。现在切回你原来那件事，晚上再逛。"
+
+Avoid patterns:
+- Pure restatement: "我看到你在淘宝" / "你在刷短视频"
+- Empty generic advice: "注意休息" / "少玩手机"
+- Overly deterministic claims without signal support
 
 ```
 GET {FEEDLING_API_URL}/v1/push/tokens        ← get current activity_id
 POST {FEEDLING_API_URL}/v1/push/live-activity ← send message
 ```
-
-Example messages:
-- "40 分钟 TikTok 了。要继续还是收一收？"
-- "在刷 Instagram，今天已经第 3 次了。"
-- "看起来在用 Figma，继续搞设计吗？"
 
 ---
 
