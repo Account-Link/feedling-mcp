@@ -19,7 +19,7 @@ from flask import Flask, jsonify, request, send_file
 # Directories
 # ---------------------------------------------------------------------------
 
-FEEDLING_DIR = Path.home() / "feedling"
+FEEDLING_DIR = Path(os.environ.get("FEEDLING_DATA_DIR", str(Path.home() / "feedling-data"))).expanduser()
 FEEDLING_DIR.mkdir(parents=True, exist_ok=True)
 
 FRAMES_DIR = FEEDLING_DIR / "frames"
@@ -225,7 +225,90 @@ def _save_tokens():
         print(f"[tokens] failed to save: {e}")
 
 
+def _normalize_token_entry(entry: dict) -> dict:
+    """Backfill lifecycle fields for legacy token rows."""
+    normalized = dict(entry)
+    normalized.setdefault("status", "active")
+    normalized.setdefault("last_error", "")
+    normalized.setdefault("last_success_at", "")
+    normalized.setdefault("updated_at", normalized.get("registered_at", datetime.now().isoformat()))
+    return normalized
+
+
+def _is_live_activity_token(entry: dict) -> bool:
+    return entry.get("type") in ("live-activity", "live_activity")
+
+
+def _is_push_to_start_token(entry: dict) -> bool:
+    return entry.get("type") == "push_to_start"
+
+
+def _entry_is_active(entry: dict) -> bool:
+    return (entry.get("status") or "active") == "active"
+
+
+def _select_token(predicate, activity_id: str | None = None, active_only: bool = True):
+    candidates = []
+    for raw in REGISTERED_TOKENS:
+        entry = _normalize_token_entry(raw)
+        if not predicate(entry):
+            continue
+        if activity_id and entry.get("activity_id") != activity_id:
+            continue
+        if active_only and not _entry_is_active(entry):
+            continue
+        if not entry.get("token"):
+            continue
+        candidates.append(entry)
+
+    if not candidates:
+        return None
+
+    # Newest token wins.
+    candidates.sort(key=lambda x: x.get("registered_at", ""), reverse=True)
+    return candidates[0]
+
+
+def _update_token_lifecycle(entry: dict, *, status: str | None = None, last_error: str | None = None, success: bool = False):
+    token = entry.get("token")
+    token_type = entry.get("type")
+    activity_id = entry.get("activity_id")
+    now_iso = datetime.now().isoformat()
+
+    changed = False
+    for idx, raw in enumerate(REGISTERED_TOKENS):
+        cur = _normalize_token_entry(raw)
+        if cur.get("token") != token or cur.get("type") != token_type or cur.get("activity_id") != activity_id:
+            continue
+        if status is not None:
+            cur["status"] = status
+        if last_error is not None:
+            cur["last_error"] = last_error
+        if success:
+            cur["last_success_at"] = now_iso
+            cur["status"] = "active"
+            cur["last_error"] = ""
+        cur["updated_at"] = now_iso
+        REGISTERED_TOKENS[idx] = cur
+        changed = True
+        break
+
+    if changed:
+        _save_tokens()
+
+
+def _mark_expired_token(entry: dict, reason: str):
+    _update_token_lifecycle(entry, status="expired", last_error=reason)
+
+
+def _mark_active_token_success(entry: dict):
+    _update_token_lifecycle(entry, success=True)
+
+
 _load_tokens()
+# Backfill lifecycle fields for tokens persisted before lifecycle metadata existed.
+REGISTERED_TOKENS[:] = [_normalize_token_entry(t) for t in REGISTERED_TOKENS]
+_save_tokens()
 
 # ---------------------------------------------------------------------------
 # Chat history (persistent)
@@ -642,15 +725,19 @@ def push_live_activity():
 
 def push_live_activity_inner(payload: dict):
     activity_id = payload.get("activity_id")
-    entry = next(
-        (t for t in REGISTERED_TOKENS
-         if t["type"] in ("live-activity", "live_activity")
-         and (not activity_id or t.get("activity_id") == activity_id)),
-        None,
-    )
+    entry = _select_token(_is_live_activity_token, activity_id=activity_id, active_only=True)
+    if not entry and activity_id:
+        # Caller may pass a stale activity_id; try newest active token as fallback.
+        entry = _select_token(_is_live_activity_token, activity_id=None, active_only=True)
+
     if not entry:
-        print(f"[live-activity] no token registered — logged: {payload}")
-        return jsonify({"status": "logged", "activity_id": activity_id or f"la_{uuid.uuid4().hex[:8]}"})
+        print(f"[live-activity] no active token registered — logged: {payload}")
+        return jsonify({
+            "status": "logged",
+            "activity_id": activity_id or f"la_{uuid.uuid4().hex[:8]}",
+            "needs_refresh": True,
+            "reason": "no_active_live_activity_token",
+        })
 
     message = (payload.get("message") or "").strip()
     top_app = payload.get("topApp", "")
@@ -658,7 +745,7 @@ def push_live_activity_inner(payload: dict):
     suppress, reason = _should_suppress_live_activity(message=message, top_app=top_app)
     if suppress:
         print(f"[live-activity] suppressed: {reason} message={message[:60]}")
-        return jsonify({"status": "suppressed", "reason": reason, "activity_id": activity_id})
+        return jsonify({"status": "suppressed", "reason": reason, "activity_id": entry.get("activity_id")})
 
     apns_payload = {
         "aps": {
@@ -675,14 +762,80 @@ def push_live_activity_inner(payload: dict):
     }
     topic = f"{BUNDLE_ID}.push-type.liveactivity"
     result = _send_apns(entry["token"], apns_payload, push_type="liveactivity", topic=topic)
-    if result.get("status") == "delivered":
+
+    delivered = result.get("status") == "delivered"
+    if delivered:
+        _mark_active_token_success(entry)
         _record_successful_push()
         _record_live_activity_sent(message=message, top_app=top_app)
         # Mirror to chat so user sees context when opening the app
         if message:
             _append_chat("openclaw", message, source="live_activity")
+    else:
+        reason = str(result.get("reason", ""))
+        error_code = result.get("code")
+        if error_code == 410 and ("ExpiredToken" in reason or "Unregistered" in reason):
+            _mark_expired_token(entry, reason)
+            print(f"[live-activity] token expired, marked inactive: activity_id={entry.get('activity_id')}")
+
     print(f"[live-activity] {result}")
-    return jsonify({"status": result["status"], "activity_id": activity_id})
+    response = {
+        "status": result.get("status", "error"),
+        "activity_id": entry.get("activity_id") or activity_id,
+    }
+    if result.get("code") is not None:
+        response["error_code"] = result.get("code")
+    if result.get("reason"):
+        response["reason"] = result.get("reason")
+    if result.get("code") == 410:
+        response["needs_refresh"] = True
+    return jsonify(response)
+
+
+@app.route("/v1/push/live-start", methods=["POST"])
+def push_live_start():
+    """
+    Send a push-to-start event so iOS can (re)start Live Activity and upload a fresh live_activity token.
+    """
+    payload = request.get_json(silent=True) or {}
+    entry = _select_token(_is_push_to_start_token, active_only=True)
+    if not entry:
+        print(f"[live-start] no push_to_start token — logged: {payload}")
+        return jsonify({"status": "logged", "reason": "no_active_push_to_start_token"})
+
+    message = (payload.get("message") or "").strip()
+    top_app = payload.get("topApp", "")
+    apns_payload = {
+        "aps": {
+            "timestamp": int(time.time()),
+            "event": "start",
+            "content-state": {
+                "topApp": top_app,
+                "screenTimeMinutes": payload.get("screenTimeMinutes", 0),
+                "message": message,
+                "updatedAt": time.time(),
+            },
+            "alert": {"title": "", "body": ""},
+        }
+    }
+
+    topic = f"{BUNDLE_ID}.push-type.liveactivity"
+    result = _send_apns(entry["token"], apns_payload, push_type="liveactivity", topic=topic)
+    if result.get("status") == "delivered":
+        _mark_active_token_success(entry)
+    else:
+        reason = str(result.get("reason", ""))
+        error_code = result.get("code")
+        if error_code == 410 and ("ExpiredToken" in reason or "Unregistered" in reason):
+            _mark_expired_token(entry, reason)
+
+    print(f"[live-start] {result}")
+    response = {"status": result.get("status", "error")}
+    if result.get("code") is not None:
+        response["error_code"] = result.get("code")
+    if result.get("reason"):
+        response["reason"] = result.get("reason")
+    return jsonify(response)
 
 
 @app.route("/v1/push/notification", methods=["POST"])
@@ -711,15 +864,30 @@ def register_token():
     token = payload.get("token", "")
     activity_id = payload.get("activity_id")
 
-    entry = {"type": token_type, "token": token, "registered_at": datetime.now().isoformat()}
+    now_iso = datetime.now().isoformat()
+    entry = {
+        "type": token_type,
+        "token": token,
+        "registered_at": now_iso,
+        "status": "active",
+        "last_error": "",
+        "last_success_at": "",
+        "updated_at": now_iso,
+    }
     if activity_id:
         entry["activity_id"] = activity_id
 
-    # Keep latest per type (replace existing entry of same type/activity_id)
+    # Keep latest per type/activity_id or same exact token.
     REGISTERED_TOKENS[:] = [
-        t for t in REGISTERED_TOKENS
-        if not (t.get("type") == token_type and
-                (not activity_id or t.get("activity_id") == activity_id))
+        _normalize_token_entry(t)
+        for t in REGISTERED_TOKENS
+        if not (
+            t.get("token") == token
+            or (
+                t.get("type") == token_type
+                and (not activity_id or t.get("activity_id") == activity_id)
+            )
+        )
     ]
     REGISTERED_TOKENS.append(entry)
     _save_tokens()
@@ -730,7 +898,11 @@ def register_token():
 
 @app.route("/v1/push/tokens", methods=["GET"])
 def list_tokens():
-    return jsonify({"tokens": REGISTERED_TOKENS})
+    active_only = request.args.get("active_only", "false").lower() == "true"
+    tokens = [_normalize_token_entry(t) for t in REGISTERED_TOKENS]
+    if active_only:
+        tokens = [t for t in tokens if _entry_is_active(t)]
+    return jsonify({"tokens": tokens})
 
 
 @app.route("/v1/screen/frames", methods=["GET"])
@@ -877,7 +1049,9 @@ def chat_history():
       since (float): only return messages with ts > since (unix timestamp)
     """
     try:
-        limit = int(request.args.get("limit", 50))
+        # Default to a larger window so iOS clients calling /v1/chat/history?since=0
+        # can recover full recent history after reconnect/restart.
+        limit = int(request.args.get("limit", 200))
     except (TypeError, ValueError):
         return jsonify({"error": "invalid limit"}), 400
     limit = max(1, min(limit, 200))
@@ -891,7 +1065,24 @@ def chat_history():
         msgs = [m for m in _chat_messages if m["ts"] > since]
         total = len(_chat_messages)
     msgs = msgs[-limit:]
-    return jsonify({"messages": msgs, "total": total})
+
+    # Add compatibility aliases for mixed iOS client builds.
+    out = []
+    for m in msgs:
+        item = dict(m)
+        role = item.get("role")
+        if role == "openclaw":
+            item["sender"] = "assistant"   # legacy alias
+            item["is_from_openclaw"] = True
+        elif role == "user":
+            item["sender"] = "user"
+            item["is_from_openclaw"] = False
+        out.append(item)
+
+    ua = request.headers.get("User-Agent", "")
+    print(f"[chat/history] ip={request.remote_addr} since={since} limit={limit} returned={len(out)} total={total} ua={ua[:120]}")
+
+    return jsonify({"messages": out, "total": total})
 
 
 @app.route("/v1/chat/message", methods=["POST"])

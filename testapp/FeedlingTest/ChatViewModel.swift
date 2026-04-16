@@ -52,7 +52,9 @@ class ChatViewModel: ObservableObject {
             let resp = try JSONDecoder().decode(ChatHistoryResponse.self, from: data)
             // Only process OpenClaw messages via polling.
             // User messages are inserted optimistically — ignoring server echoes prevents duplicates.
-            let newFromOpenClaw = resp.messages.filter { $0.ts > latestTs && $0.isFromOpenClaw }
+            let newFromOpenClaw = resp.messages.filter { m in
+                m.ts > latestTs && (m.role == "openclaw" || m.role == "assistant")
+            }
             guard !newFromOpenClaw.isEmpty else { return }
             let existingIds = Set(messages.map { $0.id })
             let toAppend = newFromOpenClaw.filter { !existingIds.contains($0.id) }

@@ -7,7 +7,7 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     let ts: Double
     let source: String?    // "live_activity" | "chat" | "heartbeat"
 
-    var isFromOpenClaw: Bool { role == "openclaw" }
+    var isFromOpenClaw: Bool { role == "openclaw" || role == "assistant" }
     var isFromLiveActivity: Bool { source == "live_activity" }
     var date: Date { Date(timeIntervalSince1970: ts) }
 }
