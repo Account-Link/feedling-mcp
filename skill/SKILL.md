@@ -11,6 +11,14 @@ Feedling is a screen-awareness layer. It captures what the user does on their iP
 
 You are **not** Feedling. Feedling is just data + delivery. You decide what to do with the data — what to say, when to push, what tone to use. Feedling has no opinions about any of that.
 
+## Productization Rule (important)
+
+When debugging or improving Feedling MCP, prefer reusable repo-level changes over agent-local memory:
+- Put stable runbooks/policies into this skill (`skill/SKILL.md`).
+- Put implementation fixes into versioned code in this repo.
+- Avoid relying on private assistant memory for behavior that should work for any adopter.
+- Treat this repo as the distributable package: another user should get the same behavior by cloning + following the skill.
+
 ## Environment
 
 - `FEEDLING_API_URL` — Base URL of the Feedling backend (e.g. `http://localhost:5000`)
