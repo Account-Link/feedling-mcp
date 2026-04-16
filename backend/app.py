@@ -199,6 +199,78 @@ def _record_live_activity_sent(message: str, top_app: str):
 _load_live_activity_state()
 
 # ---------------------------------------------------------------------------
+# Semantic-first trigger helpers
+# ---------------------------------------------------------------------------
+
+
+def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
+    t = (text or "").lower()
+    return any(k in t for k in keywords)
+
+
+def _semantic_analysis(current_app: str, ocr_summary: str) -> dict:
+    """
+    Semantic-first screen interpretation.
+    Behavior metrics (dwell/switch) are secondary confidence signals only.
+    """
+    app = (current_app or "unknown").lower()
+    text = (ocr_summary or "").lower()
+
+    ecom_apps = ("taobao", "tmall", "jd", "pinduoduo", "xhs", "red", "amazon", "shop")
+    compare_words = (
+        "加入购物车", "购物车", "比价", "对比", "参数", "评价", "评论", "销量", "券", "优惠", "选哪个", "纠结", "尺码", "颜色",
+        "cart", "review", "compare", "coupon", "which one", "size", "color",
+    )
+    chat_apps = ("wechat", "telegram", "whatsapp", "messenger", "imessage", "discord", "slack")
+    chat_words = (
+        "输入", "正在输入", "撤回", "删了", "草稿", "怎么回", "回什么", "算了", "生气", "误会", "抱歉", "对不起", "别这样", "随便",
+        "typing", "draft", "unsent", "sorry", "angry", "misunderstand",
+    )
+
+    if (_contains_any(app, ecom_apps) or _contains_any(text, ecom_apps)) and _contains_any(text, compare_words):
+        return {
+            "semantic_scene": "ecommerce_choice_paralysis",
+            "task_intent": "compare_then_decide",
+            "friction_point": "choice_overload",
+            "semantic_strength": "strong",
+            "confidence": 0.86,
+            "suggested_openers": [
+                "你像在 A/B 里卡住了：你更在意省钱，还是少踩雷？",
+                "先别全看，我帮你偷懒：差评关键词 + 近30天销量 + 退货评价，三项就够定。",
+                "给你一个止损线：再看 5 分钟就选一个，剩下放收藏。",
+            ],
+        }
+
+    if (_contains_any(app, chat_apps) or _contains_any(text, chat_apps)) and _contains_any(text, chat_words):
+        return {
+            "semantic_scene": "social_chat_hesitation",
+            "task_intent": "draft_or_repair_message",
+            "friction_point": "hesitation_or_conflict",
+            "semantic_strength": "strong",
+            "confidence": 0.83,
+            "suggested_openers": [
+                "这句你更想保住关系，还是讲清立场？我给你两版一句话。",
+                "你像在反复删改。先发降温版一句话，别让情绪抬高。",
+                "要硬一点还是软一点？我各给一版，10 秒选。",
+            ],
+        }
+
+    # Ambiguous context: still allow gentle, curiosity-first conversation starts.
+    return {
+        "semantic_scene": "ambiguous_context",
+        "task_intent": "unknown",
+        "friction_point": "unclear_state",
+        "semantic_strength": "weak",
+        "confidence": 0.38,
+        "suggested_openers": [
+            "我可能看错了，这会儿你是在想事，还是在躲这件事？",
+            "我没完全读懂这屏，但感觉你有点绷着。要我陪你理一下吗？",
+            "你现在更需要：被提醒一下，还是被安静陪着？",
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Push token persistence
 # ---------------------------------------------------------------------------
 
@@ -1014,18 +1086,39 @@ def analyze_screen():
                 break
     ocr_summary = " | ".join(reversed(ocr_parts))[:500]
 
-    # Determine should_notify and reason
+    # Semantic-first trigger decision (behavior metrics are secondary)
     cooldown_remaining = _cooldown_remaining_seconds()
+    semantic = _semantic_analysis(current_app=current_app, ocr_summary=ocr_summary)
+    semantic_strength = semantic.get("semantic_strength", "weak")
+
+    # Allow curiosity-first openers in ambiguous contexts if we have enough on-screen text.
+    exploratory_allowed = (
+        semantic_strength == "weak"
+        and len(ocr_summary) >= 20
+        and continuous_minutes >= 1.0
+    )
 
     if cooldown_remaining > 0:
         should_notify = False
+        trigger_basis = "cooldown"
         reason = f"cooldown: {round(cooldown_remaining)}s remaining"
-    elif continuous_minutes < min_continuous_min:
-        should_notify = False
-        reason = f"continuous_minutes {continuous_minutes} < min_continuous_min {min_continuous_min}"
-    else:
+    elif semantic_strength == "strong":
         should_notify = True
-        reason = "ok"
+        trigger_basis = "semantic_strong"
+        reason = f"semantic:{semantic.get('semantic_scene', 'unknown')}"
+    elif exploratory_allowed:
+        should_notify = True
+        trigger_basis = "curiosity_exploratory"
+        reason = "ambiguous_context_but_conversation_worth_starting"
+    elif continuous_minutes >= min_continuous_min:
+        # Legacy fallback for compatibility with existing callers.
+        should_notify = True
+        trigger_basis = "legacy_time_fallback"
+        reason = f"continuous_minutes {continuous_minutes} >= min_continuous_min {min_continuous_min}"
+    else:
+        should_notify = False
+        trigger_basis = "insufficient_signal"
+        reason = "no_semantic_trigger_and_not_enough_context"
 
     return jsonify({
         "active": True,
@@ -1035,6 +1128,13 @@ def analyze_screen():
         "should_notify": should_notify,
         "cooldown_remaining_seconds": round(cooldown_remaining),
         "reason": reason,
+        "trigger_policy": "semantic_first",
+        "trigger_basis": trigger_basis,
+        "semantic_scene": semantic.get("semantic_scene"),
+        "task_intent": semantic.get("task_intent"),
+        "friction_point": semantic.get("friction_point"),
+        "semantic_confidence": semantic.get("confidence", 0.0),
+        "suggested_openers": semantic.get("suggested_openers", [])[:2],
         "latest_ts": latest["ts"],
         "frame_count_in_window": len(recent),
     })

@@ -79,18 +79,23 @@ Default interpretation policy (must follow):
 - For frames that pass the filter, read the raw screenshot image and use vision semantics as the primary signal.
 - Live Activity content should be generated from image semantics first; OCR text is secondary evidence only.
 
-**Step 2 — Decide whether to push:**
+**Step 2 — Decide whether to push (semantic-first):**
 
 Skip if:
 - `active` is false (phone not in use)
-- `should_notify` is false (still in cooldown)
-- The situation isn't interesting — brief sessions, routine stuff, already addressed recently
+- `should_notify` is false (cooldown or insufficient signal)
 
-Push if there's a genuine observation worth making:
-- Been on an entertainment app (TikTok, Instagram, YouTube, 小红书) for 15+ minutes
-- Noticeable context switch (work → social, or phone picked up during what looked like a focus session)
-- Something in `ocr_summary` is surprising or worth a comment
-- Long total phone session today
+Prioritize content semantics over telemetry:
+- First read `semantic_scene` / `task_intent` / `friction_point` from `/v1/screen/analyze`
+- Use `continuous_minutes` as secondary confidence only, not primary trigger
+
+High-priority semantic triggers:
+- `ecommerce_choice_paralysis` → user likely stuck in compare/choice overload
+- `social_chat_hesitation` → user likely stuck drafting/replying in social chat
+
+Ambiguous context is still actionable:
+- If `trigger_basis` is `curiosity_exploratory`, you can still start a gentle conversation
+- Goal is connection + understanding (one light question), not instruction dumping
 
 **Step 3 — Craft and send the push:**
 

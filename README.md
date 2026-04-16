@@ -111,7 +111,7 @@ nohup ~/feedling/venv/bin/python ~/feedling/app.py > ~/feedling/server.log 2>&1 
 | GET | `/v1/screen/frames` | List captured screen frames with OCR metadata |
 | GET | `/v1/screen/frames/latest` | Latest frame: base64 JPEG + OCR text + URLs |
 | GET | `/v1/screen/frames/<filename>` | Retrieve specific frame |
-| GET | `/v1/screen/analyze` | Heartbeat: current app, continuous time, OCR summary, should_notify (with cooldown) |
+| GET | `/v1/screen/analyze` | Heartbeat: semantic-first trigger signals (`semantic_scene/task_intent/friction_point`), suggested openers, and `should_notify` (with cooldown) |
 | GET | `/v1/chat/history` | Fetch chat history (`limit`, `since` params) |
 | POST | `/v1/chat/message` | User sends a message (called by iOS app) |
 | POST | `/v1/chat/response` | OpenClaw posts a reply (optionally triggers Live Activity push) |
