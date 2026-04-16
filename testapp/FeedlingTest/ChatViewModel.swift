@@ -34,12 +34,16 @@ class ChatViewModel: ObservableObject {
     // MARK: - Fetch
 
     func loadHistory() async {
-        guard let url = URL(string: "\(FeedlingAPI.baseURL)/v1/chat/history?limit=50") else { return }
+        // Pull a larger initial window so user messages are not drowned by
+        // assistant-only bursts (e.g. replayed auto-replies).
+        guard let url = URL(string: "\(FeedlingAPI.baseURL)/v1/chat/history?since=0&limit=200") else { return }
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
             let resp = try JSONDecoder().decode(ChatHistoryResponse.self, from: data)
             messages = resp.messages
             latestTs = messages.last?.ts ?? 0
+            let roleCounts = Dictionary(grouping: messages, by: { $0.role }).mapValues { $0.count }
+            print("[chat] loadHistory count=\(messages.count) roles=\(roleCounts)")
         } catch {
             print("[chat] loadHistory error: \(error)")
         }
