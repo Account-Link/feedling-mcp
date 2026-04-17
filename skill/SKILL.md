@@ -76,8 +76,9 @@ The response tells you:
 
 Default interpretation policy (must follow):
 - OCR is only a low-cost filter/router to decide whether a frame is worth deeper analysis.
-- For frames that pass the filter, read the raw screenshot image and use vision semantics as the primary signal.
+- For frames that pass the filter, MUST read the raw screenshot image and use vision semantics as the primary signal.
 - Live Activity content should be generated from image semantics first; OCR text is secondary evidence only.
+- If vision is temporarily unavailable (credential/runtime limitation), explicitly mark the run as degraded mode and avoid confident task claims.
 
 **Step 2 — Decide whether to push (semantic-first):**
 
@@ -105,8 +106,10 @@ Message quality policy (for reuse across users):
 - Do not just describe what is visible (robotic "I see X"). Add a lightweight interpretation.
 - Structure: observation -> judgment/hypothesis -> actionable nudge.
 - Use image semantics as primary evidence; OCR is secondary support.
+- Before drafting, read user profile/care context (who this user is, what they are building, what tone they prefer). Then blend: profile context + current screen semantics.
 - Prefer concrete and emotionally legible wording over generic status text.
 - Keep tone companion-like: clear, vivid, slightly opinionated, not moralizing.
+- If a candidate message could apply to anyone, rewrite it until it sounds specific to this user.
 - Privacy boundary: never include personally identifying/private details from raw frames in push text (account IDs, phone numbers, exact addresses, payment/order numbers, OTP-like codes).
 
 Good pattern examples:
@@ -448,21 +451,30 @@ Heartbeat endpoint. Returns what the user is doing right now and whether it's ti
 
 **Request**
 ```
-GET {FEEDLING_API_URL}/v1/screen/analyze?window=300
+GET {FEEDLING_API_URL}/v1/screen/analyze?window_sec=300&min_continuous_min=3
 ```
 
 **Response (active)**
 ```json
 {
   "active": true,
-  "current_app": "com.zhiliaoapp.musically",
+  "current_app": "TikTok",
   "continuous_minutes": 23.4,
-  "frames_in_window": 46,
-  "latest_ts": 1744123456.789,
   "ocr_summary": "For You\nTikTok video caption... | Comments...",
-  "secs_since_last_push": 412,
-  "push_cooldown_secs": 300,
-  "should_notify": true
+  "should_notify": true,
+  "cooldown_remaining_seconds": 0,
+  "reason": "semantic:content_consumption",
+  "trigger_policy": "semantic_first",
+  "trigger_basis": "semantic_strong",
+  "semantic_scene": "content_consumption",
+  "task_intent": "passive_browsing",
+  "friction_point": null,
+  "semantic_confidence": 0.82,
+  "suggested_openers": ["你已经刷了挺久了，要不要我帮你收个口？"],
+  "latest_ts": 1744123456.789,
+  "latest_frame_filename": "frame_1744123456789.jpg",
+  "latest_frame_url": "http://54.209.126.4:5001/v1/screen/frames/frame_1744123456789.jpg",
+  "frame_count_in_window": 46
 }
 ```
 
@@ -470,8 +482,16 @@ GET {FEEDLING_API_URL}/v1/screen/analyze?window=300
 ```json
 {
   "active": false,
-  "reason": "No frames received in the last 5 minutes — phone screen may be off.",
-  "should_notify": false
+  "should_notify": false,
+  "reason": "No frames in window — phone screen may be off or recording stopped.",
+  "current_app": null,
+  "continuous_minutes": 0,
+  "ocr_summary": "",
+  "cooldown_remaining_seconds": 0,
+  "latest_ts": null,
+  "latest_frame_filename": null,
+  "latest_frame_url": null,
+  "frame_count_in_window": 0
 }
 ```
 

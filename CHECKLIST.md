@@ -6,8 +6,8 @@
 
 ## 当前目标
 
-完整截屏上传链路已验证 ✅  
-下一步：OpenClaw 心跳读取截屏内容 → 分析用户行为 → 主动推送灵动岛
+语义优先推送链路已可运行（截屏→语义分析→消息生成→灵动岛/聊天）✅  
+下一步：补齐 Mac 真实数据接入 + 端到端稳定性回归（长时运行）
 
 ---
 
@@ -82,6 +82,18 @@
 - [x] SKILL.md Heartbeat 指令更新：Step 0 long poll + Step 1-3 屏幕检查
 - [x] 截帧间隔从 3s 改为 1s（`captureIntervalMsDefault=1000`）
 - [x] OpenClaw SKILL.md 已更新，端到端验证待 OpenClaw 下次加载
+
+### 3f. 语义优先增强 ✅ 已完成（2026-04-17）
+
+- [x] `/v1/screen/analyze` 默认触发策略调整为 semantic-first
+  - 新增 `trigger_policy` / `trigger_basis` 字段（便于外部决策链解释）
+  - 返回 `semantic_scene` / `task_intent` / `friction_point` / `semantic_confidence`
+  - 支持弱语义场景的 curiosity exploratory 兜底（避免机械沉默）
+- [x] `/v1/screen/analyze` 返回最新帧指针
+  - `latest_frame_filename`
+  - `latest_frame_url`
+  - 便于调用方直接 vision 复核，减少仅靠 OCR 推断
+- [x] SKILL.md 已补充：命中过滤后必须直读 raw frame；vision 不可用时标记 degraded mode
 
 ### 3c. 替换 mock 数据 ✅ 已完成（2026-04-15）
 
@@ -159,6 +171,12 @@
 ---
 
 ## 最近操作日志
+
+### 2026-04-17（Phase 3f）
+
+- 补充 `/v1/screen/analyze` 输出中的最新帧指针（filename/url），给上层 agent 直接取图复核语义
+- 更新 SKILL 指南：强调“命中过滤后必须读 raw 图”，并在 vision 不可用时显式降级
+- 回看 README / CHECKLIST，修正与当前实现不一致的描述（如 3s→1s 抓帧）
 
 ### 2026-04-12（Phase 3a）
 

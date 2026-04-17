@@ -20,7 +20,7 @@ feedling-mcp-v1/
 
 ---
 
-## Status (as of 2026-04-15)
+## Status (as of 2026-04-17)
 
 - [x] SKILL.md written and loaded into OpenClaw ✅
 - [x] Backend running on VPS (HTTP port 5001, WebSocket port 9998) ✅
@@ -32,7 +32,8 @@ feedling-mcp-v1/
 - [x] iOS Broadcast Extension captures screen every 1s → WebSocket → VPS storage ✅
 - [x] Vision OCR on captured frames — real app names visible in metadata ✅
 - [x] `/v1/screen/frames/latest` endpoint — OpenClaw can see what user is doing on phone ✅
-- [x] `/v1/screen/analyze` heartbeat endpoint — push cooldown, jitter-tolerant continuous time, OCR dedup ✅
+- [x] `/v1/screen/analyze` heartbeat endpoint — semantic-first trigger, push cooldown, jitter-tolerant continuous time, OCR dedup ✅
+- [x] `/v1/screen/analyze` now returns `latest_frame_filename` + `latest_frame_url` for direct vision follow-up ✅
 - [x] Push cooldown: thread-safe + persisted to `push_state.json` (survives restarts) ✅
 - [x] **Chat window in iOS app** — user ↔ OpenClaw real-time conversation ✅
 - [x] **Live Activity pushes mirror to Chat** — full conversation context in one place ✅
@@ -111,7 +112,7 @@ nohup ~/feedling/venv/bin/python ~/feedling/app.py > ~/feedling/server.log 2>&1 
 | GET | `/v1/screen/frames` | List captured screen frames with OCR metadata |
 | GET | `/v1/screen/frames/latest` | Latest frame: base64 JPEG + OCR text + URLs |
 | GET | `/v1/screen/frames/<filename>` | Retrieve specific frame |
-| GET | `/v1/screen/analyze` | Heartbeat: semantic-first trigger signals (`semantic_scene/task_intent/friction_point`), suggested openers, and `should_notify` (with cooldown) |
+| GET | `/v1/screen/analyze` | Heartbeat: semantic-first trigger signals (`semantic_scene/task_intent/friction_point`), suggested openers, `should_notify` (with cooldown), and latest frame pointer (`latest_frame_filename/url`) |
 | GET | `/v1/chat/history` | Fetch chat history (`limit`, `since` params) |
 | POST | `/v1/chat/message` | User sends a message (called by iOS app) |
 | POST | `/v1/chat/response` | OpenClaw posts a reply (optionally triggers Live Activity push) |
@@ -165,7 +166,7 @@ testapp/
 │   ├── LiveActivityManager.swift            ← Start/update/stop Live Activity
 │   └── FeedlingTest.entitlements            ← App Groups + APNs
 ├── FeedlingBroadcast/                       ← Broadcast Upload Extension
-│   ├── SampleHandler.swift                  ← RPBroadcastSampleHandler (3s capture interval)
+│   ├── SampleHandler.swift                  ← RPBroadcastSampleHandler (1s capture interval)
 │   ├── SampleHandler+WebSocketQueue.swift   ← Vision OCR + WebSocket frame queue
 │   ├── WebSocketManager.swift               ← URLSessionWebSocketTask, auto-reconnect
 │   ├── SharedConfig.swift                   ← App Group ID, capture interval config

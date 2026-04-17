@@ -1041,6 +1041,8 @@ def analyze_screen():
             "ocr_summary": "",
             "cooldown_remaining_seconds": round(_cooldown_remaining_seconds()),
             "latest_ts": None,
+            "latest_frame_filename": None,
+            "latest_frame_url": None,
             "frame_count_in_window": 0,
         })
 
@@ -1136,6 +1138,8 @@ def analyze_screen():
         "semantic_confidence": semantic.get("confidence", 0.0),
         "suggested_openers": semantic.get("suggested_openers", [])[:2],
         "latest_ts": latest["ts"],
+        "latest_frame_filename": latest.get("filename"),
+        "latest_frame_url": _frame_url(latest.get("filename")) if latest.get("filename") else None,
         "frame_count_in_window": len(recent),
     })
 
