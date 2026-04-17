@@ -102,10 +102,10 @@
   - 输出包含 `data_source`, `frame_count`, `unlock_count`，可区分 real vs fallback
   - `/v1/screen/summary` 已切到 iOS 实时聚合结果（Mac 仍为 mock）
 
-### 3d. Mac 屏幕监控（待完成）
+### 3d. Mac 屏幕监控（范围调整：移出本仓）
 
-- [ ] Mac 屏幕监控数据 → 真实上传到后端
-- [ ] 与 iOS 数据合并到 `/v1/screen/summary`
+- 该项不再作为 feedling-mcp-v1 当前待办。
+- 后续与 Fisherman 一起打包实现，再回填联调与文档。
 
 ---
 

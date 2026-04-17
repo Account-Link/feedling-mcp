@@ -41,7 +41,7 @@ feedling-mcp-v1/
 - [x] **Tap Dynamic Island → opens Chat tab** directly ✅
 - [x] OpenClaw long-poll loop validated end-to-end ✅
 - [x] Replace mock `/v1/screen/ios` with real frame aggregation ✅
-- [ ] Mac screen monitoring data → real upload to backend
+- Scope update: Mac screen monitoring upload is deferred and will be packaged together in Fisherman (out of this repo for now)
 
 ---
 
