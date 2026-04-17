@@ -39,8 +39,8 @@ feedling-mcp-v1/
 - [x] **Live Activity pushes mirror to Chat** — full conversation context in one place ✅
 - [x] **Long-poll endpoint** `/v1/chat/poll` — OpenClaw notified instantly when user sends message ✅
 - [x] **Tap Dynamic Island → opens Chat tab** directly ✅
-- [ ] OpenClaw long-poll loop validated end-to-end
-- [ ] Replace mock `/v1/screen/ios` with real frame aggregation
+- [x] OpenClaw long-poll loop validated end-to-end ✅
+- [x] Replace mock `/v1/screen/ios` with real frame aggregation ✅
 - [ ] Mac screen monitoring data → real upload to backend
 
 ---
