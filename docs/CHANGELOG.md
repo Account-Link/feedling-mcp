@@ -49,6 +49,50 @@
 
 ---
 
+## 2026-04-19
+
+### [DONE] NEXT.md Steps 1-5：multi-tenant backend + MCP SSE + iOS onboarding + self-hosted runbook
+
+**后端 (backend/app.py)**
+- 引入 `SINGLE_USER` 环境变量：`true` = 兼容旧的 flat layout；`false` = 多租户 `~/feedling-data/<user_id>/…`。
+- 新增 `POST /v1/users/register` + `GET /v1/users/whoami`。
+- 新增 `require_user()` 中间件：接受 `X-API-Key` / `Authorization: Bearer` / `?key=` 任何一种形式；
+  SHA-256(HMAC+pepper) 哈希比对，per-process 缓存避免 bcrypt 开销。
+- 所有 module-level state（frames/chat/tokens/push cooldown/live activity dedupe/bootstrap/identity/memory）
+  重构为 `UserStore` 类，每用户一份；waiters 也按用户隔离，防止跨用户唤醒。
+- WebSocket ingest handler 也接 `?key=` 或 `Bearer <key>`；`SINGLE_USER=true` 时跳过鉴权。
+
+**MCP server (backend/mcp_server.py)**
+- 切换 transport 到 SSE（保留 streamable-http 作为备选，走 `FEEDLING_MCP_TRANSPORT` 环境变量）。
+- 新增 `KeyCaptureMiddleware`（ASGI 层）：监听每个 HTTP 请求，从 query/header 抓取 `key`，映射到 session_id；
+  未知 session_id 时按 client IP 回溯 pending_keys，保证 SSE GET 与后续 POST tool call 能绑定。
+- 每个 tool 调 `_current_api_key()` 拿当前 session 的 key，作为 `X-API-Key` 转发给 Flask；
+  Flask 里 401 会自动冒泡成 tool error。
+
+**iOS (testapp/)**
+- `FeedlingAPI.swift` 完全重写：@MainActor ObservableObject + legacy static accessors；
+  持久化到 UserDefaults + app-group shared defaults；`authorizedRequest(path:…)` 自动注入 X-API-Key。
+- `KeyStore`：首次启动生成 Curve25519 keypair，private 存 Keychain（accessibleAfterFirstUnlockThisDeviceOnly）。
+- `ensureRegisteredIfCloud()`：在 cloud mode 下如缺 api_key 自动注册；403（后端为 single-user）时记号跳过，不再重试。
+- Settings tab 加了 Storage 切换、Agent Setup 复制按钮、用户 ID 展示、Regenerate key 按钮。
+- broadcast extension 通过 app-group key（`ingest_ws_token`）自动拿到 api_key 作为 WS Bearer。
+
+**Skill runbook (skill/SKILL.md)**
+- 新增 Self-Hosted Setup 小节：0 前置 → 1 clone → 2 `openssl rand -hex 32` → 3 venv+deps → 4 env → 5 systemd → 6 smoke → 7 Caddy（可选）→ 8 告诉用户 → 9 端到端验收；每一步都带 **Verify** 行。
+- 新增 troubleshooting 表（chat bridge / MCP 401 / Live Activity / frames not arriving）。
+
+**部署 (deploy/)**
+- `feedling.env.example` 加 `SINGLE_USER`、`FEEDLING_MCP_TRANSPORT`。
+- `setup.sh` 新增 `--install-caddy` 开关，能自动 `openssl rand -hex 32` 并写 env 文件。
+- `Caddyfile` 给 `/v1/chat/poll` 长轮询放宽 response timeout 到 90s。
+
+**测试**
+- `backend/test_api.py` 加 `--multi-tenant` 和 `--key <shared>` 两种模式；
+  新增 Section 8（isolation + 401 + Bearer + query-key + whoami）；single-user 也保持全绿。
+- 本地和测试 EC2 (`ec2-34-228-180-146`) 全通过；MCP SSE 端到端：initialize → tools/list → tools/call bootstrap 在正确/错误 key 下表现都对。
+
+---
+
 ## 2026-04-18
 
 ### [DONE] Phase 0 T0.1 + Phase 1 T1.1/T1.2/T1.3 + Phase 2 T2.1-T2.5 + T3.1/T3.2/T4.2

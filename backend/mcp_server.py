@@ -1,21 +1,123 @@
 #!/usr/bin/env python3
 """
-Feedling MCP Server — wraps the Flask backend as a FastMCP Streamable HTTP server.
+Feedling MCP Server — SSE transport with per-connection API keys.
 
 Architecture:
-  Claude.ai / Claude Desktop / OpenClaw  →  mcp_server.py (port 5002, MCP protocol)
-  iOS App                                →  app.py (port 5001, HTTP REST)
+  Claude.ai / Claude Desktop / OpenClaw  →  mcp_server.py  →  app.py
 
-All tool implementations call app.py on localhost:5001.
-Run with: python mcp_server.py
+Connection string (multi-tenant hosted mode):
+    claude mcp add feedling --transport sse "https://mcp.feedling.app/sse?key=<api_key>"
+
+The `?key=` query parameter is read by an ASGI middleware on every incoming
+HTTP request (both the SSE GET and the tool-call POSTs) and cached against the
+current MCP session_id. Each tool invocation reads the key back and forwards
+it as `X-API-Key` to the Flask backend, which performs the actual bcrypt-style
+user lookup.
+
+Single-user / self-hosted mode: set `SINGLE_USER=true` on the backend and use
+any key (the backend will accept unauthenticated requests), or set
+`FEEDLING_API_KEY=<shared>` on both sides.
 """
 
 import os
+import threading
+from typing import Any
+
 import httpx
-from fastmcp import FastMCP
+from fastmcp import FastMCP, Context
+from fastmcp.server.dependencies import get_http_request
+from fastmcp.server.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp
 
 FLASK_BASE = os.environ.get("FEEDLING_FLASK_URL", "http://127.0.0.1:5001")
-API_KEY = os.environ.get("FEEDLING_API_KEY", "mock-key")
+FALLBACK_API_KEY = os.environ.get("FEEDLING_API_KEY", "").strip()
+SINGLE_USER = os.environ.get("SINGLE_USER", "true").lower() == "true"
+
+# ---------------------------------------------------------------------------
+# Session-id → api_key cache
+# ---------------------------------------------------------------------------
+# MCP SSE clients open the event stream with `GET /sse?key=xxx`, then POST tool
+# calls to `/messages/?session_id=yyy`. Different clients behave differently:
+#   - Some forward `?key=` onto every subsequent POST URL.
+#   - Some include it only on the initial SSE GET.
+#   - Some support `Authorization: Bearer <key>` headers end-to-end.
+# Cover all three: an ASGI middleware observes every HTTP request, extracts a
+# key if present, and caches it under whichever session_id we can infer.
+
+_session_keys: dict[str, str] = {}
+_session_keys_lock = threading.Lock()
+# When we see `?key=` on the initial SSE GET, we don't yet know the session_id
+# assigned by the server. Stash it keyed by client address + path until the
+# next POST with session_id binds them together. Kept tiny; oldest entry wins.
+_pending_keys: list[tuple[float, str, str]] = []  # (ts, peer, key)
+_pending_keys_max = 256
+
+
+def _remember(session_id: str | None, key: str, peer: str = ""):
+    if not key:
+        return
+    import time
+    if session_id:
+        with _session_keys_lock:
+            _session_keys[session_id] = key
+    else:
+        with _session_keys_lock:
+            _pending_keys.append((time.time(), peer, key))
+            if len(_pending_keys) > _pending_keys_max:
+                _pending_keys[:] = _pending_keys[-_pending_keys_max:]
+
+
+def _resolve_for_session(session_id: str | None, peer: str = "") -> str | None:
+    if session_id:
+        with _session_keys_lock:
+            k = _session_keys.get(session_id)
+            if k:
+                return k
+    # fall back to pending keys from same peer
+    with _session_keys_lock:
+        for ts, p, k in reversed(_pending_keys):
+            if peer and p == peer:
+                if session_id:
+                    _session_keys[session_id] = k
+                return k
+    return None
+
+
+# ---------------------------------------------------------------------------
+# ASGI middleware — runs on every HTTP request
+# ---------------------------------------------------------------------------
+
+
+class KeyCaptureMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        key = ""
+        # query param "key"
+        try:
+            key = (request.query_params.get("key") or "").strip()
+        except Exception:
+            key = ""
+        # Authorization: Bearer <key>
+        if not key:
+            auth = request.headers.get("authorization", "")
+            if auth.lower().startswith("bearer "):
+                key = auth[7:].strip()
+        # X-API-Key header
+        if not key:
+            key = (request.headers.get("x-api-key") or "").strip()
+
+        session_id = (request.query_params.get("session_id") or "").strip() or None
+        peer = request.client.host if request.client else ""
+        if key:
+            _remember(session_id, key, peer=peer)
+
+        response = await call_next(request)
+        return response
+
+
+# ---------------------------------------------------------------------------
+# MCP server
+# ---------------------------------------------------------------------------
 
 mcp = FastMCP(
     name="Feedling",
@@ -28,27 +130,63 @@ mcp = FastMCP(
 )
 
 
-def _headers() -> dict:
-    return {"X-API-Key": API_KEY, "Content-Type": "application/json"}
+def _current_api_key(ctx: Context | None = None) -> str:
+    """Best-effort lookup of the current caller's API key."""
+    # 1. Try the active HTTP request headers/query
+    try:
+        req = get_http_request()
+        k = (req.query_params.get("key") or "").strip()
+        if not k:
+            auth = req.headers.get("authorization", "")
+            if auth.lower().startswith("bearer "):
+                k = auth[7:].strip()
+        if not k:
+            k = (req.headers.get("x-api-key") or "").strip()
+        if k:
+            return k
+        peer = req.client.host if req.client else ""
+        session_id = (req.query_params.get("session_id") or "").strip() or None
+        cached = _resolve_for_session(session_id, peer=peer)
+        if cached:
+            return cached
+    except Exception:
+        pass
+
+    # 2. Try FastMCP Context session
+    if ctx is not None and ctx.session_id:
+        cached = _resolve_for_session(ctx.session_id)
+        if cached:
+            return cached
+
+    # 3. Env fallback (self-hosted default)
+    return FALLBACK_API_KEY
 
 
-def _get(path: str, params: dict | None = None) -> dict:
-    with httpx.Client(timeout=15) as client:
-        r = client.get(f"{FLASK_BASE}{path}", params=params, headers=_headers())
+def _headers(ctx: Context | None = None) -> dict:
+    key = _current_api_key(ctx)
+    h = {"Content-Type": "application/json"}
+    if key:
+        h["X-API-Key"] = key
+    return h
+
+
+def _get(path: str, params: dict | None = None, ctx: Context | None = None) -> dict:
+    with httpx.Client(timeout=60) as client:
+        r = client.get(f"{FLASK_BASE}{path}", params=params, headers=_headers(ctx))
         r.raise_for_status()
         return r.json()
 
 
-def _post(path: str, body: dict) -> dict:
-    with httpx.Client(timeout=15) as client:
-        r = client.post(f"{FLASK_BASE}{path}", json=body, headers=_headers())
+def _post(path: str, body: dict, ctx: Context | None = None) -> dict:
+    with httpx.Client(timeout=60) as client:
+        r = client.post(f"{FLASK_BASE}{path}", json=body, headers=_headers(ctx))
         r.raise_for_status()
         return r.json()
 
 
-def _delete(path: str, params: dict | None = None) -> dict:
-    with httpx.Client(timeout=15) as client:
-        r = client.delete(f"{FLASK_BASE}{path}", params=params, headers=_headers())
+def _delete(path: str, params: dict | None = None, ctx: Context | None = None) -> dict:
+    with httpx.Client(timeout=60) as client:
+        r = client.delete(f"{FLASK_BASE}{path}", params=params, headers=_headers(ctx))
         r.raise_for_status()
         return r.json()
 
@@ -57,6 +195,7 @@ def _delete(path: str, params: dict | None = None) -> dict:
 # Push tools
 # ---------------------------------------------------------------------------
 
+
 @mcp.tool(
     name="feedling.push.dynamic_island",
     description=(
@@ -64,7 +203,7 @@ def _delete(path: str, params: dict | None = None) -> dict:
         "title appears as the heading (e.g. your Agent name). "
         "body is the main message. "
         "subtitle is optional one-line context. "
-        "data is a free-form key-value bag (e.g. {\"top_app\": \"TikTok\", \"minutes\": \"45\"}). "
+        "data is a free-form key-value bag. "
         "The platform enforces a cooldown — check feedling.screen.analyze rate_limit_ok before pushing."
     ),
 )
@@ -74,6 +213,7 @@ def push_dynamic_island(
     subtitle: str = "",
     data: dict | None = None,
     event: str = "update",
+    ctx: Context = None,
 ) -> dict:
     return _post("/v1/push/dynamic-island", {
         "title": title,
@@ -81,7 +221,7 @@ def push_dynamic_island(
         "subtitle": subtitle or None,
         "data": data or {},
         "event": event,
-    })
+    }, ctx=ctx)
 
 
 @mcp.tool(
@@ -94,6 +234,7 @@ def push_live_activity(
     subtitle: str = "",
     data: dict | None = None,
     event: str = "update",
+    ctx: Context = None,
 ) -> dict:
     return _post("/v1/push/live-activity", {
         "title": title,
@@ -101,12 +242,13 @@ def push_live_activity(
         "subtitle": subtitle or None,
         "data": data or {},
         "event": event,
-    })
+    }, ctx=ctx)
 
 
 # ---------------------------------------------------------------------------
 # Screen tools
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool(
     name="feedling.screen.latest_frame",
@@ -115,8 +257,8 @@ def push_live_activity(
         "including OCR text, the foreground app, and a timestamp."
     ),
 )
-def screen_latest_frame() -> dict:
-    return _get("/v1/screen/frames/latest")
+def screen_latest_frame(ctx: Context = None) -> dict:
+    return _get("/v1/screen/frames/latest", ctx=ctx)
 
 
 @mcp.tool(
@@ -126,13 +268,14 @@ def screen_latest_frame() -> dict:
         "foreground app, OCR summary, and whether the push cooldown has elapsed."
     ),
 )
-def screen_analyze() -> dict:
-    return _get("/v1/screen/analyze")
+def screen_analyze(ctx: Context = None) -> dict:
+    return _get("/v1/screen/analyze", ctx=ctx)
 
 
 # ---------------------------------------------------------------------------
 # Chat tools
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool(
     name="feedling.chat.post_message",
@@ -141,21 +284,22 @@ def screen_analyze() -> dict:
         "The user will see it immediately in the app."
     ),
 )
-def chat_post_message(content: str) -> dict:
-    return _post("/v1/chat/response", {"content": content})
+def chat_post_message(content: str, ctx: Context = None) -> dict:
+    return _post("/v1/chat/response", {"content": content}, ctx=ctx)
 
 
 @mcp.tool(
     name="feedling.chat.get_history",
     description="Retrieve recent chat history between the user and the Agent.",
 )
-def chat_get_history(limit: int = 50) -> dict:
-    return _get("/v1/chat/history", {"limit": min(limit, 200)})
+def chat_get_history(limit: int = 50, ctx: Context = None) -> dict:
+    return _get("/v1/chat/history", {"limit": min(limit, 200)}, ctx=ctx)
 
 
 # ---------------------------------------------------------------------------
-# Identity card tools
+# Identity card
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool(
     name="feedling.identity.init",
@@ -169,20 +313,21 @@ def identity_init(
     agent_name: str,
     self_introduction: str,
     dimensions: list[dict],
+    ctx: Context = None,
 ) -> dict:
     return _post("/v1/identity/init", {
         "agent_name": agent_name,
         "self_introduction": self_introduction,
         "dimensions": dimensions,
-    })
+    }, ctx=ctx)
 
 
 @mcp.tool(
     name="feedling.identity.get",
     description="Retrieve the current identity card.",
 )
-def identity_get() -> dict:
-    return _get("/v1/identity/get")
+def identity_get(ctx: Context = None) -> dict:
+    return _get("/v1/identity/get", ctx=ctx)
 
 
 @mcp.tool(
@@ -193,17 +338,18 @@ def identity_get() -> dict:
         "Include a reason so the history is meaningful."
     ),
 )
-def identity_nudge(dimension_name: str, delta: int, reason: str = "") -> dict:
+def identity_nudge(dimension_name: str, delta: int, reason: str = "", ctx: Context = None) -> dict:
     return _post("/v1/identity/nudge", {
         "dimension_name": dimension_name,
         "delta": delta,
         "reason": reason,
-    })
+    }, ctx=ctx)
 
 
 # ---------------------------------------------------------------------------
-# Memory garden tools
+# Memory garden
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool(
     name="feedling.memory.add_moment",
@@ -219,6 +365,7 @@ def memory_add_moment(
     description: str = "",
     type: str = "",
     source: str = "live_conversation",
+    ctx: Context = None,
 ) -> dict:
     return _post("/v1/memory/add", {
         "title": title,
@@ -226,36 +373,37 @@ def memory_add_moment(
         "occurred_at": occurred_at,
         "type": type,
         "source": source,
-    })
+    }, ctx=ctx)
 
 
 @mcp.tool(
     name="feedling.memory.list",
     description="List moments in the memory garden, ordered by occurred_at descending.",
 )
-def memory_list(limit: int = 20) -> dict:
-    return _get("/v1/memory/list", {"limit": limit})
+def memory_list(limit: int = 20, ctx: Context = None) -> dict:
+    return _get("/v1/memory/list", {"limit": limit}, ctx=ctx)
 
 
 @mcp.tool(
     name="feedling.memory.get",
     description="Get a single moment by its id.",
 )
-def memory_get(id: str) -> dict:
-    return _get("/v1/memory/get", {"id": id})
+def memory_get(id: str, ctx: Context = None) -> dict:
+    return _get("/v1/memory/get", {"id": id}, ctx=ctx)
 
 
 @mcp.tool(
     name="feedling.memory.delete",
     description="Delete a moment from the memory garden by its id.",
 )
-def memory_delete(id: str) -> dict:
-    return _delete("/v1/memory/delete", {"id": id})
+def memory_delete(id: str, ctx: Context = None) -> dict:
+    return _delete("/v1/memory/delete", {"id": id}, ctx=ctx)
 
 
 # ---------------------------------------------------------------------------
 # Bootstrap
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool(
     name="feedling.bootstrap",
@@ -266,15 +414,29 @@ def memory_delete(id: str) -> dict:
         "Returns 'already_bootstrapped' on subsequent calls."
     ),
 )
-def bootstrap() -> dict:
-    return _post("/v1/bootstrap", {})
+def bootstrap(ctx: Context = None) -> dict:
+    return _post("/v1/bootstrap", {}, ctx=ctx)
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
+
 if __name__ == "__main__":
     port = int(os.environ.get("FEEDLING_MCP_PORT", 5002))
-    print(f"Feedling MCP server running on port {port}")
-    mcp.run(transport="streamable-http", host="0.0.0.0", port=port)
+    transport = os.environ.get("FEEDLING_MCP_TRANSPORT", "sse").lower()
+    print(f"Feedling MCP server: transport={transport} port={port} flask={FLASK_BASE} single_user={SINGLE_USER}")
+
+    if transport == "sse":
+        # Build a Starlette app so we can attach the key-capture middleware,
+        # then run it with uvicorn.
+        import uvicorn
+        from starlette.middleware import Middleware as StarletteMW
+        app = mcp.http_app(
+            transport="sse",
+            middleware=[StarletteMW(KeyCaptureMiddleware)],
+        )
+        uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+    else:
+        mcp.run(transport=transport, host="0.0.0.0", port=port)

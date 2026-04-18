@@ -1,12 +1,21 @@
 # Feedling Caddyfile
-# Place at /etc/caddy/Caddyfile on the VPS
+# Place at /etc/caddy/Caddyfile on the VPS (self-hosted users: s/feedling.app/<your-domain>/).
+# Caddy auto-provisions Let's Encrypt certs on first reload — make sure DNS
+# for both hostnames points at this VPS before starting.
 
-# MCP server — Claude.ai connects here
+# MCP server — Claude.ai / Claude Desktop / ChatGPT connect here over SSE.
+# SSE needs no special config in Caddy v2; reverse_proxy handles event-stream
+# chunked transfer and long-lived connections automatically.
 mcp.feedling.app {
     reverse_proxy localhost:5002
 }
 
-# iOS app API — mobile client connects here
+# iOS app API — mobile client + HTTP skill agents connect here.
 api.feedling.app {
-    reverse_proxy localhost:5001
+    # Increase read timeout so /v1/chat/poll long-poll (up to 60s) doesn't get cut.
+    reverse_proxy localhost:5001 {
+        transport http {
+            response_header_timeout 90s
+        }
+    }
 }

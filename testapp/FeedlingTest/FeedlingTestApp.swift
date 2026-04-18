@@ -17,6 +17,12 @@ struct FeedlingTestApp: App {
                 .environmentObject(chatViewModel)
                 .environmentObject(identityViewModel)
                 .environmentObject(memoryViewModel)
+                .task {
+                    // First-launch registration: if we're in cloud mode and lack
+                    // credentials, generate a keypair and register to Feedling.
+                    // Idempotent — no-ops if we already have creds.
+                    await FeedlingAPI.shared.ensureRegisteredIfCloud()
+                }
                 .onOpenURL { url in
                     guard url.scheme == "feedlingtest" else { return }
                     router.selectedTab = .chat

@@ -61,6 +61,12 @@ class AppRouter: ObservableObject {
 
 struct SettingsView: View {
     @EnvironmentObject var lam: LiveActivityManager
+    @ObservedObject private var api = FeedlingAPI.shared
+
+    // Self-hosted draft fields (only persisted when user taps Save)
+    @State private var selfHostedURL: String = ""
+    @State private var selfHostedKey: String = ""
+    @State private var showCopiedToast: String? = nil
 
     private let mockStates: [ScreenActivityAttributes.ContentState] = [
         .init(title: "OpenClaw",
@@ -103,17 +109,106 @@ struct SettingsView: View {
                 .background(Color(UIColor.systemGroupedBackground))
 
                 List {
+                    // Storage toggle
+                    Section("Storage") {
+                        Picker("Backend", selection: $api.storageMode) {
+                            Text("Feedling Cloud").tag(FeedlingAPI.StorageMode.cloud)
+                            Text("Self-hosted").tag(FeedlingAPI.StorageMode.selfHosted)
+                        }
+                        .pickerStyle(.segmented)
+                        .onChange(of: api.storageMode) { newMode in
+                            if newMode == .cloud {
+                                api.configureCloud()
+                                Task { await api.ensureRegisteredIfCloud() }
+                            }
+                        }
+
+                        if api.storageMode == .selfHosted {
+                            TextField("https://my-vps.example:5001", text: $selfHostedURL)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .font(.caption.monospaced())
+                                .onAppear { selfHostedURL = api.baseURL }
+                            TextField("API key", text: $selfHostedKey)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .font(.caption.monospaced())
+                                .onAppear { selfHostedKey = api.apiKey }
+                            Button("Save self-hosted config") {
+                                api.configureSelfHosted(url: selfHostedURL, apiKey: selfHostedKey)
+                                showToast("Saved")
+                            }
+                            .disabled(selfHostedURL.isEmpty)
+                        }
+                    }
+
+                    // Agent setup
+                    Section("Agent Setup") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("MCP connection string")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(api.mcpConnectionString)
+                                .font(.caption2.monospaced())
+                                .lineLimit(3)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(8)
+                                .background(Color(UIColor.tertiarySystemGroupedBackground))
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                            Button {
+                                UIPasteboard.general.string = api.mcpConnectionString
+                                showToast("Copied MCP string")
+                            } label: {
+                                Label("Copy MCP string", systemImage: "doc.on.doc")
+                            }
+                        }
+                        .padding(.vertical, 4)
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("OpenClaw env vars")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(api.envExportBlock)
+                                .font(.caption2.monospaced())
+                                .lineLimit(3)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(8)
+                                .background(Color(UIColor.tertiarySystemGroupedBackground))
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                            Button {
+                                UIPasteboard.general.string = api.envExportBlock
+                                showToast("Copied env vars")
+                            } label: {
+                                Label("Copy env vars", systemImage: "doc.on.doc")
+                            }
+                        }
+                        .padding(.vertical, 4)
+
+                        if api.storageMode == .cloud {
+                            Button(role: .destructive) {
+                                Task {
+                                    await api.regenerateCredentials()
+                                    showToast("Key regenerated")
+                                }
+                            } label: {
+                                Label("Regenerate API key", systemImage: "arrow.triangle.2.circlepath")
+                            }
+                        }
+                    }
+
                     // Connection
                     Section("Connection") {
                         LabeledContent("API") {
-                            Text(FeedlingAPI.baseURL)
+                            Text(api.baseURL)
                                 .font(.caption.monospaced())
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
-                        LabeledContent("Pairing Code") {
-                            Text("—")
+                        LabeledContent("User ID") {
+                            Text(api.userId.isEmpty ? "—" : api.userId)
+                                .font(.caption.monospaced())
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
                     }
 
@@ -167,6 +262,24 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Feedling")
+            .overlay(alignment: .bottom) {
+                if let msg = showCopiedToast {
+                    Text(msg)
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .padding(.bottom, 24)
+                        .transition(.opacity)
+                }
+            }
+        }
+    }
+
+    private func showToast(_ message: String) {
+        withAnimation { showCopiedToast = message }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            withAnimation { showCopiedToast = nil }
         }
     }
 

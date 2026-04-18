@@ -23,38 +23,38 @@ feedling-mcp-v1/
 
 ---
 
-## Status (as of 2026-04-18)
+## Status (as of 2026-04-19)
 
 **Infrastructure**
-- [x] Flask backend running on VPS (port 5001)
-- [x] FastMCP server (`mcp_server.py`, port 5002) — 14 MCP tools
-- [x] `deploy/` — Caddyfile + systemd service files + setup.sh
-- [ ] HTTPS deployment (`mcp.feedling.app`, `api.feedling.app`) — pending DNS + VPS setup
+- [x] Flask backend running on VPS (port 5001) — dual-mode: single-user or multi-tenant
+- [x] FastMCP server (`mcp_server.py`, port 5002) — 14 MCP tools, SSE transport with per-key sessions
+- [x] `deploy/` — Caddyfile + systemd service files + `setup.sh` that generates a fresh API key
+- [x] Multi-tenant: per-user directories, `POST /v1/users/register`, bcrypt-hashed API keys
+- [ ] HTTPS deployment (`mcp.feedling.app`, `api.feedling.app`) — infra ready; needs DNS at Namecheap
 
 **Core features (working)**
 - [x] APNs push to Dynamic Island + Live Activity
-- [x] iOS Broadcast Extension → WebSocket → VPS frame storage → OCR
+- [x] iOS Broadcast Extension → WebSocket (auth via `Bearer` api_key) → per-user frame storage → OCR
 - [x] `/v1/screen/analyze` — semantic-first trigger, `rate_limit_ok`, `trigger_basis`
-- [x] Chat long-poll (`/v1/chat/poll`) — real-time user ↔ Agent conversation
+- [x] Chat long-poll (`/v1/chat/poll`) — real-time user ↔ Agent conversation, isolated per user
 - [x] Tap Dynamic Island → opens Chat tab
-
-**New in this version**
 - [x] Identity Card — Agent writes 5-dimension personality card (`/v1/identity/*`)
 - [x] Memory Garden — Agent plants memorable moments (`/v1/memory/*`)
 - [x] Bootstrap — first-connection aha moment trigger (`/v1/bootstrap`)
 - [x] iOS: 4-tab structure (Chat | Identity | Garden | Settings)
-- [x] iOS: Identity tab with pentagon radar chart
-- [x] iOS: Memory Garden tab with card list + new-card highlight
-- [x] iOS: Auto-navigate to Identity tab when bootstrap completes
-- [x] Push payload generalized (title / subtitle / body / data — no longer hardcoded to screen-time)
-- [x] `should_notify` → `rate_limit_ok` (platform-only flag; Agent decides whether to push)
-- [x] Bootstrap observability log (`bootstrap_events.jsonl`)
+- [x] iOS: Settings → Storage toggle (Feedling Cloud vs Self-hosted URL+key)
+- [x] iOS: Settings → Agent Setup → copy-paste MCP connection string + env vars
+
+**New in this version**
+- [x] Curve25519 keypair generated at first launch, private key in Keychain, public key uploaded during registration
+- [x] MCP SSE transport: `claude mcp add feedling --transport sse "https://mcp.feedling.app/sse?key=<api_key>"`
+- [x] Self-hosted runbook in `skill/SKILL.md` — any Agent with SSH can deploy Feedling on a user's VPS end-to-end
+- [x] Test suite expanded to 40 tests; covers multi-tenant isolation + 401 enforcement
 
 **Pending**
-- [ ] HTTPS + DNS
-- [ ] Multi-tenant (user_id per device)
-- [ ] Claude.ai connector end-to-end test
-- [ ] Onboarding docs
+- [ ] HTTPS + DNS for `api.feedling.app` + `mcp.feedling.app`
+- [ ] End-to-end encryption of stored user content (public key is on file; encryption not wired yet)
+- [ ] Claude.ai connector submission
 
 ---
 
@@ -237,21 +237,42 @@ Recommended card structure:
 
 ---
 
-## OpenClaw setup (HTTP mode)
+## Agent setup
+
+### Claude.ai / Claude Desktop (SSE MCP)
+
+Cloud users get a one-liner from the iOS app's **Settings → Agent Setup → Copy MCP string**:
+
+```
+claude mcp add feedling --transport sse "https://mcp.feedling.app/sse?key=<api_key>"
+```
+
+Self-hosted users derive the same shape using their own domain:
+
+```
+claude mcp add feedling --transport sse "https://mcp.<your-domain>/sse?key=<api_key>"
+```
+
+The `?key=` is captured by an ASGI middleware on the first SSE GET and pinned
+to the MCP session — every subsequent tool call is routed as that user.
+
+### OpenClaw / HTTP-skill agents
 
 ```bash
-# Install skill
 mkdir -p ~/.openclaw/skills/feedling
 cp skill/SKILL.md ~/.openclaw/skills/feedling/SKILL.md
+```
 
-# Set env vars in ~/.openclaw/openclaw.json
+`~/.openclaw/openclaw.json`:
+
+```json
 {
   "skills": {
     "entries": {
       "feedling": {
         "env": {
-          "FEEDLING_API_URL": "http://localhost:5001",
-          "FEEDLING_API_KEY": "mock-key"
+          "FEEDLING_API_URL": "https://api.feedling.app",
+          "FEEDLING_API_KEY": "<your_api_key>"
         }
       }
     }
@@ -259,14 +280,20 @@ cp skill/SKILL.md ~/.openclaw/skills/feedling/SKILL.md
 }
 ```
 
+Pro users (self-hosted): see `skill/SKILL.md` → **Self-Hosted Setup** for an
+end-to-end SSH runbook an agent can follow to deploy the server itself.
+
 ---
 
 ## Config reference
 
 | Variable | Value |
 |----------|-------|
+| `SINGLE_USER` | `true` (self-hosted, flat layout) or `false` (hosted multi-tenant, per-user dirs) |
 | `FEEDLING_API_URL` | `http://localhost:5001` (VPS local) |
-| `FEEDLING_API_KEY` | `mock-key` (change for production) |
+| `FEEDLING_API_KEY` | shared key — required in SINGLE_USER mode; unused in multi-tenant (each user has their own) |
+| `FEEDLING_DATA_DIR` | `~/feedling-data/` |
+| `FEEDLING_MCP_TRANSPORT` | `sse` (default) or `streamable-http` |
 | Flask port | `5001` |
 | MCP port | `5002` |
 | WebSocket port | `9998` |
@@ -276,3 +303,25 @@ cp skill/SKILL.md ~/.openclaw/skills/feedling/SKILL.md
 | APNs Key ID | `5TH55X5U7T` |
 | APNs .p8 path | `~/feedling/AuthKey_5TH55X5U7T.p8` |
 | Data dir | `~/feedling-data/` |
+
+### Multi-tenant data layout
+
+```
+~/feedling-data/
+├── users.json                  # [{user_id, api_key_hash, public_key, created_at}, …]
+├── .pepper                     # 32-byte HMAC secret, chmod 600
+└── <user_id>/
+    ├── frames/                 # per-user screen frames
+    ├── chat.json
+    ├── identity.json
+    ├── memory.json
+    ├── tokens.json             # APNs tokens (not content — no encryption needed)
+    ├── push_state.json
+    ├── live_activity_state.json
+    ├── bootstrap.json
+    └── bootstrap_events.jsonl
+```
+
+In `SINGLE_USER=true` mode the single "default" user uses the flat
+`~/feedling-data/` layout (no subdirectory) so existing data is preserved
+across a restart.

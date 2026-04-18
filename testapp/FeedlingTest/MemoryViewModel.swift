@@ -52,9 +52,12 @@ class MemoryViewModel: ObservableObject {
     }
 
     func loadMoments() async {
-        guard let url = URL(string: "\(FeedlingAPI.baseURL)/v1/memory/list?limit=50") else { return }
+        guard let req = FeedlingAPI.shared.authorizedRequest(
+            path: "/v1/memory/list",
+            queryItems: [URLQueryItem(name: "limit", value: "50")]
+        ) else { return }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.data(for: req)
             struct Response: Codable {
                 let moments: [MemoryMoment]
             }

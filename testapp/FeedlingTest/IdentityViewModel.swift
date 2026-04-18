@@ -53,9 +53,9 @@ class IdentityViewModel: ObservableObject {
     }
 
     func loadIdentity() async {
-        guard let url = URL(string: "\(FeedlingAPI.baseURL)/v1/identity/get") else { return }
+        guard let req = FeedlingAPI.shared.authorizedRequest(path: "/v1/identity/get") else { return }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.data(for: req)
             struct Response: Codable {
                 let identity: IdentityCard?
             }

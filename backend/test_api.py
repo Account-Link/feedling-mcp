@@ -5,6 +5,8 @@ Feedling backend API test suite.
 Usage:
     python test_api.py                        # runs against http://localhost:5001
     python test_api.py http://54.209.126.4:5001
+    python test_api.py http://localhost:5001 --multi-tenant
+    python test_api.py http://localhost:5001 --key <shared_api_key>
 
 Tests cover:
     1. Read endpoints (screen/analyze, frames, tokens)
@@ -14,6 +16,10 @@ Tests cover:
     5. Bootstrap endpoint
     6. Identity card (init / get / nudge)
     7. Memory garden (add / list / get / delete)
+    8. Multi-tenant: registration + per-user isolation + 401 enforcement
+
+    If --multi-tenant is passed, the suite registers a fresh user first and
+    runs steps 1-7 using its api_key, plus the dedicated multi-tenant tests.
 """
 
 import sys
@@ -23,7 +29,25 @@ import uuid
 
 import requests
 
-BASE_URL = sys.argv[1].rstrip("/") if len(sys.argv) > 1 else "http://localhost:5001"
+BASE_URL = "http://localhost:5001"
+MULTI_TENANT = False
+SHARED_KEY = ""
+
+for arg in sys.argv[1:]:
+    if arg == "--multi-tenant":
+        MULTI_TENANT = True
+    elif arg.startswith("--key="):
+        SHARED_KEY = arg.split("=", 1)[1]
+    elif arg == "--key":
+        continue
+    elif arg.startswith("http"):
+        BASE_URL = arg.rstrip("/")
+
+# Late-capture: --key <value>
+args = sys.argv[1:]
+for i, a in enumerate(args):
+    if a == "--key" and i + 1 < len(args):
+        SHARED_KEY = args[i + 1]
 
 PASS = "\033[92m✓\033[0m"
 FAIL = "\033[91m✗\033[0m"
@@ -44,6 +68,63 @@ def section(title: str):
     print(f"\n{'─' * 50}")
     print(f"  {title}")
     print(f"{'─' * 50}")
+
+
+# ---------------------------------------------------------------------------
+# Auth setup: register a fresh multi-tenant user if requested
+# ---------------------------------------------------------------------------
+
+AUTH_HEADERS = {}
+
+if MULTI_TENANT:
+    section("0. Multi-tenant registration")
+    rr = requests.post(f"{BASE_URL}/v1/users/register",
+                       json={"public_key": "test-pubkey"}, timeout=5)
+    check("POST /v1/users/register returns 201", rr.status_code == 201,
+          f"got {rr.status_code}: {rr.text[:120]}")
+    if rr.status_code == 201:
+        body = rr.json()
+        check("register response has api_key",
+              bool(body.get("api_key")))
+        check("register response has user_id (usr_*)",
+              body.get("user_id", "").startswith("usr_"))
+        SHARED_KEY = body["api_key"]
+
+if SHARED_KEY:
+    AUTH_HEADERS = {"X-API-Key": SHARED_KEY}
+
+# Monkey-patch requests.{get,post,delete} so existing test bodies auto-forward
+# X-API-Key without us needing to touch every call site.
+_orig_get = requests.get
+_orig_post = requests.post
+_orig_delete = requests.delete
+
+
+def _inject(headers):
+    h = dict(headers or {})
+    for k, v in AUTH_HEADERS.items():
+        h.setdefault(k, v)
+    return h
+
+
+def _auth_get(url, **kw):
+    kw["headers"] = _inject(kw.get("headers"))
+    return _orig_get(url, **kw)
+
+
+def _auth_post(url, **kw):
+    kw["headers"] = _inject(kw.get("headers"))
+    return _orig_post(url, **kw)
+
+
+def _auth_delete(url, **kw):
+    kw["headers"] = _inject(kw.get("headers"))
+    return _orig_delete(url, **kw)
+
+
+requests.get = _auth_get
+requests.post = _auth_post
+requests.delete = _auth_delete
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +419,66 @@ if mem_id:
     # confirm deletion
     r = requests.get(f"{BASE_URL}/v1/memory/get?id={mem_id}", timeout=5)
     check("get after delete returns 404", r.status_code == 404)
+
+# ---------------------------------------------------------------------------
+# 8. Multi-tenant: isolation + 401 enforcement
+# ---------------------------------------------------------------------------
+
+if MULTI_TENANT:
+    section("8. Multi-tenant: isolation + 401 enforcement")
+
+    # Register a second user; their chat should not overlap with the first.
+    rr2 = _orig_post(f"{BASE_URL}/v1/users/register", json={}, timeout=5)
+    check("second register returns 201", rr2.status_code == 201)
+    if rr2.status_code == 201:
+        user2 = rr2.json()
+        key2 = user2["api_key"]
+
+        # user2 sends a message
+        r = _orig_post(f"{BASE_URL}/v1/chat/message",
+                       json={"content": "isolated-from-user2"},
+                       headers={"X-API-Key": key2}, timeout=5)
+        check("user2 send message 200", r.status_code == 200)
+
+        # current user (user1) should not see user2's message
+        r = _orig_get(f"{BASE_URL}/v1/chat/history?limit=50",
+                      headers={"X-API-Key": SHARED_KEY}, timeout=5)
+        msgs = r.json().get("messages", [])
+        check("user1 does NOT see user2's message",
+              not any(m.get("content") == "isolated-from-user2" for m in msgs))
+
+        # user2 sees their own
+        r = _orig_get(f"{BASE_URL}/v1/chat/history?limit=50",
+                      headers={"X-API-Key": key2}, timeout=5)
+        msgs = r.json().get("messages", [])
+        check("user2 sees their own message",
+              any(m.get("content") == "isolated-from-user2" for m in msgs))
+
+    # No key at all → 401
+    r = _orig_get(f"{BASE_URL}/v1/screen/analyze", timeout=5)
+    check("no-auth → 401", r.status_code == 401, f"got {r.status_code}")
+
+    # Bogus key → 401
+    r = _orig_get(f"{BASE_URL}/v1/screen/analyze",
+                  headers={"X-API-Key": "nope"}, timeout=5)
+    check("bogus key → 401", r.status_code == 401, f"got {r.status_code}")
+
+    # ?key= query param works
+    r = _orig_get(f"{BASE_URL}/v1/screen/analyze?key={SHARED_KEY}", timeout=5)
+    check("?key= query param works", r.status_code == 200)
+
+    # Bearer header works
+    r = _orig_get(f"{BASE_URL}/v1/screen/analyze",
+                  headers={"Authorization": f"Bearer {SHARED_KEY}"}, timeout=5)
+    check("Authorization: Bearer works", r.status_code == 200)
+
+    # whoami returns our user_id
+    r = _orig_get(f"{BASE_URL}/v1/users/whoami",
+                  headers={"X-API-Key": SHARED_KEY}, timeout=5)
+    check("whoami returns 200", r.status_code == 200)
+    if r.status_code == 200:
+        check("whoami user_id matches", r.json().get("user_id", "").startswith("usr_"))
+
 
 # ---------------------------------------------------------------------------
 # Summary

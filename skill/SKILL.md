@@ -24,6 +24,8 @@ When debugging or improving Feedling MCP, prefer reusable repo-level changes ove
 - `FEEDLING_API_URL` — Base URL of the Feedling backend (e.g. `http://54.209.126.4:5001`)
 - `FEEDLING_API_KEY` — API key (sent as `X-API-Key` header)
 
+Cloud and self-hosted both use the same two env vars. In cloud mode the user gets the key from their iOS app's Settings → Agent Setup. In self-hosted mode the user generates it with `openssl rand -hex 32` during setup — see the runbook below.
+
 ---
 
 ## First Connection — Bootstrap
@@ -455,3 +457,112 @@ List all registered push tokens and their status.
 ```
 GET {FEEDLING_API_URL}/v1/push/tokens
 ```
+
+---
+
+## Self-Hosted Setup (Pro Users)
+
+If the user wants to run their own Feedling server on a VPS they control,
+follow this runbook end-to-end. You need SSH access to their machine.
+Every step has a **Verify** line — do not move on until it passes.
+
+### 0. Pre-flight
+- Confirm SSH works: `ssh <user>@<host> "uname -a"` prints kernel + arch.
+- Confirm Python 3.10+: `ssh <user>@<host> "python3 --version"` prints >= 3.10.
+- Confirm the user owns a domain they can point at this VPS (for HTTPS).
+
+### 1. Clone the repo
+```bash
+ssh <user>@<host> "git clone https://github.com/Account-Link/feedling-mcp-v1 ~/feedling-mcp-v1"
+```
+**Verify:** `ssh <user>@<host> "ls ~/feedling-mcp-v1/backend/app.py"` prints the path.
+
+### 2. Generate a strong API key
+```bash
+API_KEY=$(openssl rand -hex 32)
+echo "Save this — give it to the user later: $API_KEY"
+```
+Keep `$API_KEY` in your local session; don't paste it into chat.
+
+### 3. Install a virtualenv + deps + APNs key (if provided)
+```bash
+ssh <user>@<host> <<EOF
+cd ~/feedling-mcp-v1
+python3 -m venv ~/feedling-venv
+~/feedling-venv/bin/pip install -r backend/requirements.txt
+mkdir -p ~/feedling-data
+EOF
+```
+**Verify:** `ssh <user>@<host> "~/feedling-venv/bin/python -c 'import flask, fastmcp, httpx, jwt, websockets'"` exits 0.
+
+If the user has an Apple `.p8` key for push, scp it into `~/feedling-data/`:
+```bash
+scp AuthKey_<KEY_ID>.p8 <user>@<host>:~/feedling-data/
+```
+Without it, push endpoints log only — chat + identity + memory still work.
+
+### 4. Write the env file (single-user mode)
+```bash
+ssh <user>@<host> <<EOF
+cat > ~/feedling-data/.env <<INNER
+SINGLE_USER=true
+FEEDLING_API_KEY=$API_KEY
+FEEDLING_DATA_DIR=/home/$(whoami)/feedling-data
+INNER
+chmod 600 ~/feedling-data/.env
+EOF
+```
+**Verify:** `ssh <user>@<host> "ls -l ~/feedling-data/.env"` shows `-rw-------`.
+
+### 5. Install and start systemd units
+```bash
+ssh <user>@<host> <<'EOF'
+sudo cp ~/feedling-mcp-v1/deploy/feedling-backend.service /etc/systemd/system/
+sudo cp ~/feedling-mcp-v1/deploy/feedling-mcp.service     /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now feedling-backend feedling-mcp
+EOF
+```
+**Verify:** `ssh <user>@<host> "sudo systemctl is-active feedling-backend feedling-mcp"` prints `active` twice.
+
+### 6. Smoke test locally on the VPS
+```bash
+ssh <user>@<host> "curl -s -H 'X-API-Key: $API_KEY' http://127.0.0.1:5001/v1/screen/analyze"
+```
+**Verify:** response has `"active"` field. If you get `401`, the `.env` didn't load — check `systemctl cat feedling-backend` references `~/feedling-data/.env` via `EnvironmentFile=`.
+
+### 7. (Optional) HTTPS via Caddy
+Only do this if the user points DNS for `api.<their-domain>` and `mcp.<their-domain>` at the VPS first.
+```bash
+ssh <user>@<host> <<EOF
+sudo cp ~/feedling-mcp-v1/deploy/Caddyfile /etc/caddy/Caddyfile
+sudo sed -i 's/feedling.app/<their-domain>/g' /etc/caddy/Caddyfile
+sudo systemctl restart caddy
+EOF
+```
+**Verify:** `curl -I https://api.<their-domain>/v1/screen/analyze` returns 401 (key missing) over TLS — not 502 or connection refused.
+
+### 8. Tell the user how to configure their phone
+Hand back these values:
+
+```
+URL:  http://<host>:5001   (or https://api.<their-domain>/ if step 7 succeeded)
+Key:  <$API_KEY>
+```
+
+iOS app → Settings → Storage → Self-hosted → paste URL + Key → Save.
+
+### 9. Verify end-to-end from the iOS side
+Ask the user to tap Settings → Live Activity → Start, then send a chat message.
+`ssh <user>@<host> "tail -f ~/feedling-data/tokens.json"` should show a live_activity token appear within a few seconds.
+
+---
+
+## Troubleshooting self-hosted
+
+| Symptom | Likely cause | Fix |
+|---------|--------------|-----|
+| iOS chat sends but never gets reply | No chat-bridge / Agent running on VPS | Start `feedling-chat-bridge` service, or run your own agent loop against `/v1/chat/poll` |
+| `tools/call` from MCP returns 401 | MCP server is passing the wrong key | Confirm `FEEDLING_API_KEY` matches on both services; restart `feedling-mcp` after changes |
+| Live Activity never updates | `.p8` key missing or `APNS_SANDBOX=False` on a TestFlight build | Place `AuthKey_<KEY_ID>.p8` in `~/feedling-data/`; flip `APNS_SANDBOX` in `app.py` for App Store builds |
+| Frames not arriving via WebSocket | Port 9998 blocked or WS auth failing | Open port 9998 in the VPS firewall; confirm iOS app's API key matches the server's `FEEDLING_API_KEY` (the broadcast extension forwards it as a Bearer token) |

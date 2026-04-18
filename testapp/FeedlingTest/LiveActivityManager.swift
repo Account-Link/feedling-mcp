@@ -14,11 +14,9 @@ class LiveActivityManager: ObservableObject {
     @Published var pushToStartToken: String?
     @Published var lastState: ScreenActivityAttributes.ContentState?
 
-    private let backendURL: String
+    private var backendURL: String { FeedlingAPI.baseURL }
 
     private init() {
-        backendURL = ProcessInfo.processInfo.environment["FEEDLING_API_URL"] ?? "http://54.209.126.4:5001"
-
         // Reconnect to any activity that survived an app restart
         if let existing = Activity<ScreenActivityAttributes>.activities.first {
             currentActivity = existing
@@ -140,11 +138,8 @@ class LiveActivityManager: ObservableObject {
     }
 
     private func upload(path: String, body: [String: String]) async {
-        guard let url = URL(string: backendURL + path) else { return }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        let bodyData = try? JSONSerialization.data(withJSONObject: body)
+        guard let req = FeedlingAPI.shared.authorizedRequest(path: path, method: "POST", body: bodyData) else { return }
         _ = try? await URLSession.shared.data(for: req)
         print("[Token] 📤 Uploaded \(body["type"] ?? "?") token")
     }

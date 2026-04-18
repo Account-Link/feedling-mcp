@@ -1,48 +1,445 @@
 import asyncio
 import base64
 import errno
+import hashlib
+import hmac
 import json
 import os
+import re
+import secrets
 import threading
 import time
 import uuid
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 import jwt
 import websockets
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, abort, g, jsonify, request, send_file
 
 # ---------------------------------------------------------------------------
-# Directories
+# Root directory + deployment mode
 # ---------------------------------------------------------------------------
 
 FEEDLING_DIR = Path(os.environ.get("FEEDLING_DATA_DIR", str(Path.home() / "feedling-data"))).expanduser()
 FEEDLING_DIR.mkdir(parents=True, exist_ok=True)
 
-FRAMES_DIR = FEEDLING_DIR / "frames"
-FRAMES_DIR.mkdir(parents=True, exist_ok=True)
-MAX_FRAMES = 200  # keep last 200 frames on disk
+# SINGLE_USER=true  → flat layout in FEEDLING_DIR, no auth. (Self-hosted / legacy VPS.)
+# SINGLE_USER=false → per-user directories under FEEDLING_DIR/{user_id}, bcrypt-style auth.
+SINGLE_USER = os.environ.get("SINGLE_USER", "true").lower() == "true"
+
+# Single-user mode still needs a user_id for consistent internal paths.
+DEFAULT_USER_ID = "default"
+
+# Optional single-user API key (for self-hosted who want to front the server).
+# If unset in SINGLE_USER mode, auth is skipped entirely (backward-compat).
+SINGLE_USER_API_KEY = os.environ.get("FEEDLING_API_KEY", "").strip()
 
 # ---------------------------------------------------------------------------
-# Frames storage
+# Users registry (multi-tenant only; harmless in single-user mode)
 # ---------------------------------------------------------------------------
 
-_frames_meta: list[dict] = []  # in-memory index: [{filename, ts, app, ocr_text, w, h}]
-_frames_lock = threading.Lock()
+USERS_FILE = FEEDLING_DIR / "users.json"
+_users_lock = threading.Lock()
+_users: list[dict] = []                    # [{user_id, api_key_hash, public_key, created_at}]
+_key_to_user: dict[str, str] = {}          # api_key_hash → user_id (in-memory cache)
+
+# API keys are 32 random bytes (high-entropy), so a fast collision-resistant
+# hash is sufficient — bcrypt is designed for low-entropy passwords. Using
+# SHA-256 over a per-server pepper keeps the hash table safe even if the file
+# leaks, while avoiding per-request bcrypt cost (which would be dramatic given
+# long-poll + screen-analyze are hit every few seconds).
+def _server_pepper() -> bytes:
+    """Stable secret for key hashing. Persisted under FEEDLING_DIR."""
+    pepper_file = FEEDLING_DIR / ".pepper"
+    if pepper_file.exists():
+        try:
+            return pepper_file.read_bytes()
+        except Exception:
+            pass
+    pepper = secrets.token_bytes(32)
+    try:
+        pepper_file.write_bytes(pepper)
+        os.chmod(pepper_file, 0o600)
+    except Exception as e:
+        print(f"[users] could not persist pepper: {e}")
+    return pepper
 
 
-def _frame_url(filename: str) -> str:
-    """Build a public URL for a frame. Prefers FEEDLING_PUBLIC_BASE_URL env var."""
+_PEPPER = _server_pepper()
+
+
+def _hash_api_key(api_key: str) -> str:
+    return hmac.new(_PEPPER, api_key.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _load_users():
+    global _users, _key_to_user
+    try:
+        if USERS_FILE.exists():
+            data = json.loads(USERS_FILE.read_text())
+            _users = data if isinstance(data, list) else []
+    except Exception as e:
+        print(f"[users] failed to load: {e}")
+        _users = []
+    _key_to_user = {u["api_key_hash"]: u["user_id"] for u in _users if "api_key_hash" in u}
+    print(f"[users] loaded {len(_users)} user(s)")
+
+
+def _save_users():
+    try:
+        USERS_FILE.write_text(json.dumps(_users, indent=2))
+        os.chmod(USERS_FILE, 0o600)
+    except Exception as e:
+        print(f"[users] failed to save: {e}")
+
+
+def _resolve_user(api_key: str) -> str | None:
+    if not api_key:
+        return None
+    h = _hash_api_key(api_key)
+    uid = _key_to_user.get(h)
+    if uid:
+        return uid
+    with _users_lock:
+        for u in _users:
+            if u.get("api_key_hash") == h:
+                _key_to_user[h] = u["user_id"]
+                return u["user_id"]
+    return None
+
+
+_USER_ID_RE = re.compile(r"^usr_[a-f0-9]{16}$")
+
+
+def _register_user(public_key: str | None = None) -> dict:
+    user_id = f"usr_{secrets.token_hex(8)}"
+    api_key = secrets.token_hex(32)
+    entry = {
+        "user_id": user_id,
+        "api_key_hash": _hash_api_key(api_key),
+        "public_key": (public_key or "").strip(),
+        "created_at": datetime.now().isoformat(),
+    }
+    with _users_lock:
+        _users.append(entry)
+        _save_users()
+        _key_to_user[entry["api_key_hash"]] = user_id
+    print(f"[users] registered {user_id}")
+    return {"user_id": user_id, "api_key": api_key}
+
+
+_load_users()
+
+# ---------------------------------------------------------------------------
+# Per-user state store
+# ---------------------------------------------------------------------------
+
+MAX_FRAMES = 200
+MAX_CHAT_MESSAGES = 500
+PUSH_COOLDOWN_SECONDS = int(os.environ.get("FEEDLING_PUSH_COOLDOWN_SEC", 300))
+LIVE_ACTIVITY_DEDUPE_SEC = int(os.environ.get("FEEDLING_LIVE_ACTIVITY_DEDUPE_SEC", 900))
+
+
+class UserStore:
+    """All per-user state + file paths + locks. One instance per user_id."""
+
+    def __init__(self, user_id: str):
+        self.user_id = user_id
+        # Single-user "default" keeps the flat layout so existing VPS data is untouched.
+        if SINGLE_USER and user_id == DEFAULT_USER_ID:
+            self.dir = FEEDLING_DIR
+        else:
+            self.dir = FEEDLING_DIR / user_id
+        self.dir.mkdir(parents=True, exist_ok=True)
+
+        self.frames_dir = self.dir / "frames"
+        self.frames_dir.mkdir(parents=True, exist_ok=True)
+
+        # frames
+        self.frames_meta: list[dict] = []
+        self.frames_lock = threading.Lock()
+
+        # chat
+        self.chat_messages: list[dict] = []
+        self.chat_lock = threading.Lock()
+        self.chat_waiters: list[threading.Event] = []
+        self.chat_waiters_lock = threading.Lock()
+
+        # tokens
+        self.tokens: list[dict] = []
+
+        # push cooldown
+        self.last_push_epoch: float = 0.0
+        self.last_push_mono: float = 0.0
+        self.push_lock = threading.Lock()
+
+        # live activity dedupe
+        self.live_activity_state = {
+            "last_message": "",
+            "last_top_app": "",
+            "last_sent_epoch": 0.0,
+        }
+        self.live_activity_state_lock = threading.Lock()
+
+        # identity / memory locks
+        self.identity_lock = threading.Lock()
+        self.memory_lock = threading.Lock()
+
+        # load persistent state
+        self._load_tokens()
+        self._load_push_state()
+        self._load_live_activity_state()
+        self._load_chat()
+
+    # ------- file paths -------
+    @property
+    def push_state_file(self) -> Path:
+        return self.dir / "push_state.json"
+
+    @property
+    def live_activity_state_file(self) -> Path:
+        return self.dir / "live_activity_state.json"
+
+    @property
+    def tokens_file(self) -> Path:
+        return self.dir / "tokens.json"
+
+    @property
+    def chat_file(self) -> Path:
+        return self.dir / "chat.json"
+
+    @property
+    def identity_file(self) -> Path:
+        return self.dir / "identity.json"
+
+    @property
+    def memory_file(self) -> Path:
+        return self.dir / "memory.json"
+
+    @property
+    def bootstrap_file(self) -> Path:
+        return self.dir / "bootstrap.json"
+
+    @property
+    def bootstrap_events_file(self) -> Path:
+        return self.dir / "bootstrap_events.jsonl"
+
+    # ------- tokens -------
+    def _load_tokens(self):
+        try:
+            if self.tokens_file.exists():
+                data = json.loads(self.tokens_file.read_text())
+                self.tokens = data if isinstance(data, list) else []
+        except Exception as e:
+            print(f"[{self.user_id}/tokens] load failed: {e}")
+            self.tokens = []
+        self.tokens[:] = [_normalize_token_entry(t) for t in self.tokens]
+        self._save_tokens()
+
+    def _save_tokens(self):
+        try:
+            self.tokens_file.write_text(json.dumps(self.tokens))
+        except Exception as e:
+            print(f"[{self.user_id}/tokens] save failed: {e}")
+
+    # ------- push cooldown -------
+    def _load_push_state(self):
+        try:
+            if self.push_state_file.exists():
+                data = json.loads(self.push_state_file.read_text())
+                epoch = float(data.get("last_push_epoch", 0.0))
+                elapsed = time.time() - epoch
+                if 0 <= elapsed < PUSH_COOLDOWN_SECONDS:
+                    self.last_push_epoch = epoch
+                    self.last_push_mono = time.monotonic() - elapsed
+        except Exception as e:
+            print(f"[{self.user_id}/push_state] load failed: {e}")
+
+    def record_successful_push(self):
+        with self.push_lock:
+            self.last_push_epoch = time.time()
+            self.last_push_mono = time.monotonic()
+        try:
+            self.push_state_file.write_text(json.dumps({"last_push_epoch": self.last_push_epoch}))
+        except Exception as e:
+            print(f"[{self.user_id}/push_state] save failed: {e}")
+
+    def cooldown_remaining_seconds(self) -> float:
+        with self.push_lock:
+            elapsed = time.monotonic() - self.last_push_mono
+        return max(0.0, PUSH_COOLDOWN_SECONDS - elapsed)
+
+    # ------- live activity dedupe -------
+    def _load_live_activity_state(self):
+        try:
+            if self.live_activity_state_file.exists():
+                data = json.loads(self.live_activity_state_file.read_text())
+                if isinstance(data, dict):
+                    self.live_activity_state = {
+                        "last_message": str(data.get("last_message", "")),
+                        "last_top_app": str(data.get("last_top_app", "")),
+                        "last_sent_epoch": float(data.get("last_sent_epoch", 0.0)),
+                    }
+        except Exception as e:
+            print(f"[{self.user_id}/live-activity] load failed: {e}")
+
+    def _save_live_activity_state(self):
+        try:
+            self.live_activity_state_file.write_text(json.dumps(self.live_activity_state))
+        except Exception as e:
+            print(f"[{self.user_id}/live-activity] save failed: {e}")
+
+    def should_suppress_live_activity(self, message: str, top_app: str) -> tuple[bool, str]:
+        normalized_message = " ".join((message or "").strip().split())
+        normalized_app = (top_app or "").strip().lower()
+        if not normalized_message:
+            return True, "empty_message"
+
+        with self.live_activity_state_lock:
+            last_message = " ".join((self.live_activity_state.get("last_message") or "").strip().split())
+            last_app = (self.live_activity_state.get("last_top_app") or "").strip().lower()
+            last_sent = float(self.live_activity_state.get("last_sent_epoch", 0.0))
+
+        elapsed = max(0.0, time.time() - last_sent)
+
+        if normalized_message == last_message and elapsed < 1800:
+            return True, f"duplicate_message_within_30m:{int(1800 - elapsed)}s"
+
+        if (
+            normalized_message == last_message
+            and normalized_app == last_app
+            and elapsed < LIVE_ACTIVITY_DEDUPE_SEC
+        ):
+            return True, f"same_app_duplicate:{int(LIVE_ACTIVITY_DEDUPE_SEC - elapsed)}s"
+
+        return False, "ok"
+
+    def record_live_activity_sent(self, message: str, top_app: str):
+        with self.live_activity_state_lock:
+            self.live_activity_state["last_message"] = " ".join((message or "").strip().split())
+            self.live_activity_state["last_top_app"] = (top_app or "").strip().lower()
+            self.live_activity_state["last_sent_epoch"] = time.time()
+        self._save_live_activity_state()
+
+    # ------- chat -------
+    def _load_chat(self):
+        try:
+            if self.chat_file.exists():
+                data = json.loads(self.chat_file.read_text())
+                self.chat_messages = data if isinstance(data, list) else []
+        except Exception as e:
+            print(f"[{self.user_id}/chat] load failed: {e}")
+            self.chat_messages = []
+
+    def _persist_chat(self):
+        try:
+            self.chat_file.write_text(json.dumps(self.chat_messages))
+        except Exception as e:
+            print(f"[{self.user_id}/chat] save failed: {e}")
+
+    def append_chat(self, role: str, content: str, source: str = "chat") -> dict:
+        msg = {
+            "id": uuid.uuid4().hex,
+            "role": role,
+            "content": content,
+            "ts": time.time(),
+            "source": source,
+        }
+        with self.chat_lock:
+            self.chat_messages.append(msg)
+            if len(self.chat_messages) > MAX_CHAT_MESSAGES:
+                self.chat_messages[:] = self.chat_messages[-MAX_CHAT_MESSAGES:]
+            self._persist_chat()
+        return msg
+
+    def notify_chat_waiters(self):
+        with self.chat_waiters_lock:
+            for ev in self.chat_waiters:
+                ev.set()
+            self.chat_waiters.clear()
+
+
+# Registry of per-user stores
+_stores: dict[str, UserStore] = {}
+_stores_lock = threading.Lock()
+
+
+def get_store(user_id: str) -> UserStore:
+    with _stores_lock:
+        store = _stores.get(user_id)
+        if store is None:
+            store = UserStore(user_id)
+            _stores[user_id] = store
+        return store
+
+
+# Eagerly create the default store so SINGLE_USER mode starts with state loaded.
+if SINGLE_USER:
+    get_store(DEFAULT_USER_ID)
+
+
+# ---------------------------------------------------------------------------
+# Auth middleware
+# ---------------------------------------------------------------------------
+
+
+def _extract_api_key() -> str | None:
+    key = request.headers.get("X-API-Key", "").strip()
+    if key:
+        return key
+    auth = request.headers.get("Authorization", "").strip()
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    qkey = request.args.get("key", "").strip()
+    if qkey:
+        return qkey
+    return None
+
+
+def require_user() -> UserStore:
+    """Return the UserStore for the current request. Aborts 401 on bad auth."""
+    if SINGLE_USER:
+        # If a single-user key is configured, enforce it; otherwise skip auth.
+        if SINGLE_USER_API_KEY:
+            key = _extract_api_key()
+            if key != SINGLE_USER_API_KEY:
+                abort(401)
+        g.user_id = DEFAULT_USER_ID
+        return get_store(DEFAULT_USER_ID)
+
+    key = _extract_api_key()
+    if not key:
+        abort(401)
+    user_id = _resolve_user(key)
+    if not user_id:
+        abort(401)
+    g.user_id = user_id
+    return get_store(user_id)
+
+
+# ---------------------------------------------------------------------------
+# Frames helpers
+# ---------------------------------------------------------------------------
+
+
+def _frame_url(store: UserStore, filename: str) -> str:
     base = os.environ.get("FEEDLING_PUBLIC_BASE_URL", "").rstrip("/")
     if not base:
-        base = request.host_url.rstrip("/")
-    return f"{base}/v1/screen/frames/{filename}"
+        try:
+            base = request.host_url.rstrip("/")
+        except RuntimeError:
+            base = ""
+    # Non-default users get a scoped frame URL so the served file resolves under their dir.
+    if SINGLE_USER and store.user_id == DEFAULT_USER_ID:
+        return f"{base}/v1/screen/frames/{filename}"
+    return f"{base}/v1/screen/frames/{filename}?user={store.user_id}"
 
 
-def _save_frame(payload: dict):
+def _save_frame(store: UserStore, payload: dict):
     ts = payload.get("ts", time.time())
     img_b64 = payload.get("image", "")
     if not img_b64:
@@ -53,7 +450,7 @@ def _save_frame(payload: dict):
         return
 
     filename = f"frame_{int(ts * 1000)}.jpg"
-    fpath = FRAMES_DIR / filename
+    fpath = store.frames_dir / filename
     fpath.write_bytes(img_bytes)
 
     meta = {
@@ -65,141 +462,101 @@ def _save_frame(payload: dict):
         "h": payload.get("h", 0),
     }
 
-    with _frames_lock:
-        _frames_meta.append(meta)
-        if len(_frames_meta) > MAX_FRAMES:
-            removed = _frames_meta.pop(0)
-            old = FRAMES_DIR / removed["filename"]
+    with store.frames_lock:
+        store.frames_meta.append(meta)
+        if len(store.frames_meta) > MAX_FRAMES:
+            removed = store.frames_meta.pop(0)
+            old = store.frames_dir / removed["filename"]
             if old.exists():
                 old.unlink()
 
-    print(f"[ingest] saved {filename} app={meta['app']} ocr={len(meta['ocr_text'])}chars")
+    print(f"[ingest:{store.user_id}] saved {filename} app={meta['app']} ocr={len(meta['ocr_text'])}chars")
 
 
 # ---------------------------------------------------------------------------
-# Push cooldown state (thread-safe + persistent)
+# Token entry helpers (pure functions over the per-user list)
 # ---------------------------------------------------------------------------
 
-PUSH_COOLDOWN_SECONDS = int(os.environ.get("FEEDLING_PUSH_COOLDOWN_SEC", 300))
-PUSH_STATE_FILE = FEEDLING_DIR / "push_state.json"
-PUSH_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)  # P1: defensive mkdir
 
-_last_push_epoch: float = 0.0   # wall-clock time of last push (for persistence)
-_last_push_mono: float = 0.0    # monotonic time of last push (for duration math)
-_last_push_lock = threading.Lock()
-
-
-def _load_push_state():
-    """Load persisted push state on startup so cooldown survives restarts."""
-    global _last_push_epoch, _last_push_mono
-    try:
-        if PUSH_STATE_FILE.exists():
-            data = json.loads(PUSH_STATE_FILE.read_text())
-            epoch = float(data.get("last_push_epoch", 0.0))
-            elapsed = time.time() - epoch
-            if 0 <= elapsed < PUSH_COOLDOWN_SECONDS:
-                _last_push_epoch = epoch
-                _last_push_mono = time.monotonic() - elapsed
-                print(f"[push_state] loaded — cooldown {round(PUSH_COOLDOWN_SECONDS - elapsed)}s remaining")
-            else:
-                print("[push_state] loaded — cooldown already expired")
-    except Exception as e:
-        print(f"[push_state] failed to load: {e}")
+def _normalize_token_entry(entry: dict) -> dict:
+    normalized = dict(entry)
+    normalized.setdefault("status", "active")
+    normalized.setdefault("last_error", "")
+    normalized.setdefault("last_success_at", "")
+    normalized.setdefault("updated_at", normalized.get("registered_at", datetime.now().isoformat()))
+    return normalized
 
 
-def _record_successful_push():
-    """Record a successful push delivery. Thread-safe. Persists to disk."""
-    global _last_push_epoch, _last_push_mono
-    with _last_push_lock:
-        _last_push_epoch = time.time()
-        _last_push_mono = time.monotonic()
-    try:
-        PUSH_STATE_FILE.write_text(json.dumps({"last_push_epoch": _last_push_epoch}))
-    except Exception as e:
-        print(f"[push_state] failed to save: {e}")
+def _is_live_activity_token(entry: dict) -> bool:
+    return entry.get("type") in ("live-activity", "live_activity")
 
 
-def _cooldown_remaining_seconds() -> float:
-    """Seconds left in push cooldown. Returns 0.0 if cooldown has expired."""
-    with _last_push_lock:
-        elapsed = time.monotonic() - _last_push_mono
-    return max(0.0, PUSH_COOLDOWN_SECONDS - elapsed)
+def _is_push_to_start_token(entry: dict) -> bool:
+    return entry.get("type") == "push_to_start"
 
 
-_load_push_state()
+def _entry_is_active(entry: dict) -> bool:
+    return (entry.get("status") or "active") == "active"
+
+
+def _select_token(store: UserStore, predicate, activity_id: str | None = None, active_only: bool = True):
+    candidates = []
+    for raw in store.tokens:
+        entry = _normalize_token_entry(raw)
+        if not predicate(entry):
+            continue
+        if activity_id and entry.get("activity_id") != activity_id:
+            continue
+        if active_only and not _entry_is_active(entry):
+            continue
+        if not entry.get("token"):
+            continue
+        candidates.append(entry)
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x.get("registered_at", ""), reverse=True)
+    return candidates[0]
+
+
+def _update_token_lifecycle(store: UserStore, entry: dict, *, status: str | None = None, last_error: str | None = None, success: bool = False):
+    token = entry.get("token")
+    token_type = entry.get("type")
+    activity_id = entry.get("activity_id")
+    now_iso = datetime.now().isoformat()
+
+    changed = False
+    for idx, raw in enumerate(store.tokens):
+        cur = _normalize_token_entry(raw)
+        if cur.get("token") != token or cur.get("type") != token_type or cur.get("activity_id") != activity_id:
+            continue
+        if status is not None:
+            cur["status"] = status
+        if last_error is not None:
+            cur["last_error"] = last_error
+        if success:
+            cur["last_success_at"] = now_iso
+            cur["status"] = "active"
+            cur["last_error"] = ""
+        cur["updated_at"] = now_iso
+        store.tokens[idx] = cur
+        changed = True
+        break
+
+    if changed:
+        store._save_tokens()
+
+
+def _mark_expired_token(store: UserStore, entry: dict, reason: str):
+    _update_token_lifecycle(store, entry, status="expired", last_error=reason)
+
+
+def _mark_active_token_success(store: UserStore, entry: dict):
+    _update_token_lifecycle(store, entry, success=True)
+
 
 # ---------------------------------------------------------------------------
-# Live Activity message dedupe state
-# ---------------------------------------------------------------------------
-
-LIVE_ACTIVITY_DEDUPE_SEC = int(os.environ.get("FEEDLING_LIVE_ACTIVITY_DEDUPE_SEC", 900))
-LIVE_ACTIVITY_STATE_FILE = FEEDLING_DIR / "live_activity_state.json"
-_live_activity_state_lock = threading.Lock()
-_live_activity_state = {
-    "last_message": "",
-    "last_top_app": "",
-    "last_sent_epoch": 0.0,
-}
-
-
-def _load_live_activity_state():
-    global _live_activity_state
-    try:
-        if LIVE_ACTIVITY_STATE_FILE.exists():
-            data = json.loads(LIVE_ACTIVITY_STATE_FILE.read_text())
-            if isinstance(data, dict):
-                _live_activity_state = {
-                    "last_message": str(data.get("last_message", "")),
-                    "last_top_app": str(data.get("last_top_app", "")),
-                    "last_sent_epoch": float(data.get("last_sent_epoch", 0.0)),
-                }
-    except Exception as e:
-        print(f"[live-activity] failed to load dedupe state: {e}")
-
-
-def _save_live_activity_state():
-    try:
-        LIVE_ACTIVITY_STATE_FILE.write_text(json.dumps(_live_activity_state))
-    except Exception as e:
-        print(f"[live-activity] failed to save dedupe state: {e}")
-
-
-def _should_suppress_live_activity(message: str, top_app: str) -> tuple[bool, str]:
-    normalized_message = " ".join((message or "").strip().split())
-    normalized_app = (top_app or "").strip().lower()
-    if not normalized_message:
-        return True, "empty_message"
-
-    with _live_activity_state_lock:
-        last_message = " ".join((_live_activity_state.get("last_message") or "").strip().split())
-        last_app = (_live_activity_state.get("last_top_app") or "").strip().lower()
-        last_sent = float(_live_activity_state.get("last_sent_epoch", 0.0))
-
-    elapsed = max(0.0, time.time() - last_sent)
-
-    # Suppress exact same wording for 30 minutes.
-    if normalized_message == last_message and elapsed < 1800:
-        return True, f"duplicate_message_within_30m:{int(1800 - elapsed)}s"
-
-    # Suppress same app + same wording bursts in shorter dedupe window.
-    if normalized_message == last_message and normalized_app == last_app and elapsed < LIVE_ACTIVITY_DEDUPE_SEC:
-        return True, f"same_app_duplicate:{int(LIVE_ACTIVITY_DEDUPE_SEC - elapsed)}s"
-
-    return False, "ok"
-
-
-def _record_live_activity_sent(message: str, top_app: str):
-    with _live_activity_state_lock:
-        _live_activity_state["last_message"] = " ".join((message or "").strip().split())
-        _live_activity_state["last_top_app"] = (top_app or "").strip().lower()
-        _live_activity_state["last_sent_epoch"] = time.time()
-    _save_live_activity_state()
-
-
-_load_live_activity_state()
-
-# ---------------------------------------------------------------------------
-# Semantic-first trigger helpers
+# Semantic helpers (stateless, unchanged from previous version)
 # ---------------------------------------------------------------------------
 
 
@@ -209,10 +566,6 @@ def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
 
 
 def _semantic_analysis(current_app: str, ocr_summary: str) -> dict:
-    """
-    Semantic-first screen interpretation.
-    Behavior metrics (dwell/switch) are secondary confidence signals only.
-    """
     app = (current_app or "unknown").lower()
     text = (ocr_summary or "").lower()
 
@@ -255,7 +608,6 @@ def _semantic_analysis(current_app: str, ocr_summary: str) -> dict:
             ],
         }
 
-    # Ambiguous context: still allow gentle, curiosity-first conversation starts.
     return {
         "semantic_scene": "ambiguous_context",
         "task_intent": "unknown",
@@ -271,205 +623,86 @@ def _semantic_analysis(current_app: str, ocr_summary: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Push token persistence
-# ---------------------------------------------------------------------------
-
-TOKENS_FILE = FEEDLING_DIR / "tokens.json"
-REGISTERED_TOKENS: list[dict] = []
-
-
-def _load_tokens():
-    global REGISTERED_TOKENS
-    try:
-        if TOKENS_FILE.exists():
-            data = json.loads(TOKENS_FILE.read_text())
-            REGISTERED_TOKENS = data if isinstance(data, list) else []
-            print(f"[tokens] loaded {len(REGISTERED_TOKENS)} token(s)")
-    except Exception as e:
-        print(f"[tokens] failed to load (starting empty): {e}")
-        REGISTERED_TOKENS = []
-
-
-def _save_tokens():
-    try:
-        TOKENS_FILE.write_text(json.dumps(REGISTERED_TOKENS))
-    except Exception as e:
-        print(f"[tokens] failed to save: {e}")
-
-
-def _normalize_token_entry(entry: dict) -> dict:
-    """Backfill lifecycle fields for legacy token rows."""
-    normalized = dict(entry)
-    normalized.setdefault("status", "active")
-    normalized.setdefault("last_error", "")
-    normalized.setdefault("last_success_at", "")
-    normalized.setdefault("updated_at", normalized.get("registered_at", datetime.now().isoformat()))
-    return normalized
-
-
-def _is_live_activity_token(entry: dict) -> bool:
-    return entry.get("type") in ("live-activity", "live_activity")
-
-
-def _is_push_to_start_token(entry: dict) -> bool:
-    return entry.get("type") == "push_to_start"
-
-
-def _entry_is_active(entry: dict) -> bool:
-    return (entry.get("status") or "active") == "active"
-
-
-def _select_token(predicate, activity_id: str | None = None, active_only: bool = True):
-    candidates = []
-    for raw in REGISTERED_TOKENS:
-        entry = _normalize_token_entry(raw)
-        if not predicate(entry):
-            continue
-        if activity_id and entry.get("activity_id") != activity_id:
-            continue
-        if active_only and not _entry_is_active(entry):
-            continue
-        if not entry.get("token"):
-            continue
-        candidates.append(entry)
-
-    if not candidates:
-        return None
-
-    # Newest token wins.
-    candidates.sort(key=lambda x: x.get("registered_at", ""), reverse=True)
-    return candidates[0]
-
-
-def _update_token_lifecycle(entry: dict, *, status: str | None = None, last_error: str | None = None, success: bool = False):
-    token = entry.get("token")
-    token_type = entry.get("type")
-    activity_id = entry.get("activity_id")
-    now_iso = datetime.now().isoformat()
-
-    changed = False
-    for idx, raw in enumerate(REGISTERED_TOKENS):
-        cur = _normalize_token_entry(raw)
-        if cur.get("token") != token or cur.get("type") != token_type or cur.get("activity_id") != activity_id:
-            continue
-        if status is not None:
-            cur["status"] = status
-        if last_error is not None:
-            cur["last_error"] = last_error
-        if success:
-            cur["last_success_at"] = now_iso
-            cur["status"] = "active"
-            cur["last_error"] = ""
-        cur["updated_at"] = now_iso
-        REGISTERED_TOKENS[idx] = cur
-        changed = True
-        break
-
-    if changed:
-        _save_tokens()
-
-
-def _mark_expired_token(entry: dict, reason: str):
-    _update_token_lifecycle(entry, status="expired", last_error=reason)
-
-
-def _mark_active_token_success(entry: dict):
-    _update_token_lifecycle(entry, success=True)
-
-
-_load_tokens()
-# Backfill lifecycle fields for tokens persisted before lifecycle metadata existed.
-REGISTERED_TOKENS[:] = [_normalize_token_entry(t) for t in REGISTERED_TOKENS]
-_save_tokens()
-
-# ---------------------------------------------------------------------------
-# Chat history (persistent)
-# ---------------------------------------------------------------------------
-
-CHAT_FILE = FEEDLING_DIR / "chat.json"
-MAX_CHAT_MESSAGES = 500
-
-_chat_messages: list[dict] = []
-_chat_lock = threading.Lock()
-
-# Long-poll waiters: list of threading.Event, one per waiting request
-_chat_waiters: list[threading.Event] = []
-_chat_waiters_lock = threading.Lock()
-
-
-def _notify_chat_waiters():
-    """Wake up all long-poll waiters when a new user message arrives."""
-    with _chat_waiters_lock:
-        for ev in _chat_waiters:
-            ev.set()
-        _chat_waiters.clear()
-
-
-def _load_chat():
-    global _chat_messages
-    try:
-        if CHAT_FILE.exists():
-            data = json.loads(CHAT_FILE.read_text())
-            _chat_messages = data if isinstance(data, list) else []
-            print(f"[chat] loaded {len(_chat_messages)} message(s)")
-    except Exception as e:
-        print(f"[chat] failed to load (starting empty): {e}")
-        _chat_messages = []
-
-
-def _persist_chat():
-    try:
-        CHAT_FILE.write_text(json.dumps(_chat_messages))
-    except Exception as e:
-        print(f"[chat] failed to save: {e}")
-
-
-def _append_chat(role: str, content: str, source: str = "chat") -> dict:
-    """Append a message. Thread-safe, persists immediately."""
-    msg = {
-        "id": uuid.uuid4().hex,
-        "role": role,
-        "content": content,
-        "ts": time.time(),
-        "source": source,
-    }
-    with _chat_lock:
-        _chat_messages.append(msg)
-        if len(_chat_messages) > MAX_CHAT_MESSAGES:
-            _chat_messages[:] = _chat_messages[-MAX_CHAT_MESSAGES:]
-        _persist_chat()
-    return msg
-
-
-_load_chat()
-
-# ---------------------------------------------------------------------------
 # WebSocket ingest server
 # ---------------------------------------------------------------------------
 
 WS_PORT = int(os.environ.get("FEEDLING_WS_PORT", 9998))
 
 
+def _resolve_ws_user(websocket) -> str | None:
+    """Resolve user from WS connection. Returns user_id, or None on auth failure.
+
+    Single-user: always returns DEFAULT_USER_ID.
+    Multi-user: reads ?key=... from the path, or "Bearer ..." from the
+    Authorization header (whichever arrives first)."""
+    if SINGLE_USER:
+        return DEFAULT_USER_ID
+
+    # websockets lib v12+ uses websocket.request.path and .headers
+    path = getattr(websocket, "path", "") or ""
+    key = None
+    if "?" in path:
+        try:
+            q = parse_qs(urlparse(path).query)
+            k = q.get("key", [""])[0].strip()
+            if k:
+                key = k
+        except Exception:
+            pass
+
+    if not key:
+        # websockets>=10 exposes headers via .request_headers or .request.headers
+        headers = getattr(websocket, "request_headers", None) or getattr(
+            getattr(websocket, "request", None), "headers", {}
+        )
+        auth = ""
+        try:
+            auth = headers.get("Authorization", "")
+        except Exception:
+            try:
+                auth = headers["Authorization"]
+            except Exception:
+                auth = ""
+        if auth and auth.lower().startswith("bearer "):
+            key = auth[7:].strip()
+
+    if not key:
+        return None
+    return _resolve_user(key)
+
+
 async def _ws_handler(websocket):
-    print(f"[ws] client connected: {websocket.remote_address}")
+    try:
+        user_id = _resolve_ws_user(websocket)
+    except Exception as e:
+        print(f"[ws] auth error: {e}")
+        await websocket.close(code=4401, reason="unauthorized")
+        return
+    if not user_id:
+        print("[ws] rejected: no valid key")
+        await websocket.close(code=4401, reason="unauthorized")
+        return
+
+    store = get_store(user_id)
+    print(f"[ws] client connected user={user_id} peer={websocket.remote_address}")
     try:
         async for message in websocket:
             try:
                 data = json.loads(message)
                 if data.get("type") == "frame":
-                    threading.Thread(target=_save_frame, args=(data,), daemon=True).start()
+                    threading.Thread(target=_save_frame, args=(store, data), daemon=True).start()
             except Exception as e:
-                print(f"[ws] parse error: {e}")
+                print(f"[ws:{user_id}] parse error: {e}")
     except websockets.exceptions.ConnectionClosed:
         pass
-    print("[ws] client disconnected")
+    print(f"[ws:{user_id}] client disconnected")
 
 
 async def _ws_main():
     try:
         async with websockets.serve(_ws_handler, "0.0.0.0", WS_PORT):
             print(f"[ws] WebSocket ingest server running on ws://0.0.0.0:{WS_PORT}/ingest")
-            await asyncio.Future()  # run forever
+            await asyncio.Future()
     except OSError as e:
         if e.errno == errno.EADDRINUSE:
             print(f"[ws] WARNING: port {WS_PORT} already in use — WebSocket ingest disabled, HTTP continues")
@@ -486,13 +719,13 @@ threading.Thread(target=_run_ws_server, daemon=True).start()
 app = Flask(__name__)
 
 # ---------------------------------------------------------------------------
-# APNs config
+# APNs config (global — one Apple dev key for the app)
 # ---------------------------------------------------------------------------
 
 TEAM_ID = "DC9JH5DRMY"
 KEY_ID = "5TH55X5U7T"
 BUNDLE_ID = "com.feedling.mcp"
-APNS_SANDBOX = True  # True for dev/TestFlight, False for App Store
+APNS_SANDBOX = True
 
 _KEY_SEARCH = [
     FEEDLING_DIR / f"AuthKey_{KEY_ID}.p8",
@@ -539,8 +772,9 @@ def _send_apns(device_token: str, payload: dict, push_type: str, topic: str) -> 
     except Exception as e:
         return {"status": "error", "reason": str(e)}
 
+
 # ---------------------------------------------------------------------------
-# Data models / aggregation
+# Aggregation helpers (stateless)
 # ---------------------------------------------------------------------------
 
 TODAY = datetime.now().strftime("%Y-%m-%d")
@@ -591,10 +825,10 @@ def _to_hhmm(ts: float) -> str:
     return datetime.fromtimestamp(ts).strftime("%H:%M")
 
 
-def _build_ios_data(window_sec: float = 86400.0) -> dict:
+def _build_ios_data(store: UserStore, window_sec: float = 86400.0) -> dict:
     now = time.time()
-    with _frames_lock:
-        frames = [f.copy() for f in _frames_meta if now - float(f.get("ts", 0)) <= window_sec]
+    with store.frames_lock:
+        frames = [f.copy() for f in store.frames_meta if now - float(f.get("ts", 0)) <= window_sec]
 
     if not frames:
         fallback = IOS_FALLBACK_DATA.copy()
@@ -621,7 +855,7 @@ def _build_ios_data(window_sec: float = 86400.0) -> dict:
     prev_app_key = None
     prev_ts = None
 
-    for i, frame in enumerate(frames):
+    for frame in frames:
         ts = float(frame.get("ts", 0.0))
         app_raw = frame.get("app") or "unknown"
         app_key = str(app_raw)
@@ -692,6 +926,7 @@ def _build_ios_data(window_sec: float = 86400.0) -> dict:
         "data_source": "real_frames",
     }
 
+
 MAC_DATA = {
     "date": TODAY,
     "total_active_minutes": 395,
@@ -725,29 +960,72 @@ SOURCES_DATA = {
     ]
 }
 
+
+def _log_bootstrap_event(store: UserStore, event_type: str, success: bool, error_message: str = ""):
+    entry = {
+        "user_id": store.user_id,
+        "event_type": event_type,
+        "success": success,
+        "error_message": error_message,
+        "timestamp": datetime.now().isoformat(),
+    }
+    try:
+        with open(store.bootstrap_events_file, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception as e:
+        print(f"[{store.user_id}/bootstrap_events] failed to log: {e}")
+
+
 # ---------------------------------------------------------------------------
-# Routes
+# Users: register endpoint (public — no auth required)
+# ---------------------------------------------------------------------------
+
+
+@app.route("/v1/users/register", methods=["POST"])
+def users_register():
+    if SINGLE_USER:
+        return jsonify({
+            "error": "registration_disabled",
+            "reason": "server runs in SINGLE_USER mode — use the pre-configured FEEDLING_API_KEY",
+        }), 403
+
+    payload = request.get_json(silent=True) or {}
+    public_key = (payload.get("public_key") or "").strip()
+    result = _register_user(public_key=public_key or None)
+    return jsonify(result), 201
+
+
+@app.route("/v1/users/whoami", methods=["GET"])
+def users_whoami():
+    store = require_user()
+    return jsonify({"user_id": store.user_id, "single_user": SINGLE_USER})
+
+
+# ---------------------------------------------------------------------------
+# Screen / aggregation
 # ---------------------------------------------------------------------------
 
 
 @app.route("/v1/screen/ios", methods=["GET"])
 def get_ios():
-    """iOS usage aggregated from real frame stream in the selected window."""
+    store = require_user()
     try:
         window_sec = max(300.0, min(172800.0, float(request.args.get("window_sec", 86400))))
     except (TypeError, ValueError):
         return jsonify({"error": "invalid window_sec"}), 400
-    return jsonify(_build_ios_data(window_sec=window_sec))
+    return jsonify(_build_ios_data(store, window_sec=window_sec))
 
 
 @app.route("/v1/screen/mac", methods=["GET"])
 def get_mac():
+    require_user()
     return jsonify(MAC_DATA)
 
 
 @app.route("/v1/screen/summary", methods=["GET"])
 def get_summary():
-    ios_data = _build_ios_data(window_sec=86400)
+    store = require_user()
+    ios_data = _build_ios_data(store, window_sec=86400)
     top_app = ios_data["apps"][0]["name"] if ios_data.get("apps") else "Unknown"
     categories = ios_data.get("categories") or {}
     top_category = max(categories, key=categories.get) if categories else "Other"
@@ -779,31 +1057,37 @@ def get_summary():
 
 @app.route("/v1/sources", methods=["GET"])
 def get_sources():
+    require_user()
     return jsonify(SOURCES_DATA)
+
+
+# ---------------------------------------------------------------------------
+# Push
+# ---------------------------------------------------------------------------
 
 
 @app.route("/v1/push/dynamic-island", methods=["POST"])
 def push_dynamic_island():
-    """Alias for live-activity — Dynamic Island is driven by Live Activity pushes."""
+    store = require_user()
     payload = request.get_json(silent=True) or {}
-    return push_live_activity_inner(payload)
+    return push_live_activity_inner(store, payload)
 
 
 @app.route("/v1/push/live-activity", methods=["POST"])
 def push_live_activity():
+    store = require_user()
     payload = request.get_json(silent=True) or {}
-    return push_live_activity_inner(payload)
+    return push_live_activity_inner(store, payload)
 
 
-def push_live_activity_inner(payload: dict):
+def push_live_activity_inner(store: UserStore, payload: dict):
     activity_id = payload.get("activity_id")
-    entry = _select_token(_is_live_activity_token, activity_id=activity_id, active_only=True)
+    entry = _select_token(store, _is_live_activity_token, activity_id=activity_id, active_only=True)
     if not entry and activity_id:
-        # Caller may pass a stale activity_id; try newest active token as fallback.
-        entry = _select_token(_is_live_activity_token, activity_id=None, active_only=True)
+        entry = _select_token(store, _is_live_activity_token, activity_id=None, active_only=True)
 
     if not entry:
-        print(f"[live-activity] no active token registered — logged: {payload}")
+        print(f"[live-activity:{store.user_id}] no active token registered — logged: {payload}")
         return jsonify({
             "status": "logged",
             "activity_id": activity_id or f"la_{uuid.uuid4().hex[:8]}",
@@ -814,11 +1098,11 @@ def push_live_activity_inner(payload: dict):
     title = (payload.get("title") or "").strip()
     body = (payload.get("body") or payload.get("message") or "").strip()
     subtitle = (payload.get("subtitle") or "").strip() or None
-    top_app = payload.get("topApp", "")  # legacy compat
+    top_app = payload.get("topApp", "")
 
-    suppress, reason = _should_suppress_live_activity(message=body, top_app=top_app)
+    suppress, reason = store.should_suppress_live_activity(message=body, top_app=top_app)
     if suppress:
-        print(f"[live-activity] suppressed: {reason} body={body[:60]}")
+        print(f"[live-activity:{store.user_id}] suppressed: {reason} body={body[:60]}")
         return jsonify({"status": "suppressed", "reason": reason, "activity_id": entry.get("activity_id")})
 
     apns_payload = {
@@ -842,19 +1126,19 @@ def push_live_activity_inner(payload: dict):
 
     delivered = result.get("status") == "delivered"
     if delivered:
-        _mark_active_token_success(entry)
-        _record_successful_push()
-        _record_live_activity_sent(message=body, top_app=top_app)
+        _mark_active_token_success(store, entry)
+        store.record_successful_push()
+        store.record_live_activity_sent(message=body, top_app=top_app)
         if body:
-            _append_chat("openclaw", body, source="live_activity")
+            store.append_chat("openclaw", body, source="live_activity")
     else:
-        reason = str(result.get("reason", ""))
+        reason_text = str(result.get("reason", ""))
         error_code = result.get("code")
-        if error_code == 410 and ("ExpiredToken" in reason or "Unregistered" in reason):
-            _mark_expired_token(entry, reason)
-            print(f"[live-activity] token expired, marked inactive: activity_id={entry.get('activity_id')}")
+        if error_code == 410 and ("ExpiredToken" in reason_text or "Unregistered" in reason_text):
+            _mark_expired_token(store, entry, reason_text)
+            print(f"[live-activity:{store.user_id}] token expired, marked inactive: activity_id={entry.get('activity_id')}")
 
-    print(f"[live-activity] {result}")
+    print(f"[live-activity:{store.user_id}] {result}")
     response = {
         "status": result.get("status", "error"),
         "activity_id": entry.get("activity_id") or activity_id,
@@ -870,13 +1154,11 @@ def push_live_activity_inner(payload: dict):
 
 @app.route("/v1/push/live-start", methods=["POST"])
 def push_live_start():
-    """
-    Send a push-to-start event so iOS can (re)start Live Activity and upload a fresh live_activity token.
-    """
+    store = require_user()
     payload = request.get_json(silent=True) or {}
-    entry = _select_token(_is_push_to_start_token, active_only=True)
+    entry = _select_token(store, _is_push_to_start_token, active_only=True)
     if not entry:
-        print(f"[live-start] no push_to_start token — logged: {payload}")
+        print(f"[live-start:{store.user_id}] no push_to_start token — logged: {payload}")
         return jsonify({"status": "logged", "reason": "no_active_push_to_start_token"})
 
     title = (payload.get("title") or "").strip()
@@ -902,14 +1184,14 @@ def push_live_start():
     topic = f"{BUNDLE_ID}.push-type.liveactivity"
     result = _send_apns(entry["token"], apns_payload, push_type="liveactivity", topic=topic)
     if result.get("status") == "delivered":
-        _mark_active_token_success(entry)
+        _mark_active_token_success(store, entry)
     else:
-        reason = str(result.get("reason", ""))
+        reason_text = str(result.get("reason", ""))
         error_code = result.get("code")
-        if error_code == 410 and ("ExpiredToken" in reason or "Unregistered" in reason):
-            _mark_expired_token(entry, reason)
+        if error_code == 410 and ("ExpiredToken" in reason_text or "Unregistered" in reason_text):
+            _mark_expired_token(store, entry, reason_text)
 
-    print(f"[live-start] {result}")
+    print(f"[live-start:{store.user_id}] {result}")
     response = {"status": result.get("status", "error")}
     if result.get("code") is not None:
         response["error_code"] = result.get("code")
@@ -920,10 +1202,11 @@ def push_live_start():
 
 @app.route("/v1/push/notification", methods=["POST"])
 def push_notification():
+    store = require_user()
     payload = request.get_json(silent=True) or {}
-    device_token = next((t["token"] for t in REGISTERED_TOKENS if t["type"] == "apns"), None)
+    device_token = next((t["token"] for t in store.tokens if t.get("type") == "apns"), None)
     if not device_token:
-        print(f"[notification] no device token — logged: {payload}")
+        print(f"[notification:{store.user_id}] no device token — logged: {payload}")
         return jsonify({"status": "logged", "message_id": f"msg_{uuid.uuid4().hex[:8]}"})
 
     apns_payload = {
@@ -933,12 +1216,13 @@ def push_notification():
         }
     }
     result = _send_apns(device_token, apns_payload, push_type="alert", topic=BUNDLE_ID)
-    print(f"[notification] {result}")
+    print(f"[notification:{store.user_id}] {result}")
     return jsonify({"status": result["status"], "message_id": f"msg_{uuid.uuid4().hex[:8]}"})
 
 
 @app.route("/v1/push/register-token", methods=["POST"])
 def register_token():
+    store = require_user()
     payload = request.get_json(silent=True) or {}
     token_type = payload.get("type", "unknown")
     token = payload.get("token", "")
@@ -957,10 +1241,9 @@ def register_token():
     if activity_id:
         entry["activity_id"] = activity_id
 
-    # Keep latest per type/activity_id or same exact token.
-    REGISTERED_TOKENS[:] = [
+    store.tokens[:] = [
         _normalize_token_entry(t)
-        for t in REGISTERED_TOKENS
+        for t in store.tokens
         if not (
             t.get("token") == token
             or (
@@ -969,53 +1252,63 @@ def register_token():
             )
         )
     ]
-    REGISTERED_TOKENS.append(entry)
-    _save_tokens()
+    store.tokens.append(entry)
+    store._save_tokens()
 
-    print(f"[register-token] {token_type}: {token[:16]}…")
+    print(f"[register-token:{store.user_id}] {token_type}: {token[:16]}…")
     return jsonify({"status": "registered", "type": token_type})
 
 
 @app.route("/v1/push/tokens", methods=["GET"])
 def list_tokens():
+    store = require_user()
     active_only = request.args.get("active_only", "false").lower() == "true"
-    tokens = [_normalize_token_entry(t) for t in REGISTERED_TOKENS]
+    tokens = [_normalize_token_entry(t) for t in store.tokens]
     if active_only:
         tokens = [t for t in tokens if _entry_is_active(t)]
     return jsonify({"tokens": tokens})
 
 
+# ---------------------------------------------------------------------------
+# Screen frames
+# ---------------------------------------------------------------------------
+
+
 @app.route("/v1/screen/frames", methods=["GET"])
 def list_frames():
-    """List recent captured frames (metadata only)."""
+    store = require_user()
     limit = min(int(request.args.get("limit", 20)), 100)
-    with _frames_lock:
-        recent = [f.copy() for f in reversed(_frames_meta)][:limit]
+    with store.frames_lock:
+        recent = [f.copy() for f in reversed(store.frames_meta)][:limit]
     for f in recent:
-        f["url"] = _frame_url(f["filename"])
-    return jsonify({"frames": recent, "total": len(_frames_meta)})
+        f["url"] = _frame_url(store, f["filename"])
+    return jsonify({"frames": recent, "total": len(store.frames_meta)})
 
 
 @app.route("/v1/screen/frames/latest", methods=["GET"])
 def latest_frame():
-    """Get the most recent frame with base64 image for OpenClaw to view."""
-    with _frames_lock:
-        if not _frames_meta:
+    store = require_user()
+    with store.frames_lock:
+        if not store.frames_meta:
             return jsonify({"error": "no frames yet"}), 404
-        meta = _frames_meta[-1].copy()
+        meta = store.frames_meta[-1].copy()
 
-    fpath = FRAMES_DIR / meta["filename"]
+    fpath = store.frames_dir / meta["filename"]
     if not fpath.exists():
         return jsonify({"error": "file missing"}), 404
 
     meta["image_base64"] = base64.b64encode(fpath.read_bytes()).decode()
-    meta["url"] = _frame_url(meta["filename"])
+    meta["url"] = _frame_url(store, meta["filename"])
     return jsonify(meta)
 
 
 @app.route("/v1/screen/frames/<filename>", methods=["GET"])
 def serve_frame(filename):
-    fpath = FRAMES_DIR / filename
+    store = require_user()
+    # Reject path traversal
+    if "/" in filename or ".." in filename:
+        return jsonify({"error": "bad filename"}), 400
+    fpath = store.frames_dir / filename
     if not fpath.exists():
         return jsonify({"error": "not found"}), 404
     return send_file(fpath, mimetype="image/jpeg")
@@ -1023,21 +1316,13 @@ def serve_frame(filename):
 
 @app.route("/v1/screen/analyze", methods=["GET"])
 def analyze_screen():
-    """
-    Structured analysis of what the user is currently doing on their phone.
-    Used by OpenClaw heartbeat to decide whether to push a Dynamic Island message.
-
-    Query params:
-      window_sec (int):           seconds of frame history to consider (default 300, clamped [30,3600])
-      min_continuous_min (float): minimum continuous minutes on app to allow notify (default 3, clamped [1,120])
-    """
+    store = require_user()
     now = time.time()
-    # P1: clamp parameters to safe ranges
     window_sec = max(30.0, min(3600.0, float(request.args.get("window_sec", 300))))
     min_continuous_min = max(1.0, min(120.0, float(request.args.get("min_continuous_min", 3))))
 
-    with _frames_lock:
-        recent = [f for f in _frames_meta if now - f["ts"] <= window_sec]
+    with store.frames_lock:
+        recent = [f for f in store.frames_meta if now - f["ts"] <= window_sec]
 
     if not recent:
         return jsonify({
@@ -1047,7 +1332,7 @@ def analyze_screen():
             "current_app": None,
             "continuous_minutes": 0,
             "ocr_summary": "",
-            "cooldown_remaining_seconds": round(_cooldown_remaining_seconds()),
+            "cooldown_remaining_seconds": round(store.cooldown_remaining_seconds()),
             "latest_ts": None,
             "latest_frame_filename": None,
             "latest_frame_url": None,
@@ -1057,10 +1342,6 @@ def analyze_screen():
     latest = recent[-1]
     current_app = latest.get("app") or "unknown"
 
-    # Continuous time on current app.
-    # Two safeguards:
-    #   MAX_GAP_SECONDS: if adjacent frames are >8s apart, recording was interrupted — stop counting
-    #   MAX_JITTER_FRAMES: up to 2 consecutive frames of a different app are tolerated (e.g. keyboard)
     MAX_GAP_SECONDS = 8
     MAX_JITTER_FRAMES = 2
 
@@ -1069,11 +1350,10 @@ def analyze_screen():
     prev_ts = latest["ts"]
 
     for frame in reversed(recent[:-1]):
-        # Gap check: break if recording was interrupted
         if prev_ts - frame["ts"] > MAX_GAP_SECONDS:
             break
-        app = frame.get("app") or "unknown"
-        if app == current_app:
+        fapp = frame.get("app") or "unknown"
+        if fapp == current_app:
             continuous_start_ts = frame["ts"]
             jitter_count = 0
         else:
@@ -1084,7 +1364,6 @@ def analyze_screen():
 
     continuous_minutes = round((latest["ts"] - continuous_start_ts) / 60, 1)
 
-    # OCR summary: last 3 non-empty, deduplicated, in chronological order
     seen_ocr: set[str] = set()
     ocr_parts: list[str] = []
     for f in reversed(recent):
@@ -1096,7 +1375,7 @@ def analyze_screen():
                 break
     ocr_summary = " | ".join(reversed(ocr_parts))[:500]
 
-    cooldown_remaining = _cooldown_remaining_seconds()
+    cooldown_remaining = store.cooldown_remaining_seconds()
     rate_limit_ok = cooldown_remaining == 0
     semantic = _semantic_analysis(current_app=current_app, ocr_summary=ocr_summary)
     semantic_strength = semantic.get("semantic_strength", "weak")
@@ -1137,22 +1416,20 @@ def analyze_screen():
         "suggested_openers": semantic.get("suggested_openers", [])[:2],
         "latest_ts": latest["ts"],
         "latest_frame_filename": latest.get("filename"),
-        "latest_frame_url": _frame_url(latest.get("filename")) if latest.get("filename") else None,
+        "latest_frame_url": _frame_url(store, latest.get("filename")) if latest.get("filename") else None,
         "frame_count_in_window": len(recent),
     })
 
 
+# ---------------------------------------------------------------------------
+# Chat
+# ---------------------------------------------------------------------------
+
+
 @app.route("/v1/chat/history", methods=["GET"])
 def chat_history():
-    """
-    Get chat history.
-    Query params:
-      limit (int):   max messages to return (default 50, max 200)
-      since (float): only return messages with ts > since (unix timestamp)
-    """
+    store = require_user()
     try:
-        # Default to a larger window so iOS clients calling /v1/chat/history?since=0
-        # can recover full recent history after reconnect/restart.
         limit = int(request.args.get("limit", 200))
     except (TypeError, ValueError):
         return jsonify({"error": "invalid limit"}), 400
@@ -1163,18 +1440,17 @@ def chat_history():
     except (TypeError, ValueError):
         return jsonify({"error": "invalid since"}), 400
 
-    with _chat_lock:
-        msgs = [m for m in _chat_messages if m["ts"] > since]
-        total = len(_chat_messages)
+    with store.chat_lock:
+        msgs = [m for m in store.chat_messages if m["ts"] > since]
+        total = len(store.chat_messages)
     msgs = msgs[-limit:]
 
-    # Add compatibility aliases for mixed iOS client builds.
     out = []
     for m in msgs:
         item = dict(m)
         role = item.get("role")
         if role == "openclaw":
-            item["sender"] = "assistant"   # legacy alias
+            item["sender"] = "assistant"
             item["is_from_openclaw"] = True
         elif role == "user":
             item["sender"] = "user"
@@ -1182,38 +1458,34 @@ def chat_history():
         out.append(item)
 
     ua = request.headers.get("User-Agent", "")
-    print(f"[chat/history] ip={request.remote_addr} since={since} limit={limit} returned={len(out)} total={total} ua={ua[:120]}")
+    print(f"[chat/history:{store.user_id}] ip={request.remote_addr} since={since} limit={limit} returned={len(out)} total={total} ua={ua[:80]}")
 
     return jsonify({"messages": out, "total": total})
 
 
 @app.route("/v1/chat/message", methods=["POST"])
 def chat_message():
-    """User sends a message to OpenClaw."""
+    store = require_user()
     payload = request.get_json(silent=True) or {}
     content = (payload.get("content") or "").strip()
     if not content:
         return jsonify({"error": "content required"}), 400
-    msg = _append_chat("user", content, source="chat")
-    _notify_chat_waiters()
-    print(f"[chat] user: {content[:80]}")
+    msg = store.append_chat("user", content, source="chat")
+    store.notify_chat_waiters()
+    print(f"[chat:{store.user_id}] user: {content[:80]}")
     return jsonify({"id": msg["id"], "ts": msg["ts"]})
 
 
 @app.route("/v1/chat/response", methods=["POST"])
 def chat_response():
-    """
-    OpenClaw posts a chat response.
-    Body: { "content": "...", "push_live_activity": false }
-    If push_live_activity is true, also triggers a Live Activity push with the message as body.
-    """
+    store = require_user()
     payload = request.get_json(silent=True) or {}
     content = (payload.get("content") or "").strip()
     if not content:
         return jsonify({"error": "content required"}), 400
 
-    msg = _append_chat("openclaw", content, source="chat")
-    print(f"[chat] openclaw: {content[:80]}")
+    msg = store.append_chat("openclaw", content, source="chat")
+    print(f"[chat:{store.user_id}] openclaw: {content[:80]}")
 
     if payload.get("push_live_activity"):
         push_payload = {
@@ -1222,82 +1494,67 @@ def chat_response():
             "subtitle": payload.get("subtitle"),
             "data": payload.get("data", {}),
         }
-        push_live_activity_inner(push_payload)
+        push_live_activity_inner(store, push_payload)
 
     return jsonify({"id": msg["id"], "ts": msg["ts"]})
 
 
 @app.route("/v1/chat/poll", methods=["GET"])
 def chat_poll():
-    """
-    Long-poll endpoint for OpenClaw. Hangs until a new user message arrives or timeout.
-
-    Query params:
-      since   (float): only return messages with ts > since (default 0)
-      timeout (float): max seconds to wait (default 30, max 60)
-
-    Response:
-      { "messages": [...], "timed_out": false }  — new user message(s) arrived
-      { "messages": [],    "timed_out": true  }  — no message within timeout; do screen check
-    """
+    store = require_user()
     try:
         since = float(request.args.get("since", 0))
     except (TypeError, ValueError):
         return jsonify({"error": "invalid since"}), 400
     timeout = min(float(request.args.get("timeout", 30)), 60)
 
-    # Check for already-pending user messages before blocking
-    with _chat_lock:
-        pending = [m for m in _chat_messages if m["ts"] > since and m["role"] == "user"]
+    with store.chat_lock:
+        pending = [m for m in store.chat_messages if m["ts"] > since and m["role"] == "user"]
     if pending:
         return jsonify({"messages": pending, "timed_out": False})
 
-    # Register a waiter and block
     ev = threading.Event()
-    with _chat_waiters_lock:
-        _chat_waiters.append(ev)
+    with store.chat_waiters_lock:
+        store.chat_waiters.append(ev)
 
     notified = ev.wait(timeout=timeout)
 
-    with _chat_waiters_lock:
+    with store.chat_waiters_lock:
         try:
-            _chat_waiters.remove(ev)
+            store.chat_waiters.remove(ev)
         except ValueError:
             pass
 
     if notified:
-        with _chat_lock:
-            pending = [m for m in _chat_messages if m["ts"] > since and m["role"] == "user"]
+        with store.chat_lock:
+            pending = [m for m in store.chat_messages if m["ts"] > since and m["role"] == "user"]
         return jsonify({"messages": pending, "timed_out": False})
-    else:
-        return jsonify({"messages": [], "timed_out": True})
+    return jsonify({"messages": [], "timed_out": True})
 
 
 # ---------------------------------------------------------------------------
-# Identity card
+# Identity
 # ---------------------------------------------------------------------------
 
-IDENTITY_FILE = FEEDLING_DIR / "identity.json"
-_identity_lock = threading.Lock()
 
-
-def _load_identity() -> dict | None:
+def _load_identity(store: UserStore) -> dict | None:
     try:
-        if IDENTITY_FILE.exists():
-            return json.loads(IDENTITY_FILE.read_text())
+        if store.identity_file.exists():
+            return json.loads(store.identity_file.read_text())
     except Exception as e:
-        print(f"[identity] failed to load: {e}")
+        print(f"[{store.user_id}/identity] load failed: {e}")
     return None
 
 
-def _save_identity(data: dict):
-    with _identity_lock:
-        IDENTITY_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+def _save_identity(store: UserStore, data: dict):
+    with store.identity_lock:
+        store.identity_file.write_text(json.dumps(data, ensure_ascii=False, indent=2))
 
 
 @app.route("/v1/identity/get", methods=["GET"])
 def identity_get():
-    data = _load_identity()
+    store = require_user()
+    data = _load_identity(store)
     if data is None:
         return jsonify({"identity": None})
     return jsonify({"identity": data})
@@ -1305,7 +1562,8 @@ def identity_get():
 
 @app.route("/v1/identity/init", methods=["POST"])
 def identity_init():
-    existing = _load_identity()
+    store = require_user()
+    existing = _load_identity(store)
     if existing is not None:
         return jsonify({"error": "already_initialized", "identity": existing}), 409
 
@@ -1341,15 +1599,16 @@ def identity_init():
         "created_at": now,
         "updated_at": now,
     }
-    _save_identity(identity)
-    _log_bootstrap_event("identity_written", success=True)
-    print(f"[identity] initialized: agent_name={agent_name}")
+    _save_identity(store, identity)
+    _log_bootstrap_event(store, "identity_written", success=True)
+    print(f"[identity:{store.user_id}] initialized: agent_name={agent_name}")
     return jsonify({"status": "created", "identity": identity}), 201
 
 
 @app.route("/v1/identity/nudge", methods=["POST"])
 def identity_nudge():
-    identity = _load_identity()
+    store = require_user()
+    identity = _load_identity(store)
     if identity is None:
         return jsonify({"error": "not_initialized"}), 404
 
@@ -1377,8 +1636,8 @@ def identity_nudge():
     if reason:
         matched["last_nudge_reason"] = reason
     identity["updated_at"] = datetime.now().isoformat()
-    _save_identity(identity)
-    print(f"[identity] nudge: {dimension_name} {delta:+d} → {new_value} reason={reason[:60]}")
+    _save_identity(store, identity)
+    print(f"[identity:{store.user_id}] nudge: {dimension_name} {delta:+d} → {new_value} reason={reason[:60]}")
     return jsonify({"status": "updated", "dimension": matched})
 
 
@@ -1386,33 +1645,31 @@ def identity_nudge():
 # Memory garden
 # ---------------------------------------------------------------------------
 
-MEMORY_FILE = FEEDLING_DIR / "memory.json"
-_memory_lock = threading.Lock()
 
-
-def _load_moments() -> list:
+def _load_moments(store: UserStore) -> list:
     try:
-        if MEMORY_FILE.exists():
-            return json.loads(MEMORY_FILE.read_text())
+        if store.memory_file.exists():
+            return json.loads(store.memory_file.read_text())
     except Exception as e:
-        print(f"[memory] failed to load: {e}")
+        print(f"[{store.user_id}/memory] load failed: {e}")
     return []
 
 
-def _save_moments(moments: list):
-    with _memory_lock:
-        MEMORY_FILE.write_text(json.dumps(moments, ensure_ascii=False, indent=2))
+def _save_moments(store: UserStore, moments: list):
+    with store.memory_lock:
+        store.memory_file.write_text(json.dumps(moments, ensure_ascii=False, indent=2))
 
 
 @app.route("/v1/memory/list", methods=["GET"])
 def memory_list():
+    store = require_user()
     try:
         limit = min(int(request.args.get("limit", 50)), 200)
     except (TypeError, ValueError):
         return jsonify({"error": "invalid limit"}), 400
     since = request.args.get("since", "")
 
-    moments = _load_moments()
+    moments = _load_moments(store)
     if since:
         moments = [m for m in moments if m.get("occurred_at", "") >= since]
     moments = sorted(moments, key=lambda m: m.get("occurred_at", ""), reverse=True)
@@ -1421,10 +1678,11 @@ def memory_list():
 
 @app.route("/v1/memory/get", methods=["GET"])
 def memory_get():
+    store = require_user()
     moment_id = request.args.get("id", "")
     if not moment_id:
         return jsonify({"error": "id required"}), 400
-    moments = _load_moments()
+    moments = _load_moments(store)
     for m in moments:
         if m.get("id") == moment_id:
             return jsonify({"moment": m})
@@ -1433,6 +1691,7 @@ def memory_get():
 
 @app.route("/v1/memory/add", methods=["POST"])
 def memory_add():
+    store = require_user()
     payload = request.get_json(silent=True) or {}
     title = (payload.get("title") or "").strip()
     description = (payload.get("description") or "").strip()
@@ -1454,25 +1713,26 @@ def memory_add():
         "created_at": datetime.now().isoformat(),
         "source": source,
     }
-    moments = _load_moments()
+    moments = _load_moments(store)
     moments.append(moment)
-    _save_moments(moments)
-    _log_bootstrap_event("memory_moment_added", success=True)
-    print(f"[memory] added: {title[:60]} occurred_at={occurred_at}")
+    _save_moments(store, moments)
+    _log_bootstrap_event(store, "memory_moment_added", success=True)
+    print(f"[memory:{store.user_id}] added: {title[:60]} occurred_at={occurred_at}")
     return jsonify({"status": "created", "moment": moment}), 201
 
 
 @app.route("/v1/memory/delete", methods=["DELETE"])
 def memory_delete():
+    store = require_user()
     moment_id = request.args.get("id", "")
     if not moment_id:
         return jsonify({"error": "id required"}), 400
-    moments = _load_moments()
+    moments = _load_moments(store)
     new_moments = [m for m in moments if m.get("id") != moment_id]
     if len(new_moments) == len(moments):
         return jsonify({"error": "not_found"}), 404
-    _save_moments(new_moments)
-    print(f"[memory] deleted: {moment_id}")
+    _save_moments(store, new_moments)
+    print(f"[memory:{store.user_id}] deleted: {moment_id}")
     return jsonify({"status": "deleted"})
 
 
@@ -1480,37 +1740,20 @@ def memory_delete():
 # Bootstrap
 # ---------------------------------------------------------------------------
 
-BOOTSTRAP_FILE = FEEDLING_DIR / "bootstrap.json"
-BOOTSTRAP_EVENTS_FILE = FEEDLING_DIR / "bootstrap_events.jsonl"
 
-
-def _log_bootstrap_event(event_type: str, success: bool, error_message: str = ""):
-    entry = {
-        "user_id": "default",
-        "event_type": event_type,
-        "success": success,
-        "error_message": error_message,
-        "timestamp": datetime.now().isoformat(),
-    }
+def _load_bootstrap(store: UserStore) -> dict:
     try:
-        with open(BOOTSTRAP_EVENTS_FILE, "a") as f:
-            f.write(json.dumps(entry) + "\n")
+        if store.bootstrap_file.exists():
+            return json.loads(store.bootstrap_file.read_text())
     except Exception as e:
-        print(f"[bootstrap_events] failed to log: {e}")
-
-
-def _load_bootstrap() -> dict:
-    try:
-        if BOOTSTRAP_FILE.exists():
-            return json.loads(BOOTSTRAP_FILE.read_text())
-    except Exception as e:
-        print(f"[bootstrap] failed to load: {e}")
+        print(f"[{store.user_id}/bootstrap] load failed: {e}")
     return {"bootstrapped": False}
 
 
 @app.route("/v1/bootstrap", methods=["POST"])
 def bootstrap():
-    state = _load_bootstrap()
+    store = require_user()
+    state = _load_bootstrap(store)
     if state.get("bootstrapped"):
         return jsonify({"status": "already_bootstrapped"})
 
@@ -1541,15 +1784,32 @@ def bootstrap():
 
     state = {"bootstrapped": True, "bootstrapped_at": datetime.now().isoformat()}
     try:
-        BOOTSTRAP_FILE.write_text(json.dumps(state))
+        store.bootstrap_file.write_text(json.dumps(state))
     except Exception as e:
-        print(f"[bootstrap] failed to save state: {e}")
+        print(f"[bootstrap:{store.user_id}] failed to save state: {e}")
 
-    _log_bootstrap_event("bootstrap_started", success=True)
-    print("[bootstrap] first_time — instructions returned")
+    _log_bootstrap_event(store, "bootstrap_started", success=True)
+    print(f"[bootstrap:{store.user_id}] first_time — instructions returned")
     return jsonify({"status": "first_time", "instructions": instructions})
 
 
+# ---------------------------------------------------------------------------
+# Error handlers
+# ---------------------------------------------------------------------------
+
+
+@app.errorhandler(401)
+def _unauthorized(e):
+    return jsonify({"error": "unauthorized"}), 401
+
+
+@app.errorhandler(403)
+def _forbidden(e):
+    return jsonify({"error": "forbidden"}), 403
+
+
 if __name__ == "__main__":
-    print("Feedling server running at http://0.0.0.0:5001")
+    mode = "single-user" if SINGLE_USER else "multi-tenant"
+    auth = "api-key" if (SINGLE_USER and SINGLE_USER_API_KEY) or not SINGLE_USER else "none"
+    print(f"Feedling server running at http://0.0.0.0:5001 (mode={mode}, auth={auth})")
     app.run(host="0.0.0.0", port=5001, debug=False)

@@ -36,9 +36,12 @@ class ChatViewModel: ObservableObject {
     func loadHistory() async {
         // Pull a larger initial window so user messages are not drowned by
         // assistant-only bursts (e.g. replayed auto-replies).
-        guard let url = URL(string: "\(FeedlingAPI.baseURL)/v1/chat/history?since=0&limit=200") else { return }
+        guard let req = FeedlingAPI.shared.authorizedRequest(
+            path: "/v1/chat/history",
+            queryItems: [URLQueryItem(name: "since", value: "0"), URLQueryItem(name: "limit", value: "200")]
+        ) else { return }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.data(for: req)
             let resp = try JSONDecoder().decode(ChatHistoryResponse.self, from: data)
             messages = resp.messages
             latestTs = messages.last?.ts ?? 0
@@ -50,9 +53,12 @@ class ChatViewModel: ObservableObject {
     }
 
     private func fetchNewMessages() async {
-        guard let url = URL(string: "\(FeedlingAPI.baseURL)/v1/chat/history?since=\(latestTs)") else { return }
+        guard let req = FeedlingAPI.shared.authorizedRequest(
+            path: "/v1/chat/history",
+            queryItems: [URLQueryItem(name: "since", value: String(latestTs))]
+        ) else { return }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.data(for: req)
             let resp = try JSONDecoder().decode(ChatHistoryResponse.self, from: data)
             // Only process OpenClaw messages via polling.
             // User messages are inserted optimistically — ignoring server echoes prevents duplicates.
@@ -101,13 +107,14 @@ class ChatViewModel: ObservableObject {
             if !Task.isCancelled { isWaitingForReply = false }
         }
 
-        guard let url = URL(string: "\(FeedlingAPI.baseURL)/v1/chat/message") else {
+        let body = try? JSONEncoder().encode(["content": text])
+        guard let req = FeedlingAPI.shared.authorizedRequest(
+            path: "/v1/chat/message",
+            method: "POST",
+            body: body
+        ) else {
             isSending = false; return
         }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONEncoder().encode(["content": text])
         _ = try? await URLSession.shared.data(for: req)
         isSending = false
     }
