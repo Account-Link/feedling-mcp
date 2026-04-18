@@ -13,7 +13,7 @@ struct ScreenActivityWidget: Widget {
                         Image(systemName: "sparkles")
                             .foregroundStyle(.cyan)
                             .font(.system(size: 12, weight: .bold))
-                        Text("OpenClaw")
+                        Text(context.state.title)
                             .font(.system(size: 12, weight: .bold))
                             .foregroundStyle(.cyan)
                     }
@@ -21,8 +21,8 @@ struct ScreenActivityWidget: Widget {
                     .padding(.top, 4)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    if context.state.screenTimeMinutes > 0 {
-                        Text("\(context.state.topApp) \(context.state.screenTimeMinutes)m")
+                    if let subtitle = context.state.subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
                             .font(.system(size: 11))
                             .foregroundStyle(.white.opacity(0.5))
                             .padding(.trailing, 6)
@@ -30,7 +30,7 @@ struct ScreenActivityWidget: Widget {
                     }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    Text(context.state.message)
+                    Text(context.state.body)
                         .font(.system(size: 15, weight: .medium))
                         .foregroundStyle(.white)
                         .multilineTextAlignment(.leading)
@@ -46,7 +46,7 @@ struct ScreenActivityWidget: Widget {
                     .foregroundStyle(.cyan)
                     .font(.system(size: 11))
             } compactTrailing: {
-                Text(context.state.message.prefix(18))
+                Text(context.state.body.prefix(18))
                     .font(.system(size: 11))
                     .foregroundStyle(.white)
                     .lineLimit(1)
@@ -74,15 +74,15 @@ private struct LockScreenView: View {
                 .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("OpenClaw")
+                Text(state.title)
                     .font(.caption.bold())
                     .foregroundStyle(.cyan)
-                Text(state.message)
+                Text(state.body)
                     .font(.subheadline)
                     .foregroundStyle(.white)
                     .lineLimit(4)
-                if state.screenTimeMinutes > 0 {
-                    Text("\(state.topApp) · \(state.screenTimeMinutes)m")
+                if let subtitle = state.subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
                         .font(.caption2)
                         .foregroundStyle(.white.opacity(0.5))
                 }
@@ -107,8 +107,11 @@ extension ScreenActivityAttributes {
 
 extension ScreenActivityAttributes.ContentState {
     static var preview: ScreenActivityAttributes.ContentState {
-        .init(topApp: "TikTok", screenTimeMinutes: 45,
-              message: "你今天刷了 45 分钟 TikTok，差不多该歇一歇了。",
-              updatedAt: Date())
+        .init(
+            title: "OpenClaw",
+            body: "你今天刷了 45 分钟 TikTok，差不多该歇一歇了。",
+            data: ["top_app": "TikTok", "minutes": "45"],
+            updatedAt: Date()
+        )
     }
 }

@@ -1,0 +1,12 @@
+# Feedling Caddyfile
+# Place at /etc/caddy/Caddyfile on the VPS
+
+# MCP server — Claude.ai connects here
+mcp.feedling.app {
+    reverse_proxy localhost:5002
+}
+
+# iOS app API — mobile client connects here
+api.feedling.app {
+    reverse_proxy localhost:5001
+}

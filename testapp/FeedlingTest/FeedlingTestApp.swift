@@ -6,6 +6,8 @@ struct FeedlingTestApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var router = AppRouter()
     @StateObject private var chatViewModel = ChatViewModel()
+    @StateObject private var identityViewModel = IdentityViewModel()
+    @StateObject private var memoryViewModel = MemoryViewModel()
 
     var body: some Scene {
         WindowGroup {
@@ -13,12 +15,11 @@ struct FeedlingTestApp: App {
                 .environmentObject(LiveActivityManager.shared)
                 .environmentObject(router)
                 .environmentObject(chatViewModel)
-                // Handle taps on Dynamic Island / Live Activity
-                // widgetURL is "feedlingtest://live-activity"
+                .environmentObject(identityViewModel)
+                .environmentObject(memoryViewModel)
                 .onOpenURL { url in
                     guard url.scheme == "feedlingtest" else { return }
                     router.selectedTab = .chat
-                    // Reload history so the message that triggered the tap is visible
                     Task { await chatViewModel.loadHistory() }
                 }
         }

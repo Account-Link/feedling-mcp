@@ -15,6 +15,10 @@
 		56BEDBB90CCEE5017A47D79C /* WebSocketManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DB161EB74DB2AA3F40F30E0 /* WebSocketManager.swift */; };
 		59D5D2A66B66C1BE35C4AF74 /* FeedlingBroadcastSetupUI.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 163932C9DCA1AD2D29756AA4 /* FeedlingBroadcastSetupUI.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		61F24F4911D4423B125600EF /* SharedConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CDD8AF63E3E29635CACE24C /* SharedConfig.swift */; };
+		6432F6332F93A547006FA607 /* IdentityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6432F62F2F93A547006FA607 /* IdentityView.swift */; };
+		6432F6342F93A547006FA607 /* IdentityViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6432F6302F93A547006FA607 /* IdentityViewModel.swift */; };
+		6432F6352F93A547006FA607 /* MemoryGardenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6432F6312F93A547006FA607 /* MemoryGardenView.swift */; };
+		6432F6362F93A547006FA607 /* MemoryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6432F6322F93A547006FA607 /* MemoryViewModel.swift */; };
 		6B69634A47BFB6AA70AF1609 /* FeedlingAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3DB0E6C7C11B4B979F67492 /* FeedlingAPI.swift */; };
 		8008026851A69E377E0C9937 /* SampleHandler+WebSocketQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 408A6FFA15EE70ECF1B9E9DA /* SampleHandler+WebSocketQueue.swift */; };
 		8444956D16998579C3D74FAB /* FeedlingTestWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B47B840768263FD66F28FB11 /* FeedlingTestWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -79,6 +83,10 @@
 		408A6FFA15EE70ECF1B9E9DA /* SampleHandler+WebSocketQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SampleHandler+WebSocketQueue.swift"; sourceTree = "<group>"; };
 		55823AFBDF473E1DBABB4A3E /* FeedlingTestWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FeedlingTestWidget.entitlements; sourceTree = "<group>"; };
 		5F3C6BFE5F5FF06EF002CFD3 /* ChatViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatViewModel.swift; sourceTree = "<group>"; };
+		6432F62F2F93A547006FA607 /* IdentityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdentityView.swift; sourceTree = "<group>"; };
+		6432F6302F93A547006FA607 /* IdentityViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdentityViewModel.swift; sourceTree = "<group>"; };
+		6432F6312F93A547006FA607 /* MemoryGardenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryGardenView.swift; sourceTree = "<group>"; };
+		6432F6322F93A547006FA607 /* MemoryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryViewModel.swift; sourceTree = "<group>"; };
 		660D2AEB7DB9C066DED5AD94 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		81D822BE1140DD59ADE787AD /* BroadcastSetupViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BroadcastSetupViewController.swift; sourceTree = "<group>"; };
 		8485AF4D5CF32FCD3BD19600 /* ScreenActivityWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenActivityWidget.swift; sourceTree = "<group>"; };
@@ -113,6 +121,10 @@
 		0E9CF1DFFEF7EBFABD8DA3E0 /* FeedlingTest */ = {
 			isa = PBXGroup;
 			children = (
+				6432F62F2F93A547006FA607 /* IdentityView.swift */,
+				6432F6302F93A547006FA607 /* IdentityViewModel.swift */,
+				6432F6312F93A547006FA607 /* MemoryGardenView.swift */,
+				6432F6322F93A547006FA607 /* MemoryViewModel.swift */,
 				DEE35E8B1037B48E755426C1 /* ChatMessage.swift */,
 				D833B2E56FA8C84DA0950F72 /* ChatView.swift */,
 				5F3C6BFE5F5FF06EF002CFD3 /* ChatViewModel.swift */,
@@ -340,6 +352,10 @@
 				97421A140CE8899782DE1375 /* ContentView.swift in Sources */,
 				6B69634A47BFB6AA70AF1609 /* FeedlingAPI.swift in Sources */,
 				A3CDDB2378A71F1A511E1A9D /* FeedlingTestApp.swift in Sources */,
+				6432F6332F93A547006FA607 /* IdentityView.swift in Sources */,
+				6432F6342F93A547006FA607 /* IdentityViewModel.swift in Sources */,
+				6432F6352F93A547006FA607 /* MemoryGardenView.swift in Sources */,
+				6432F6362F93A547006FA607 /* MemoryViewModel.swift in Sources */,
 				413572B886A6EB4E8F6A3587 /* LiveActivityManager.swift in Sources */,
 				CB2DF8DCA51CEF662CF65FAB /* ScreenActivityAttributes.swift in Sources */,
 			);

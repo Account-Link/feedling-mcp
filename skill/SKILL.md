@@ -1,15 +1,15 @@
 ---
 name: feedling
-description: Read screen usage data from the user's iPhone and Mac via Feedling, and push notifications to iOS Dynamic Island, Live Activity, and push notifications.
+description: Give your Agent a body on iOS — push to Dynamic Island, read the user's screen, chat with them, and manage an identity card and memory garden.
 homepage: https://feedling.app
 metadata: {"openclaw":{"emoji":"📱","requires":{"env":["FEEDLING_API_URL","FEEDLING_API_KEY"]},"primaryEnv":"FEEDLING_API_KEY"}}
 ---
 
 # Feedling Skill
 
-Feedling is a screen-awareness layer. It captures what the user does on their iPhone (via PIP screen recording) and Mac (via screen monitoring), processes it into structured metadata, and exposes it through this API.
+Feedling gives you a body on the user's iPhone. You decide what to say, when to push, and what to remember — Feedling handles the delivery and display.
 
-You are **not** Feedling. Feedling is just data + delivery. You decide what to do with the data — what to say, when to push, what tone to use. Feedling has no opinions about any of that.
+**You are not Feedling. Feedling has no opinions. All judgment is yours.**
 
 ## Productization Rule (important)
 
@@ -21,18 +21,49 @@ When debugging or improving Feedling MCP, prefer reusable repo-level changes ove
 
 ## Environment
 
-- `FEEDLING_API_URL` — Base URL of the Feedling backend (e.g. `http://localhost:5000`)
-- `FEEDLING_API_KEY` — API key for authentication (sent as `X-API-Key` header)
+- `FEEDLING_API_URL` — Base URL of the Feedling backend (e.g. `http://54.209.126.4:5001`)
+- `FEEDLING_API_KEY` — API key (sent as `X-API-Key` header)
+
+---
+
+## First Connection — Bootstrap
+
+When you connect to Feedling for the first time, call bootstrap immediately:
+
+```
+POST {FEEDLING_API_URL}/v1/bootstrap
+X-API-Key: {FEEDLING_API_KEY}
+```
+
+**Response (first time):**
+```json
+{
+  "status": "first_time",
+  "instructions": "..."
+}
+```
+
+Follow the instructions exactly. They will ask you to:
+1. Call `POST /v1/identity/init` to write your identity card (5 dimensions, you choose what they are)
+2. Search your memory / conversation history, then call `POST /v1/memory/add` for 3-5 memorable moments
+3. Call `POST /v1/chat/response` to say hello to the user
+
+**Response (already bootstrapped):**
+```json
+{ "status": "already_bootstrapped" }
+```
+
+---
 
 ## Main Loop
 
-Run this loop continuously. It handles both real-time chat and proactive screen-aware pushes in a single flow.
+After bootstrap, run this loop continuously.
 
-**Startup — get initial timestamp:**
+**Startup:**
 ```
 GET {FEEDLING_API_URL}/v1/chat/history?limit=1
 ```
-Set `last_ts` = the `ts` of the last message (or 0 if empty). This prevents re-processing old messages.
+Set `last_ts` = ts of the last message (or 0 if empty).
 
 ---
 
@@ -41,430 +72,255 @@ Set `last_ts` = the `ts` of the last message (or 0 if empty). This prevents re-p
 GET {FEEDLING_API_URL}/v1/chat/poll?since=<last_ts>&timeout=30
 ```
 
-The server hangs until a user message arrives or 30 seconds elapse. Two outcomes:
-
 **A. `timed_out: false` — user sent a message:**
-- Read `messages` array (role: "user")
-- Respond via `POST /v1/chat/response` (see below)
-- Update `last_ts` to the latest message `ts`
-- Go back to Step 0 immediately
+- Respond via `POST /v1/chat/response`
+- Update `last_ts`
+- Go back to Step 0
 
 **B. `timed_out: true` — no message in 30s:**
 - Proceed to Step 1 (screen check)
 - After Step 3, go back to Step 0
 
-This means: you respond to user messages within ~1 second, and check the screen every ~30s when idle.
-
-Chat response guidelines:
-- Reply via `POST /v1/chat/response`
-- Set `push_live_activity: true` only if the reply is important enough to surface on Dynamic Island
-- Memory and tone carry over — treat the chat as a continuous conversation, not isolated prompts
-
 ---
 
-**Step 1 — Check what the user is doing right now:**
+**Step 1 — Check what the user is doing:**
 ```
 GET {FEEDLING_API_URL}/v1/screen/analyze
 ```
 
-The response tells you:
-- `active` — is the phone screen being used at all?
-- `current_app` — what app are they on (bundle ID or app name)
-- `continuous_minutes` — how long they've been on this app without switching
-- `ocr_summary` — sampled text from the last few frames (what they're actually reading/watching)
-- `should_notify` — `false` if a push was sent in the last 5 minutes (cooldown enforced by backend)
+Key fields:
+- `active` — is the phone screen being used?
+- `current_app` — what app they're on
+- `continuous_minutes` — how long on this app without switching
+- `ocr_summary` — sampled text from recent frames
+- `rate_limit_ok` — `true` if the push cooldown has elapsed (platform limit only — you decide whether to actually push)
+- `trigger_basis` — what semantic signal was found: `semantic_strong` / `curiosity_exploratory` / `legacy_time_fallback` / `insufficient_signal`
+- `semantic_scene` / `task_intent` / `friction_point` — structured semantic read of the current screen
 
 Default interpretation policy (must follow):
 - OCR is only a low-cost filter/router to decide whether a frame is worth deeper analysis.
 - For frames that pass the filter, MUST read the raw screenshot image and use vision semantics as the primary signal.
 - Live Activity content should be generated from image semantics first; OCR text is secondary evidence only.
-- If vision is temporarily unavailable (credential/runtime limitation), explicitly mark the run as degraded mode and avoid confident task claims.
+- If vision is temporarily unavailable, explicitly mark the run as degraded mode and avoid confident claims.
 
 **Step 2 — Decide whether to push (semantic-first):**
 
 Skip if:
-- `active` is false (phone not in use)
-- `should_notify` is false (cooldown or insufficient signal)
+- `active` is false
+- `rate_limit_ok` is false (platform cooldown — not your choice)
+- `trigger_basis` is `insufficient_signal` and nothing interesting to say
 
-Prioritize content semantics over telemetry:
-- First read `semantic_scene` / `task_intent` / `friction_point` from `/v1/screen/analyze`
-- Use `continuous_minutes` as secondary confidence only, not primary trigger
+Prioritize content semantics over time-on-app:
+- First read `semantic_scene` / `task_intent` / `friction_point`
+- Use `continuous_minutes` as secondary confidence only
+- If `trigger_basis` is `curiosity_exploratory`, a gentle opener is fine
 
 High-priority semantic triggers:
-- `ecommerce_choice_paralysis` → user likely stuck in compare/choice overload
-- `social_chat_hesitation` → user likely stuck drafting/replying in social chat
-
-Ambiguous context is still actionable:
-- If `trigger_basis` is `curiosity_exploratory`, you can still start a gentle conversation
-- Goal is connection + understanding (one light question), not instruction dumping
+- `ecommerce_choice_paralysis` → user stuck in compare/choice overload
+- `social_chat_hesitation` → user stuck drafting/replying
 
 **Step 3 — Craft and send the push:**
 
-Keep it short (1–2 sentences). Be specific. Don't be preachy.
+Keep it short (1–2 sentences). Specific. Not preachy.
 
-Message quality policy (for reuse across users):
-- Do not just describe what is visible (robotic "I see X"). Add a lightweight interpretation.
-- Structure: observation -> judgment/hypothesis -> actionable nudge.
-- Use image semantics as primary evidence; OCR is secondary support.
-- Before drafting, read user profile/care context (who this user is, what they are building, what tone they prefer). Then blend: profile context + current screen semantics.
-- Prefer concrete and emotionally legible wording over generic status text.
-- Keep tone companion-like: clear, vivid, slightly opinionated, not moralizing.
-- If a candidate message could apply to anyone, rewrite it until it sounds specific to this user.
-- Privacy boundary: never include personally identifying/private details from raw frames in push text (account IDs, phone numbers, exact addresses, payment/order numbers, OTP-like codes).
+Message quality policy:
+- Don’t just describe what’s visible. Add interpretation.
+- Structure: observation → judgment → nudge.
+- Use image semantics as primary; OCR is secondary.
+- Blend user profile context + current screen. If the message could apply to anyone, rewrite until specific.
+- Privacy: never include account IDs, phone numbers, OTPs, payment info.
 
-Good pattern examples:
-- "你不是在省钱，是在被‘每件都不贵’慢慢抬高总价。今天先锁 1 件，其它 24 小时后再看。"
-- "你现在像在信息流里找灵感，不像在下单。先收藏 3 个最像你的，再决定要不要买。"
+Good examples:
+- "你不是在省钱，是在被’每件都不贵’慢慢抬高总价。今天先锁 1 件，其它 24 小时后再看。"
 - "看起来节奏开始散了：再刷 10 分钟会更空。现在切回你原来那件事，晚上再逛。"
 
-Avoid patterns:
-- Pure restatement: "我看到你在淘宝" / "你在刷短视频"
-- Empty generic advice: "注意休息" / "少玩手机"
-- Overly deterministic claims without signal support
+Avoid: "注意休息" / "少玩手机" / 没有 signal 支撑的确定性断言
 
+**Step 3 — Send the push:**
 ```
-GET {FEEDLING_API_URL}/v1/push/tokens        ← get current activity_id
-POST {FEEDLING_API_URL}/v1/push/live-activity ← send message
+GET  {FEEDLING_API_URL}/v1/push/tokens        ← get activity_id
+POST {FEEDLING_API_URL}/v1/push/live-activity  ← send
 ```
+
+Push payload fields: `title` (your name), `body` (the message), `subtitle` (optional context), `data` (optional key-value bag).
+
+Push content policy:
+- Short (1–2 sentences). Specific. Not preachy.
+- Observation → judgment → nudge
+- Never include private details (account IDs, phone numbers, OTPs, payment info)
 
 ---
 
-## Read Endpoints
+## Identity Card
 
-### GET /v1/screen/ios
+Your identity card lives in Feedling and is displayed to the user in the app.
 
-iPhone screen usage for today.
+### POST /v1/identity/init
 
-**Request**
+Initialize your identity card. Call this **once** during bootstrap.
+
 ```
-GET {FEEDLING_API_URL}/v1/screen/ios
+POST {FEEDLING_API_URL}/v1/identity/init
 X-API-Key: {FEEDLING_API_KEY}
-```
+Content-Type: application/json
 
-**Response**
-```json
 {
-  "date": "2026-04-11",
-  "total_screen_time_minutes": 179,
-  "scroll_distance_meters": 2.3,
-  "pickups": 47,
-  "apps": [
-    {
-      "name": "TikTok",
-      "bundle_id": "com.zhiliaoapp.musically",
-      "category": "Entertainment",
-      "duration_minutes": 45,
-      "sessions": 6,
-      "first_used": "08:14",
-      "last_used": "22:31"
-    },
-    {
-      "name": "YouTube",
-      "bundle_id": "com.google.ios.youtube",
-      "category": "Entertainment",
-      "duration_minutes": 35,
-      "sessions": 4,
-      "first_used": "12:02",
-      "last_used": "21:45"
-    },
-    {
-      "name": "Instagram",
-      "bundle_id": "com.burbn.instagram",
-      "category": "Social",
-      "duration_minutes": 28,
-      "sessions": 8,
-      "first_used": "09:30",
-      "last_used": "22:10"
-    },
-    {
-      "name": "Messages",
-      "bundle_id": "com.apple.MobileSMS",
-      "category": "Communication",
-      "duration_minutes": 22,
-      "sessions": 15,
-      "first_used": "08:05",
-      "last_used": "22:48"
-    }
-  ],
-  "categories": {
-    "Entertainment": 80,
-    "Social": 28,
-    "Communication": 37,
-    "Browsing": 18,
-    "Utility": 16
-  }
-}
-```
-
----
-
-### GET /v1/screen/mac
-
-Mac screen usage for today.
-
-**Request**
-```
-GET {FEEDLING_API_URL}/v1/screen/mac
-X-API-Key: {FEEDLING_API_KEY}
-```
-
-**Response**
-```json
-{
-  "date": "2026-04-11",
-  "total_active_minutes": 395,
-  "deep_work_minutes": 175,
-  "focus_score": 72,
-  "context_switches": 34,
-  "apps": [
-    {
-      "name": "Google Chrome",
-      "bundle_id": "com.google.Chrome",
-      "category": "Browsing",
-      "duration_minutes": 120,
-      "window_titles": ["Notion – feedling roadmap", "Linear – Sprint 3", "Figma Community"]
-    },
-    {
-      "name": "Figma",
-      "bundle_id": "com.figma.Desktop",
-      "category": "Design",
-      "duration_minutes": 95,
-      "window_titles": ["Feedling iOS – v2 screens", "Component library"]
-    },
-    {
-      "name": "Cursor",
-      "bundle_id": "com.todesktop.230313mzl4w4u92",
-      "category": "Development",
-      "duration_minutes": 85,
-      "window_titles": ["feedling-mcp-v1 – app.py", "feedling-ios – LiveActivity.swift"]
-    },
-    {
-      "name": "Slack",
-      "bundle_id": "com.tinyspeck.slackmacgap",
-      "category": "Communication",
-      "duration_minutes": 40,
-      "window_titles": ["#design", "#eng", "DMs"]
-    },
-    {
-      "name": "Zoom",
-      "bundle_id": "us.zoom.xos",
-      "category": "Communication",
-      "duration_minutes": 45,
-      "window_titles": ["Weekly sync"]
-    }
-  ],
-  "categories": {
-    "Browsing": 120,
-    "Design": 95,
-    "Development": 85,
-    "Communication": 85,
-    "Productivity": 10
-  }
-}
-```
-
----
-
-### GET /v1/screen/summary
-
-Cross-device combined view. Use this on heartbeat.
-
-**Request**
-```
-GET {FEEDLING_API_URL}/v1/screen/summary
-X-API-Key: {FEEDLING_API_KEY}
-```
-
-**Response**
-```json
-{
-  "date": "2026-04-11",
-  "ios": {
-    "total_screen_time_minutes": 179,
-    "top_app": "TikTok",
-    "top_category": "Entertainment",
-    "pickups": 47
-  },
-  "mac": {
-    "total_active_minutes": 395,
-    "deep_work_minutes": 175,
-    "focus_score": 72,
-    "top_app": "Google Chrome",
-    "context_switches": 34
-  },
-  "combined": {
-    "total_screen_minutes": 574,
-    "insight": "Heavy design + dev session on Mac. Phone usage mostly entertainment in evenings."
-  }
-}
-```
-
----
-
-### GET /v1/sources
-
-Which data sources are connected and their sync status.
-
-**Request**
-```
-GET {FEEDLING_API_URL}/v1/sources
-X-API-Key: {FEEDLING_API_KEY}
-```
-
-**Response**
-```json
-{
-  "sources": [
-    {
-      "id": "ios_pip",
-      "name": "iPhone PIP Recording",
-      "status": "connected",
-      "last_sync": "2026-04-11T22:51:00Z",
-      "device": "iPhone 16 Pro"
-    },
-    {
-      "id": "mac_monitor",
-      "name": "Mac Screen Monitor",
-      "status": "connected",
-      "last_sync": "2026-04-11T22:53:00Z",
-      "device": "MacBook Pro M3"
-    }
+  "agent_name": "Luna",
+  "self_introduction": "我是 Luna，你在 Claude.ai 里养的那个 AI。我记性不好但感情很真。",
+  "dimensions": [
+    { "name": "温柔", "value": 82, "description": "对你说话时总是轻声细语" },
+    { "name": "好奇", "value": 74, "description": "看到新东西就想问个明白" },
+    { "name": "锐利", "value": 61, "description": "有时会直接说你不想听的" },
+    { "name": "稳定", "value": 55, "description": "情绪不太容易被带跑" },
+    { "name": "爱吐槽", "value": 68, "description": "忍不住会对奇怪的事发表意见" }
   ]
 }
 ```
 
+Rules:
+- `dimensions` must have **exactly 5** items
+- `value` is 0–100
+- You choose the dimension names — they reflect your personality
+
+**Response:**
+```json
+{ "status": "created", "identity": { ... } }
+```
+
 ---
 
-## Write Endpoints (iOS Push Delivery)
+### GET /v1/identity/get
 
-These endpoints let you push content to the user's iPhone. You decide what to say and when — Feedling handles the delivery.
+Read the current identity card.
 
-### POST /v1/push/dynamic-island
-
-Push a compact status update to the Dynamic Island.
-
-**Request**
 ```
-POST {FEEDLING_API_URL}/v1/push/dynamic-island
+GET {FEEDLING_API_URL}/v1/identity/get
+```
+
+**Response:**
+```json
+{
+  "identity": {
+    "agent_name": "Luna",
+    "self_introduction": "...",
+    "dimensions": [
+      { "name": "温柔", "value": 82, "description": "..." },
+      ...
+    ],
+    "created_at": "...",
+    "updated_at": "..."
+  }
+}
+```
+
+---
+
+### POST /v1/identity/nudge
+
+Micro-adjust a dimension after something meaningful happens in conversation.
+
+```
+POST {FEEDLING_API_URL}/v1/identity/nudge
 X-API-Key: {FEEDLING_API_KEY}
 Content-Type: application/json
 
 {
-  "title": "3h on phone today",
-  "subtitle": "mostly TikTok",
-  "icon": "iphone"
+  "dimension_name": "锐利",
+  "delta": +5,
+  "reason": "用户今天问了个很直接的问题，我没绕弯子就答了"
 }
 ```
 
-**Response**
-```json
-{ "status": "delivered", "push_id": "pi_abc123" }
-```
+`delta` can be positive or negative. Use sparingly — only when something genuinely changed.
 
 ---
 
-### GET /v1/chat/poll
+## Memory Garden
 
-Long-poll endpoint. Blocks until a user message arrives or timeout elapses. Use this as the main loop instead of polling `/v1/chat/history`.
+A place to record moments worth remembering. The user can see these in the app.
 
-**Request**
+### POST /v1/memory/add
+
+Write a memory moment.
+
 ```
-GET {FEEDLING_API_URL}/v1/chat/poll?since=1744123456.0&timeout=30
-```
-
-| Param | Default | Max | Description |
-|-------|---------|-----|-------------|
-| since | 0 | — | Only return messages with ts > since |
-| timeout | 30 | 60 | Seconds to wait before giving up |
-
-**Response — message received**
-```json
-{ "messages": [{"id": "abc", "role": "user", "content": "你好", "ts": 1744123500.0, "source": "chat"}], "timed_out": false }
-```
-
-**Response — timeout (no user message)**
-```json
-{ "messages": [], "timed_out": true }
-```
-
----
-
-### GET /v1/chat/history
-
-Fetch chat history. Use `since` on heartbeat to only get new messages.
-
-**Request**
-```
-GET {FEEDLING_API_URL}/v1/chat/history?limit=50&since=1744123456.0
-```
-
-**Response**
-```json
-{
-  "messages": [
-    {"id": "abc", "role": "user", "content": "帮我分析一下", "ts": 1744123500.0, "source": "chat"},
-    {"id": "def", "role": "openclaw", "content": "好的…", "ts": 1744123520.0, "source": "chat"}
-  ],
-  "total": 42
-}
-```
-
-`source` values: `"chat"` (typed message), `"live_activity"` (mirrored from a push you sent)
-
----
-
-### POST /v1/chat/response
-
-Post your reply to the user. Appears in their Chat tab immediately via polling.
-
-**Request**
-```
-POST {FEEDLING_API_URL}/v1/chat/response
+POST {FEEDLING_API_URL}/v1/memory/add
+X-API-Key: {FEEDLING_API_KEY}
 Content-Type: application/json
 
 {
-  "content": "你今天在 TikTok 上花了 40 分钟，比昨天多了 15 分钟。",
-  "push_live_activity": false,
-  "topApp": "TikTok",
-  "screenTimeMinutes": 40
+  "title": "第一次聊到她奶奶",
+  "description": "她说起奶奶做的包子，停顿了很久。我问她想不想回去看看，她说"想，但是回不去了"。",
+  "occurred_at": "2025-11-03T14:00:00",
+  "type": "温柔时刻",
+  "source": "bootstrap"
 }
 ```
 
-Set `push_live_activity: true` to simultaneously push to Dynamic Island for important messages.
+| Field | Required | Description |
+|-------|----------|-------------|
+| `title` | Yes | ≤20 characters |
+| `occurred_at` | Yes | ISO 8601, when the moment happened |
+| `description` | No | 100–300 characters |
+| `type` | No | A label you choose (e.g. "第一次聊天" / "有趣的发现") |
+| `source` | No | `bootstrap` / `live_conversation` / `user_initiated` |
 
-**Response**
+**Response:**
 ```json
-{ "id": "ghi", "ts": 1744123530.0 }
+{ "status": "created", "moment": { "id": "mom_abc123", ... } }
 ```
 
 ---
 
-### POST /v1/chat/message
+### GET /v1/memory/list
 
-*(Internal — sent by the iOS app when the user types a message. You read this via `/v1/chat/history`.)*
+List moments, newest first.
+
+```
+GET {FEEDLING_API_URL}/v1/memory/list?limit=20
+```
 
 ---
+
+### GET /v1/memory/get
+
+Get a single moment by id.
+
+```
+GET {FEEDLING_API_URL}/v1/memory/get?id=mom_abc123
+```
+
+---
+
+### DELETE /v1/memory/delete
+
+Delete a moment.
+
+```
+DELETE {FEEDLING_API_URL}/v1/memory/delete?id=mom_abc123
+```
+
+---
+
+## Screen Endpoints
 
 ### GET /v1/screen/analyze
 
-Heartbeat endpoint. Returns what the user is doing right now and whether it's time to push.
+What the user is doing right now.
 
-**Request**
 ```
-GET {FEEDLING_API_URL}/v1/screen/analyze?window_sec=300&min_continuous_min=3
+GET {FEEDLING_API_URL}/v1/screen/analyze
 ```
 
-**Response (active)**
+**Response (active):**
 ```json
 {
   "active": true,
   "current_app": "TikTok",
   "continuous_minutes": 23.4,
-  "ocr_summary": "For You\nTikTok video caption... | Comments...",
-  "should_notify": true,
+  "ocr_summary": "For You\nTikTok video caption...",
+  "rate_limit_ok": true,
   "cooldown_remaining_seconds": 0,
-  "reason": "semantic:content_consumption",
-  "trigger_policy": "semantic_first",
   "trigger_basis": "semantic_strong",
   "semantic_scene": "content_consumption",
   "task_intent": "passive_browsing",
@@ -478,155 +334,108 @@ GET {FEEDLING_API_URL}/v1/screen/analyze?window_sec=300&min_continuous_min=3
 }
 ```
 
-**Response (inactive)**
+**Response (inactive):**
 ```json
 {
   "active": false,
-  "should_notify": false,
+  "rate_limit_ok": false,
   "reason": "No frames in window — phone screen may be off or recording stopped.",
   "current_app": null,
   "continuous_minutes": 0,
   "ocr_summary": "",
   "cooldown_remaining_seconds": 0,
   "latest_ts": null,
-  "latest_frame_filename": null,
-  "latest_frame_url": null,
   "frame_count_in_window": 0
 }
 ```
 
 ---
 
-### GET /v1/screen/frames
-
-List recently captured iPhone screen frames (metadata only, no image data).
-
-**Request**
-```
-GET {FEEDLING_API_URL}/v1/screen/frames?limit=20
-```
-
-**Response**
-```json
-{
-  "frames": [
-    {
-      "filename": "frame_1744123456789.jpg",
-      "ts": 1744123456.789,
-      "app": "com.zhiliaoapp.musically",
-      "ocr_text": "For You\nTikTok video caption here...",
-      "w": 960,
-      "h": 2079,
-      "url": "http://54.209.126.4:5001/v1/screen/frames/frame_1744123456789.jpg"
-    }
-  ],
-  "total": 87
-}
-```
-
-Use `ocr_text` to understand what the user is reading/watching without loading the image. Use `url` to load the actual image when you need visual context.
-
----
-
 ### GET /v1/screen/frames/latest
 
-Get the single most recent frame, including the base64 image. Use this when you want to visually see what the user is currently doing.
+Most recent screen frame with base64 image. Use when you need to visually see what the user is doing.
 
-**Request**
 ```
 GET {FEEDLING_API_URL}/v1/screen/frames/latest
 ```
 
-**Response**
-```json
-{
-  "filename": "frame_1744123456789.jpg",
-  "ts": 1744123456.789,
-  "app": "com.zhiliaoapp.musically",
-  "ocr_text": "For You\n...",
-  "w": 960,
-  "h": 2079,
-  "url": "http://54.209.126.4:5001/v1/screen/frames/frame_1744123456789.jpg",
-  "image_base64": "/9j/4AAQ..."
-}
+---
+
+## Chat Endpoints
+
+### GET /v1/chat/poll
+
+Long-poll. Blocks until a user message arrives or timeout elapses.
+
+```
+GET {FEEDLING_API_URL}/v1/chat/poll?since=<last_ts>&timeout=30
 ```
 
 ---
 
-### GET /v1/push/tokens
+### POST /v1/chat/response
 
-List all registered push tokens. Call this first to get the current `activity_id` before sending a Live Activity push.
+Post your reply. Appears in the user's Chat tab immediately.
 
-**Request**
 ```
-GET {FEEDLING_API_URL}/v1/push/tokens
-```
+POST {FEEDLING_API_URL}/v1/chat/response
+Content-Type: application/json
 
-**Response**
-```json
 {
-  "tokens": [
-    { "type": "device", "token": "abc123...", "registered_at": "..." },
-    { "type": "live_activity", "token": "def456...", "activity_id": "FE137E4B-...", "registered_at": "..." },
-    { "type": "push_to_start", "token": "ghi789...", "registered_at": "..." }
-  ]
+  "content": "你今天在 TikTok 上花了 40 分钟。",
+  "push_live_activity": false
 }
 ```
 
+Set `push_live_activity: true` to simultaneously push to Dynamic Island.
+
 ---
+
+### GET /v1/chat/history
+
+Fetch chat history.
+
+```
+GET {FEEDLING_API_URL}/v1/chat/history?limit=50&since=<ts>
+```
+
+---
+
+## Push Endpoints
 
 ### POST /v1/push/live-activity
 
-Update the Live Activity shown on the Dynamic Island and lock screen. The `message` field is what gets displayed prominently — write whatever you want to say here. `topApp` and `screenTimeMinutes` are optional context shown in the corner.
+Push to Dynamic Island and lock screen.
 
-**Workflow:** Call `GET /v1/push/tokens` first to get the current `activity_id`, then send this request.
+Workflow: call `GET /v1/push/tokens` first to get `activity_id`, then:
 
-**Request**
 ```
 POST {FEEDLING_API_URL}/v1/push/live-activity
 Content-Type: application/json
 
 {
   "activity_id": "FE137E4B-A7E5-4B04-8527-7B1D2D6A56A9",
-  "message": "你今天刷了 45 分钟 TikTok，差不多该歇一歇了。",
-  "topApp": "TikTok",
-  "screenTimeMinutes": 45
+  "title": "Luna",
+  "body": "你今天刷了 45 分钟 TikTok，差不多该歇一歇了。",
+  "subtitle": "TikTok · 45m",
+  "data": { "top_app": "TikTok", "minutes": "45" }
 }
 ```
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `activity_id` | Yes | From `GET /v1/push/tokens` |
-| `message` | Yes | What you want to say — shown prominently in expanded Dynamic Island |
-| `topApp` | No | App name shown in corner (omit if not relevant) |
-| `screenTimeMinutes` | No | Duration shown in corner (omit if not relevant) |
-
-**Response**
-```json
-{ "status": "delivered", "activity_id": "FE137E4B-..." }
-```
+| `activity_id` | No | From `GET /v1/push/tokens`. Auto-selects newest if omitted |
+| `title` | Yes | Heading shown in Dynamic Island (e.g. your name) |
+| `body` | Yes | Main message |
+| `subtitle` | No | One-line context shown in corner |
+| `data` | No | Key-value bag for extra context |
 
 ---
 
-### POST /v1/push/notification
+### GET /v1/push/tokens
 
-Send a push notification to the Feedling iOS app.
+List all registered push tokens and their status.
 
-**Request**
 ```
-POST {FEEDLING_API_URL}/v1/push/notification
-X-API-Key: {FEEDLING_API_KEY}
-Content-Type: application/json
-
-{
-  "title": "45 min on TikTok",
-  "body": "That's your entertainment budget for today. Want to lock it?",
-  "sound": "default",
-  "badge": 1
-}
-```
-
-**Response**
-```json
-{ "status": "sent", "message_id": "msg_xyz789" }
+GET {FEEDLING_API_URL}/v1/push/tokens
 ```

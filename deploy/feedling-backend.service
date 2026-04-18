@@ -1,0 +1,17 @@
+[Unit]
+Description=Feedling Flask Backend
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/feedling-mcp-v1/backend
+EnvironmentFile=/home/ubuntu/feedling.env
+ExecStart=/home/ubuntu/feedling-venv/bin/python app.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

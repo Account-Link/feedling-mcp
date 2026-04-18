@@ -1,0 +1,18 @@
+[Unit]
+Description=Feedling Chat Bridge (Hermes auto-reply)
+After=network.target feedling-backend.service
+Requires=feedling-backend.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/feedling-mcp-v1/backend
+EnvironmentFile=/home/ubuntu/feedling.env
+ExecStart=/home/ubuntu/feedling-venv/bin/python chat_bridge.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

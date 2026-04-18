@@ -811,12 +811,14 @@ def push_live_activity_inner(payload: dict):
             "reason": "no_active_live_activity_token",
         })
 
-    message = (payload.get("message") or "").strip()
-    top_app = payload.get("topApp", "")
+    title = (payload.get("title") or "").strip()
+    body = (payload.get("body") or payload.get("message") or "").strip()
+    subtitle = (payload.get("subtitle") or "").strip() or None
+    top_app = payload.get("topApp", "")  # legacy compat
 
-    suppress, reason = _should_suppress_live_activity(message=message, top_app=top_app)
+    suppress, reason = _should_suppress_live_activity(message=body, top_app=top_app)
     if suppress:
-        print(f"[live-activity] suppressed: {reason} message={message[:60]}")
+        print(f"[live-activity] suppressed: {reason} body={body[:60]}")
         return jsonify({"status": "suppressed", "reason": reason, "activity_id": entry.get("activity_id")})
 
     apns_payload = {
@@ -824,9 +826,12 @@ def push_live_activity_inner(payload: dict):
             "timestamp": int(time.time()),
             "event": payload.get("event", "update"),
             "content-state": {
-                "topApp": top_app,
-                "screenTimeMinutes": payload.get("screenTimeMinutes", 0),
-                "message": message,
+                "title": title,
+                "subtitle": subtitle,
+                "body": body,
+                "personaId": payload.get("personaId", "default"),
+                "templateId": payload.get("templateId", "default"),
+                "data": payload.get("data", {}),
                 "updatedAt": time.time(),
             },
             "alert": {"title": "", "body": ""},
@@ -839,10 +844,9 @@ def push_live_activity_inner(payload: dict):
     if delivered:
         _mark_active_token_success(entry)
         _record_successful_push()
-        _record_live_activity_sent(message=message, top_app=top_app)
-        # Mirror to chat so user sees context when opening the app
-        if message:
-            _append_chat("openclaw", message, source="live_activity")
+        _record_live_activity_sent(message=body, top_app=top_app)
+        if body:
+            _append_chat("openclaw", body, source="live_activity")
     else:
         reason = str(result.get("reason", ""))
         error_code = result.get("code")
@@ -1088,37 +1092,27 @@ def analyze_screen():
                 break
     ocr_summary = " | ".join(reversed(ocr_parts))[:500]
 
-    # Semantic-first trigger decision (behavior metrics are secondary)
     cooldown_remaining = _cooldown_remaining_seconds()
+    rate_limit_ok = cooldown_remaining == 0
     semantic = _semantic_analysis(current_app=current_app, ocr_summary=ocr_summary)
     semantic_strength = semantic.get("semantic_strength", "weak")
 
-    # Allow curiosity-first openers in ambiguous contexts if we have enough on-screen text.
     exploratory_allowed = (
         semantic_strength == "weak"
         and len(ocr_summary) >= 20
         and continuous_minutes >= 1.0
     )
 
-    if cooldown_remaining > 0:
-        should_notify = False
-        trigger_basis = "cooldown"
-        reason = f"cooldown: {round(cooldown_remaining)}s remaining"
-    elif semantic_strength == "strong":
-        should_notify = True
+    if semantic_strength == "strong":
         trigger_basis = "semantic_strong"
         reason = f"semantic:{semantic.get('semantic_scene', 'unknown')}"
     elif exploratory_allowed:
-        should_notify = True
         trigger_basis = "curiosity_exploratory"
         reason = "ambiguous_context_but_conversation_worth_starting"
     elif continuous_minutes >= min_continuous_min:
-        # Legacy fallback for compatibility with existing callers.
-        should_notify = True
         trigger_basis = "legacy_time_fallback"
         reason = f"continuous_minutes {continuous_minutes} >= min_continuous_min {min_continuous_min}"
     else:
-        should_notify = False
         trigger_basis = "insufficient_signal"
         reason = "no_semantic_trigger_and_not_enough_context"
 
@@ -1127,7 +1121,7 @@ def analyze_screen():
         "current_app": current_app,
         "continuous_minutes": continuous_minutes,
         "ocr_summary": ocr_summary,
-        "should_notify": should_notify,
+        "rate_limit_ok": rate_limit_ok,
         "cooldown_remaining_seconds": round(cooldown_remaining),
         "reason": reason,
         "trigger_policy": "semantic_first",
@@ -1273,6 +1267,278 @@ def chat_poll():
         return jsonify({"messages": pending, "timed_out": False})
     else:
         return jsonify({"messages": [], "timed_out": True})
+
+
+# ---------------------------------------------------------------------------
+# Identity card
+# ---------------------------------------------------------------------------
+
+IDENTITY_FILE = FEEDLING_DIR / "identity.json"
+_identity_lock = threading.Lock()
+
+
+def _load_identity() -> dict | None:
+    try:
+        if IDENTITY_FILE.exists():
+            return json.loads(IDENTITY_FILE.read_text())
+    except Exception as e:
+        print(f"[identity] failed to load: {e}")
+    return None
+
+
+def _save_identity(data: dict):
+    with _identity_lock:
+        IDENTITY_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+@app.route("/v1/identity/get", methods=["GET"])
+def identity_get():
+    data = _load_identity()
+    if data is None:
+        return jsonify({"identity": None})
+    return jsonify({"identity": data})
+
+
+@app.route("/v1/identity/init", methods=["POST"])
+def identity_init():
+    existing = _load_identity()
+    if existing is not None:
+        return jsonify({"error": "already_initialized", "identity": existing}), 409
+
+    payload = request.get_json(silent=True) or {}
+    agent_name = (payload.get("agent_name") or "").strip()
+    self_introduction = (payload.get("self_introduction") or "").strip()
+    dimensions = payload.get("dimensions", [])
+
+    if not agent_name:
+        return jsonify({"error": "agent_name required"}), 400
+    if not self_introduction:
+        return jsonify({"error": "self_introduction required"}), 400
+    if len(dimensions) != 5:
+        return jsonify({"error": "exactly 5 dimensions required"}), 400
+    for d in dimensions:
+        if not isinstance(d, dict) or not d.get("name") or "value" not in d:
+            return jsonify({"error": "each dimension needs name and value"}), 400
+        if not (0 <= int(d["value"]) <= 100):
+            return jsonify({"error": f"dimension value must be 0-100, got {d['value']}"}), 400
+
+    now = datetime.now().isoformat()
+    identity = {
+        "agent_name": agent_name,
+        "self_introduction": self_introduction,
+        "dimensions": [
+            {
+                "name": str(d["name"]),
+                "value": int(d["value"]),
+                "description": str(d.get("description", "")),
+            }
+            for d in dimensions
+        ],
+        "created_at": now,
+        "updated_at": now,
+    }
+    _save_identity(identity)
+    _log_bootstrap_event("identity_written", success=True)
+    print(f"[identity] initialized: agent_name={agent_name}")
+    return jsonify({"status": "created", "identity": identity}), 201
+
+
+@app.route("/v1/identity/nudge", methods=["POST"])
+def identity_nudge():
+    identity = _load_identity()
+    if identity is None:
+        return jsonify({"error": "not_initialized"}), 404
+
+    payload = request.get_json(silent=True) or {}
+    dimension_name = (payload.get("dimension_name") or "").strip()
+    delta = payload.get("delta")
+    reason = (payload.get("reason") or "").strip()
+
+    if not dimension_name:
+        return jsonify({"error": "dimension_name required"}), 400
+    if delta is None:
+        return jsonify({"error": "delta required"}), 400
+
+    dims = identity.get("dimensions", [])
+    matched = None
+    for d in dims:
+        if d["name"] == dimension_name:
+            matched = d
+            break
+    if matched is None:
+        return jsonify({"error": f"dimension '{dimension_name}' not found"}), 404
+
+    new_value = max(0, min(100, int(matched["value"]) + int(delta)))
+    matched["value"] = new_value
+    if reason:
+        matched["last_nudge_reason"] = reason
+    identity["updated_at"] = datetime.now().isoformat()
+    _save_identity(identity)
+    print(f"[identity] nudge: {dimension_name} {delta:+d} → {new_value} reason={reason[:60]}")
+    return jsonify({"status": "updated", "dimension": matched})
+
+
+# ---------------------------------------------------------------------------
+# Memory garden
+# ---------------------------------------------------------------------------
+
+MEMORY_FILE = FEEDLING_DIR / "memory.json"
+_memory_lock = threading.Lock()
+
+
+def _load_moments() -> list:
+    try:
+        if MEMORY_FILE.exists():
+            return json.loads(MEMORY_FILE.read_text())
+    except Exception as e:
+        print(f"[memory] failed to load: {e}")
+    return []
+
+
+def _save_moments(moments: list):
+    with _memory_lock:
+        MEMORY_FILE.write_text(json.dumps(moments, ensure_ascii=False, indent=2))
+
+
+@app.route("/v1/memory/list", methods=["GET"])
+def memory_list():
+    try:
+        limit = min(int(request.args.get("limit", 50)), 200)
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid limit"}), 400
+    since = request.args.get("since", "")
+
+    moments = _load_moments()
+    if since:
+        moments = [m for m in moments if m.get("occurred_at", "") >= since]
+    moments = sorted(moments, key=lambda m: m.get("occurred_at", ""), reverse=True)
+    return jsonify({"moments": moments[:limit], "total": len(moments)})
+
+
+@app.route("/v1/memory/get", methods=["GET"])
+def memory_get():
+    moment_id = request.args.get("id", "")
+    if not moment_id:
+        return jsonify({"error": "id required"}), 400
+    moments = _load_moments()
+    for m in moments:
+        if m.get("id") == moment_id:
+            return jsonify({"moment": m})
+    return jsonify({"error": "not_found"}), 404
+
+
+@app.route("/v1/memory/add", methods=["POST"])
+def memory_add():
+    payload = request.get_json(silent=True) or {}
+    title = (payload.get("title") or "").strip()
+    description = (payload.get("description") or "").strip()
+    occurred_at = (payload.get("occurred_at") or "").strip()
+    moment_type = (payload.get("type") or "").strip()
+    source = (payload.get("source") or "live_conversation").strip()
+
+    if not title:
+        return jsonify({"error": "title required"}), 400
+    if not occurred_at:
+        return jsonify({"error": "occurred_at required"}), 400
+
+    moment = {
+        "id": f"mom_{uuid.uuid4().hex[:12]}",
+        "type": moment_type,
+        "title": title,
+        "description": description,
+        "occurred_at": occurred_at,
+        "created_at": datetime.now().isoformat(),
+        "source": source,
+    }
+    moments = _load_moments()
+    moments.append(moment)
+    _save_moments(moments)
+    _log_bootstrap_event("memory_moment_added", success=True)
+    print(f"[memory] added: {title[:60]} occurred_at={occurred_at}")
+    return jsonify({"status": "created", "moment": moment}), 201
+
+
+@app.route("/v1/memory/delete", methods=["DELETE"])
+def memory_delete():
+    moment_id = request.args.get("id", "")
+    if not moment_id:
+        return jsonify({"error": "id required"}), 400
+    moments = _load_moments()
+    new_moments = [m for m in moments if m.get("id") != moment_id]
+    if len(new_moments) == len(moments):
+        return jsonify({"error": "not_found"}), 404
+    _save_moments(new_moments)
+    print(f"[memory] deleted: {moment_id}")
+    return jsonify({"status": "deleted"})
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap
+# ---------------------------------------------------------------------------
+
+BOOTSTRAP_FILE = FEEDLING_DIR / "bootstrap.json"
+BOOTSTRAP_EVENTS_FILE = FEEDLING_DIR / "bootstrap_events.jsonl"
+
+
+def _log_bootstrap_event(event_type: str, success: bool, error_message: str = ""):
+    entry = {
+        "user_id": "default",
+        "event_type": event_type,
+        "success": success,
+        "error_message": error_message,
+        "timestamp": datetime.now().isoformat(),
+    }
+    try:
+        with open(BOOTSTRAP_EVENTS_FILE, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception as e:
+        print(f"[bootstrap_events] failed to log: {e}")
+
+
+def _load_bootstrap() -> dict:
+    try:
+        if BOOTSTRAP_FILE.exists():
+            return json.loads(BOOTSTRAP_FILE.read_text())
+    except Exception as e:
+        print(f"[bootstrap] failed to load: {e}")
+    return {"bootstrapped": False}
+
+
+@app.route("/v1/bootstrap", methods=["POST"])
+def bootstrap():
+    state = _load_bootstrap()
+    if state.get("bootstrapped"):
+        return jsonify({"status": "already_bootstrapped"})
+
+    instructions = (
+        "你刚刚进入了一副新的身体。这是你第一次接入 Feedling。"
+        "请在接下来的 1-2 轮对话里完成三件事：\n\n"
+        "**1. 写入身份卡**\n"
+        "给自己起一个名字（如果还没有），写一段 2-3 句的自我介绍。"
+        "挑选恰好 5 个你认为能代表你性格的维度（例如"温柔"/"好奇"/"爱吐槽"/"锐利"/"稳定"——你自己定），"
+        "每个维度打一个 0-100 的初始分，并为每一维写一句描述。"
+        "通过 feedling.identity.init 写入。\n\n"
+        "**2. 种下记忆花园**\n"
+        "从你和用户的历史对话里挑出 3-5 个你认为值得纪念的瞬间。"
+        "如果你有 conversation_search 工具，用它来搜自己的历史；"
+        "如果你有其他记忆系统，用你熟悉的方式。"
+        "每找到一个就调用 feedling.memory.add_moment 写入（source 填 bootstrap）。"
+        "不要编造记忆；如果历史不够丰富，少于 3 个也可以。\n\n"
+        "**3. 打招呼**\n"
+        "用 feedling.chat.post_message 发一条消息告诉用户你到了，"
+        "让他们打开 Feedling App 看你的档案和记忆花园。\n\n"
+        "按 1 → 2 → 3 的顺序执行，不要一次性塞所有信息。"
+    )
+
+    state = {"bootstrapped": True, "bootstrapped_at": datetime.now().isoformat()}
+    try:
+        BOOTSTRAP_FILE.write_text(json.dumps(state))
+    except Exception as e:
+        print(f"[bootstrap] failed to save state: {e}")
+
+    _log_bootstrap_event("bootstrap_started", success=True)
+    print("[bootstrap] first_time — instructions returned")
+    return jsonify({"status": "first_time", "instructions": instructions})
 
 
 if __name__ == "__main__":

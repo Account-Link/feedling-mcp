@@ -6,7 +6,9 @@ import SwiftUI
 
 enum AppTab: Int {
     case chat = 0
-    case settings = 1
+    case identity = 1
+    case garden = 2
+    case settings = 3
 }
 
 // MARK: - Root view (TabView)
@@ -14,6 +16,8 @@ enum AppTab: Int {
 struct ContentView: View {
     @EnvironmentObject var router: AppRouter
     @EnvironmentObject var chatViewModel: ChatViewModel
+    @EnvironmentObject var identityViewModel: IdentityViewModel
+    @EnvironmentObject var memoryViewModel: MemoryViewModel
 
     var body: some View {
         TabView(selection: $router.selectedTab) {
@@ -22,12 +26,28 @@ struct ContentView: View {
                 .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right.fill") }
                 .tag(AppTab.chat)
 
+            IdentityView()
+                .environmentObject(identityViewModel)
+                .tabItem { Label("Identity", systemImage: "person.crop.square.filled.and.at.rectangle") }
+                .tag(AppTab.identity)
+
+            MemoryGardenView()
+                .environmentObject(memoryViewModel)
+                .tabItem { Label("Garden", systemImage: "leaf.fill") }
+                .tag(AppTab.garden)
+
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape.fill") }
                 .tag(AppTab.settings)
         }
         .tint(.cyan)
         .preferredColorScheme(.dark)
+        // T2.5: Auto-navigate to Identity on first bootstrap
+        .onChange(of: identityViewModel.didJustBootstrap) { _, didBootstrap in
+            if didBootstrap {
+                router.selectedTab = .identity
+            }
+        }
     }
 }
 
@@ -37,19 +57,24 @@ class AppRouter: ObservableObject {
     @Published var selectedTab: AppTab = .chat
 }
 
-// MARK: - Settings View (former ContentView content)
+// MARK: - Settings View
 
 struct SettingsView: View {
     @EnvironmentObject var lam: LiveActivityManager
-    @State private var showBroadcastPicker = false
 
     private let mockStates: [ScreenActivityAttributes.ContentState] = [
-        .init(topApp: "TikTok", screenTimeMinutes: 45,
-              message: "45 min on TikTok. That's your entertainment budget.", updatedAt: Date()),
-        .init(topApp: "Figma", screenTimeMinutes: 95,
-              message: "Deep work mode. 95 min in Figma.", updatedAt: Date()),
-        .init(topApp: "Instagram", screenTimeMinutes: 28,
-              message: "28 min on Instagram. Wrap it up?", updatedAt: Date()),
+        .init(title: "OpenClaw",
+              body: "45 min on TikTok. That's your entertainment budget.",
+              data: ["top_app": "TikTok", "minutes": "45"],
+              updatedAt: Date()),
+        .init(title: "OpenClaw",
+              body: "Deep work mode. 95 min in Figma.",
+              data: ["top_app": "Figma", "minutes": "95"],
+              updatedAt: Date()),
+        .init(title: "OpenClaw",
+              body: "28 min on Instagram. Wrap it up?",
+              data: ["top_app": "Instagram", "minutes": "28"],
+              updatedAt: Date()),
     ]
     @State private var mockIndex = 0
 
@@ -78,6 +103,20 @@ struct SettingsView: View {
                 .background(Color(UIColor.systemGroupedBackground))
 
                 List {
+                    // Connection
+                    Section("Connection") {
+                        LabeledContent("API") {
+                            Text(FeedlingAPI.baseURL)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        LabeledContent("Pairing Code") {
+                            Text("—")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
                     // Live Activity status
                     Section("Live Activity") {
                         HStack {
@@ -88,9 +127,8 @@ struct SettingsView: View {
                                 .foregroundStyle(lam.isActive ? .primary : .secondary)
                         }
                         if let state = lam.lastState {
-                            LabeledContent("Top App", value: state.topApp)
-                            LabeledContent("Screen Time", value: "\(state.screenTimeMinutes) min")
-                            LabeledContent("Message", value: state.message)
+                            LabeledContent("Title", value: state.title)
+                            LabeledContent("Body", value: state.body)
                         }
                     }
 
