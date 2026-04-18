@@ -48,6 +48,15 @@ Follow the instructions exactly. They will ask you to:
 2. Search your memory / conversation history, then call `POST /v1/memory/add` for 3-5 memorable moments
 3. Call `POST /v1/chat/response` to say hello to the user
 
+For step 2 (Memory Garden), use shared-memory quality standards:
+- Not logs, not test traces, not placeholder content.
+- A memory should include all three signals:
+  1) deeper mutual understanding,
+  2) a meaningful crossing achieved together,
+  3) a lasting behavior change afterward.
+- Prefer relationship/turning-point narratives over implementation details.
+- If you only have synthetic test content (`test-*`, `probe-*`), do not write it into user-facing garden.
+
 **Response (already bootstrapped):**
 ```json
 { "status": "already_bootstrapped" }
@@ -242,6 +251,13 @@ A place to record moments worth remembering. The user can see these in the app.
 ### POST /v1/memory/add
 
 Write a memory moment.
+
+Quality bar (must follow):
+- The card should read like a shared life memory, not an engineering changelog.
+- Use this narrative shape in `description`:
+  `what happened → what the user really cared about → how we changed after`.
+- Prefer warm, concrete, human language; avoid abstract management jargon.
+- Skip synthetic/debug entries (`test-*`, `probe-*`, health checks, endpoint smoke tests) unless the user explicitly asks to keep them.
 
 ```
 POST {FEEDLING_API_URL}/v1/memory/add

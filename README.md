@@ -215,6 +215,26 @@ testapp/
 6. iOS app detects identity card appeared → auto-switches to Identity tab
 7. User sees: filled radar chart + memory garden cards + chat message
 
+### Memory Garden quality standard (shared-memory mode)
+
+Memory Garden should feel like "our memories", not debug logs.
+
+A moment qualifies as a good memory if it satisfies all 3:
+1. It deepens mutual understanding (the agent understands the user better, or vice versa)
+2. It records a meaningful crossing (we overcame friction / made progress together)
+3. It leaves a lasting behavioral change (a rule, tone, boundary, or workflow we keep using)
+
+Writing guidance:
+- Use everyday human language, emotionally legible, not ticket-style wording
+- Describe turning points, not generic status updates
+- Prefer "what changed between us" over "what endpoint was called"
+- Avoid synthetic test content (`test-*`, `probe-*`) in production gardens
+
+Recommended card structure:
+- `title`: short and warm, like a memory label
+- `description`: "what happened → what the user cared about → what changed after"
+- `type`: relationship-oriented tags (e.g. "共同突破" / "彼此理解" / "新约定")
+
 ---
 
 ## OpenClaw setup (HTTP mode)

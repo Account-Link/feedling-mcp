@@ -263,7 +263,7 @@ identity_payload = {
     ],
 }
 r = requests.post(f"{BASE_URL}/v1/identity/init", json=identity_payload, timeout=5)
-check("POST /v1/identity/init returns 200 or 409", r.status_code in (200, 409))
+check("POST /v1/identity/init returns 201 or 409", r.status_code in (201, 409))
 
 # get
 r = requests.get(f"{BASE_URL}/v1/identity/get", timeout=5)
@@ -308,9 +308,9 @@ r = requests.post(
     },
     timeout=5,
 )
-check("POST /v1/memory/add returns 200", r.status_code == 200)
+check("POST /v1/memory/add returns 201", r.status_code == 201)
 mem_id = None
-if r.status_code == 200:
+if r.status_code == 201:
     mem_id = r.json().get("moment", {}).get("id")
     check("add response has moment.id", bool(mem_id))
 
