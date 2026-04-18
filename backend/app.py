@@ -879,16 +879,20 @@ def push_live_start():
         print(f"[live-start] no push_to_start token — logged: {payload}")
         return jsonify({"status": "logged", "reason": "no_active_push_to_start_token"})
 
-    message = (payload.get("message") or "").strip()
-    top_app = payload.get("topApp", "")
+    title = (payload.get("title") or "").strip()
+    body_text = (payload.get("body") or payload.get("message") or "").strip()
+    subtitle = (payload.get("subtitle") or "").strip() or None
     apns_payload = {
         "aps": {
             "timestamp": int(time.time()),
             "event": "start",
             "content-state": {
-                "topApp": top_app,
-                "screenTimeMinutes": payload.get("screenTimeMinutes", 0),
-                "message": message,
+                "title": title,
+                "subtitle": subtitle,
+                "body": body_text,
+                "personaId": payload.get("personaId", "default"),
+                "templateId": payload.get("templateId", "default"),
+                "data": payload.get("data", {}),
                 "updatedAt": time.time(),
             },
             "alert": {"title": "", "body": ""},
@@ -1038,7 +1042,7 @@ def analyze_screen():
     if not recent:
         return jsonify({
             "active": False,
-            "should_notify": False,
+            "rate_limit_ok": False,
             "reason": "No frames in window — phone screen may be off or recording stopped.",
             "current_app": None,
             "continuous_minutes": 0,
@@ -1200,9 +1204,8 @@ def chat_message():
 def chat_response():
     """
     OpenClaw posts a chat response.
-    Body: { "content": "...", "push_live_activity": false,
-            "topApp": "...", "screenTimeMinutes": 0 }
-    If push_live_activity is true, also triggers a Live Activity push.
+    Body: { "content": "...", "push_live_activity": false }
+    If push_live_activity is true, also triggers a Live Activity push with the message as body.
     """
     payload = request.get_json(silent=True) or {}
     content = (payload.get("content") or "").strip()
@@ -1214,9 +1217,10 @@ def chat_response():
 
     if payload.get("push_live_activity"):
         push_payload = {
-            "message": content,
-            "topApp": payload.get("topApp", ""),
-            "screenTimeMinutes": payload.get("screenTimeMinutes", 0),
+            "title": payload.get("title", ""),
+            "body": content,
+            "subtitle": payload.get("subtitle"),
+            "data": payload.get("data", {}),
         }
         push_live_activity_inner(push_payload)
 

@@ -50,9 +50,8 @@ class LiveActivityManager: ObservableObject {
 
         let attrs = ScreenActivityAttributes(activityId: UUID().uuidString)
         let initialState = ScreenActivityAttributes.ContentState(
-            topApp: "—",
-            screenTimeMinutes: 0,
-            message: "Waiting for data from OpenClaw...",
+            title: "Feedling",
+            body: "Waiting for data...",
             updatedAt: Date()
         )
 
@@ -79,15 +78,14 @@ class LiveActivityManager: ObservableObject {
         }
         await activity.update(.init(state: state, staleDate: nil))
         lastState = state
-        print("[LiveActivity] 🔄 Updated: \(state.topApp) \(state.screenTimeMinutes)m")
+        print("[LiveActivity] 🔄 Updated: \(state.title) — \(state.body.prefix(40))")
     }
 
     func stopActivity() async {
         guard let activity = currentActivity else { return }
         let finalState = ScreenActivityAttributes.ContentState(
-            topApp: lastState?.topApp ?? "—",
-            screenTimeMinutes: lastState?.screenTimeMinutes ?? 0,
-            message: "Session ended.",
+            title: lastState?.title ?? "Feedling",
+            body: "Session ended.",
             updatedAt: Date()
         )
         await activity.end(.init(state: finalState, staleDate: nil), dismissalPolicy: .default)

@@ -43,7 +43,7 @@ struct ContentView: View {
         .tint(.cyan)
         .preferredColorScheme(.dark)
         // T2.5: Auto-navigate to Identity on first bootstrap
-        .onChange(of: identityViewModel.didJustBootstrap) { _, didBootstrap in
+        .onChange(of: identityViewModel.didJustBootstrap) { didBootstrap in
             if didBootstrap {
                 router.selectedTab = .identity
             }
