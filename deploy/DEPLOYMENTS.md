@@ -56,16 +56,16 @@ Flip-to-multi-tenant plan (when iOS app with registration client ships):
 | Instance ID | `7a4c69589d441e84e9397c0c8a387e8c9e6adcae` |
 | VM UUID | `4386636e-1325-4b92-99d8-f2ca00befdb4` |
 | Instance | tdx.small (1 vCPU, 2 GB RAM, 20 GB disk) |
-| Compose | `deploy/docker-compose.phala.yaml` @ commit `a5a7af0` |
-| Image | `ghcr.io/account-link/feedling:d8737a3` |
-| Compose hash | `0xd118700eeb70555a8a874e880a3b679db17c7f3118fa72e382574ea1f7361b0a` |
+| Compose | `deploy/docker-compose.phala.yaml` @ commit `4826ec7` |
+| Image | `ghcr.io/account-link/feedling:4826ec7` (git_commit baked) |
+| Compose hash | `0x698b1824bfe18ce8a1b0d5f3b951984d6025d90bf60dbfde04efb20c88d9c93c` |
 | MRTD | `f06dfda6dce1cf904d4e2bab1dc37063…` |
 | Gateway base | `dstack-pha-prod5.phala.network` (dstack-gateway TEE TLS) |
 | Endpoints (app-id-bound) | `https://051a174f…-{5001,5002,5003,9998}.dstack-pha-prod5.phala.network` |
 | Enclave /attestation | https://051a174f2457a6c474680a5d745372398f97b6ad-5003.dstack-pha-prod5.phala.network/attestation |
 | Backend /healthz | https://051a174f2457a6c474680a5d745372398f97b6ad-5001.dstack-pha-prod5.phala.network/healthz |
 | MCP SSE | https://051a174f2457a6c474680a5d745372398f97b6ad-5002.dstack-pha-prod5.phala.network/sse |
-| On-chain entry | FeedlingAppAuth @ Eth Sepolia, tx `0xdfbc0b8df0a3f9306c4bb4c226cce1756230663ad7ecbdefff3371c562445f5b`, block 10691978 |
+| On-chain entries | Initial compose_hash `0xd118700e…`: Sepolia tx `0xdfbc0b8df0a3f9306c4bb4c226cce1756230663ad7ecbdefff3371c562445f5b`. Bake-git_commit rehash `0x698b1824…`: Sepolia tx `0x29e89b3dfdb9ea7a44f13a192e5228f26a35723cac07fe5b1552c95ce2683633`. |
 | Dashboard | https://cloud.phala.com/dashboard/cvms/4386636e-1325-4b92-99d8-f2ca00befdb4 |
 | Purpose | First real-TDX deployment. iOS audit card replays the event log, verifies RTMR3 binding to compose_hash, checks compose_hash is authorized on-chain. |
 
