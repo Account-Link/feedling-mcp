@@ -304,6 +304,13 @@ final class FeedlingAPI: ObservableObject {
 
 /// Keychain-backed X25519 keypair dedicated to content encryption
 /// (distinct from the identity keypair held by KeyStore).
+///
+/// Stored with `kSecAttrSynchronizable = true` so the key follows the
+/// user across devices via iCloud Keychain — otherwise deleting the app
+/// (or losing the phone) would orphan every v1 envelope ever written
+/// with this key. iCloud Keychain is itself end-to-end encrypted under
+/// the user's device-tied iCloud Security Code; Apple cannot recover it.
+/// See docs/DESIGN_E2E.md §5.3 (key lifecycle).
 final class ContentKeyStore {
     static let shared = ContentKeyStore()
 
@@ -320,10 +327,13 @@ final class ContentKeyStore {
     }
 
     func loadPrivateKey() throws -> Curve25519.KeyAgreement.PrivateKey? {
+        // Match both synchronizable and device-local entries so we can
+        // migrate a v0 local-only key forward without losing access.
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.service,
             kSecAttrAccount as String: Self.account,
+            kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
@@ -335,15 +345,39 @@ final class ContentKeyStore {
 
     private func save(privateKey: Curve25519.KeyAgreement.PrivateKey) throws {
         let data = privateKey.rawRepresentation
-        let query: [String: Any] = [
+        // Wipe any prior entry (synced or device-local) so we don't leave
+        // a stale shadow key that later resurfaces via iCloud.
+        let wipeQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.service,
             kSecAttrAccount as String: Self.account,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
+        ]
+        SecItemDelete(wipeQuery as CFDictionary)
+
+        // Prefer iCloud-synced storage so a phone loss doesn't orphan the
+        // user's encrypted history. Fall back to device-local if the host
+        // rejects sync (simulator without signed entitlements, MDM policy,
+        // iCloud Keychain disabled, …).
+        let syncedQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service,
+            kSecAttrAccount as String: Self.account,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            kSecAttrSynchronizable as String: true,
             kSecValueData as String: data,
         ]
-        SecItemDelete(query as CFDictionary)
-        let status = SecItemAdd(query as CFDictionary, nil)
+        var status = SecItemAdd(syncedQuery as CFDictionary, nil)
+        if status != errSecSuccess {
+            let localQuery: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: Self.service,
+                kSecAttrAccount as String: Self.account,
+                kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+                kSecValueData as String: data,
+            ]
+            status = SecItemAdd(localQuery as CFDictionary, nil)
+        }
         guard status == errSecSuccess else {
             throw NSError(domain: "ContentKeyStore", code: Int(status),
                           userInfo: [NSLocalizedDescriptionKey: "Keychain write failed"])
@@ -376,15 +410,32 @@ final class KeyStore {
 
     private func save(privateKey: Curve25519.KeyAgreement.PrivateKey) throws {
         let data = privateKey.rawRepresentation
-        let query: [String: Any] = [
+        let wipeQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.service,
             kSecAttrAccount as String: Self.account,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
+        ]
+        SecItemDelete(wipeQuery as CFDictionary)
+        let syncedQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service,
+            kSecAttrAccount as String: Self.account,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            kSecAttrSynchronizable as String: true,
             kSecValueData as String: data,
         ]
-        SecItemDelete(query as CFDictionary)
-        let status = SecItemAdd(query as CFDictionary, nil)
+        var status = SecItemAdd(syncedQuery as CFDictionary, nil)
+        if status != errSecSuccess {
+            let localQuery: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: Self.service,
+                kSecAttrAccount as String: Self.account,
+                kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+                kSecValueData as String: data,
+            ]
+            status = SecItemAdd(localQuery as CFDictionary, nil)
+        }
         guard status == errSecSuccess else {
             throw NSError(domain: "KeyStore", code: Int(status), userInfo: [NSLocalizedDescriptionKey: "Keychain write failed"])
         }
@@ -395,6 +446,7 @@ final class KeyStore {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.service,
             kSecAttrAccount as String: Self.account,
+            kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
