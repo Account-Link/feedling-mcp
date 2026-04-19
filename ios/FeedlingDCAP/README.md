@@ -1,11 +1,28 @@
 # FeedlingDCAP
 
 Swift package: the iOS side of Feedling's on-device attestation auditor.
-Parses and (Phase 1E onward) verifies Intel TDX v4 quotes so the iOS app
-can confirm what the enclave measured before trusting it with user keys.
+Parses and verifies Intel TDX v4 quotes so the iOS app can confirm what
+the enclave measured before trusting it with user keys.
 
 See `docs/DESIGN_E2E.md` §5.2 for the role this plays in the overall
 architecture.
+
+## Prior art / reference implementations
+
+- **[dcap-qvl](https://github.com/Phala-Network/dcap-qvl)** — Phala's
+  production Rust DCAP quote verifier. Used by dstack's own audit
+  tooling (`dstack_audit/phases/attestation.py` shells out to `dcap-qvl
+  verify --hex`). When we want to raise the confidence of this Swift
+  port, a sensible path is to diff our output against dcap-qvl on the
+  same input quotes and fix any drift. Can also be wrapped via FFI if
+  we ever want to use it directly on iOS.
+- **[SGXDataCenterAttestationPrimitives](https://github.com/intel/SGXDataCenterAttestationPrimitives)** —
+  Intel's C/C++ reference. The authoritative spec.
+- **[dstack-tutorial/dstack_audit](https://github.com/amiller/dstack-tutorial)** —
+  The full audit pipeline that `sxysun/is-this-real-tea` is built on.
+  Our `EventLogReplay` module (`testapp/FeedlingTest/EventLogReplay.swift`)
+  re-implements the compose_hash-binding checks from that tutorial in
+  Swift for on-device auditing.
 
 ## Status
 

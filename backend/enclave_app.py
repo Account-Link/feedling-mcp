@@ -189,8 +189,26 @@ def fetch_quote_and_measurements(dstack: DstackClient, report_data: bytes) -> di
     # RTMR values against the event chain.
     event_log_raw = getattr(quote_resp, "event_log", "") or ""
 
+    # Parse mr_config_id directly from the raw quote bytes — the dstack SDK's
+    # TcbInfo doesn't expose it, but dstack encodes compose_hash there on
+    # real deployments per the convention from dstack-tutorial:
+    #   mr_config_id[0]    = 0x01 (version marker)
+    #   mr_config_id[1:33] = sha256(canonical(app_compose))
+    #   mr_config_id[33:]  = zero padding
+    # The simulator leaves mr_config_id all zeros, so the iOS auditor
+    # treats a non-zero mr_config_id[0]=0x01 as an additional independent
+    # confirmation of compose_hash, not a mandatory check.
+    quote_hex = quote_resp.quote if isinstance(quote_resp.quote, str) else quote_resp.quote.hex()
+    mr_config_id_hex = ""
+    try:
+        qbytes = bytes.fromhex(quote_hex)
+        # TD Report body starts at offset 48; mr_config_id at body+184, 48 bytes
+        mr_config_id_hex = qbytes[48 + 184:48 + 184 + 48].hex()
+    except Exception:
+        pass
+
     return {
-        "tdx_quote_hex": quote_resp.quote if isinstance(quote_resp.quote, str) else quote_resp.quote.hex(),
+        "tdx_quote_hex": quote_hex,
         "event_log_json": event_log_raw,
         "measurements": {
             "mrtd": tcb.mrtd,
@@ -199,6 +217,7 @@ def fetch_quote_and_measurements(dstack: DstackClient, report_data: bytes) -> di
             "rtmr2": tcb.rtmr2,
             "rtmr3": tcb.rtmr3,
             "mr_aggregated": tcb.mr_aggregated,
+            "mr_config_id": mr_config_id_hex,
         },
         "compose_hash": info.compose_hash,
         "app_id": info.app_id,

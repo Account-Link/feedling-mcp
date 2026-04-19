@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		0C85193D472663A67369BAB1 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D833B2E56FA8C84DA0950F72 /* ChatView.swift */; };
+		12A04CB5B88BD594DB35E87A /* EventLogReplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60A34364A5493B52BCEC8FFB /* EventLogReplay.swift */; };
 		17B110E5A293426BC46750B6 /* ScreenActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 059AB22EE40CB3F08CADCAE2 /* ScreenActivityAttributes.swift */; };
 		2D6C4681A184D00774C9AAD3 /* SampleHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8585B7EF732F6D6EF2D5BEE6 /* SampleHandler.swift */; };
 		34C90373E432EB5F0EA34BCC /* ChatMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEE35E8B1037B48E755426C1 /* ChatMessage.swift */; };
@@ -90,6 +91,7 @@
 		408A6FFA15EE70ECF1B9E9DA /* SampleHandler+WebSocketQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SampleHandler+WebSocketQueue.swift"; sourceTree = "<group>"; };
 		55823AFBDF473E1DBABB4A3E /* FeedlingTestWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FeedlingTestWidget.entitlements; sourceTree = "<group>"; };
 		5F3C6BFE5F5FF06EF002CFD3 /* ChatViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatViewModel.swift; sourceTree = "<group>"; };
+		60A34364A5493B52BCEC8FFB /* EventLogReplay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = EventLogReplay.swift; path = FeedlingTest/EventLogReplay.swift; sourceTree = SOURCE_ROOT; };
 		61A4444D8C2BB0F630FB7A42 /* Verifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Verifier.swift; path = FeedlingTest/DCAP/Verifier.swift; sourceTree = SOURCE_ROOT; };
 		6432F62F2F93A547006FA607 /* IdentityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdentityView.swift; sourceTree = "<group>"; };
 		6432F6302F93A547006FA607 /* IdentityViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdentityViewModel.swift; sourceTree = "<group>"; };
@@ -184,6 +186,7 @@
 				DC254589B7C9DE146214048D /* IntelSGXRootCA.der */,
 				EFC04E45A4517F7284A87DB7 /* ContentEncryption.swift */,
 				F838482FB88280B0AB365FC0 /* AuditCardView.swift */,
+				60A34364A5493B52BCEC8FFB /* EventLogReplay.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -393,6 +396,7 @@
 				6EEB48B8B45275CBDFCDC9F8 /* Verifier.swift in Sources */,
 				831D484187F89765720E6E05 /* ContentEncryption.swift in Sources */,
 				D13A461DBE8BF38D2B3BBEF3 /* AuditCardView.swift in Sources */,
+				12A04CB5B88BD594DB35E87A /* EventLogReplay.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

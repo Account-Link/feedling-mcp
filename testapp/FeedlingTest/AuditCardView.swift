@@ -23,7 +23,8 @@ final class AuditViewModel: ObservableObject {
         var chainValid: Bool
         var bodySignatureValid: Bool
         var tlsCertBindingChecked: Bool
-        var composeHashMatchesClaim: Bool
+        var tlsTerminationDisclosure: String?
+        var composeBinding: EventLogReplay.Result?
         var enclaveContentPK: String?
         var releaseGitCommit: String?
         var onChainTxURL: URL?
@@ -78,17 +79,34 @@ final class AuditViewModel: ObservableObject {
             lastError = "DCAP verify error: \(error)"
         }
 
-        // 3. Cross-check the compose_hash claim in the bundle vs the RTMR3
-        // inside the actual quote
-        let rtmr3FromQuote = (try? DCAPParser.parse(quoteBytes))?.rtmr3Hex ?? ""
-        let composeHashFromQuote = rtmr3FromQuote   // for dstack apps, compose_hash lives in RTMR3
-        let composeMatches = !bundle.compose_hash.isEmpty
-            && composeHashFromQuote.contains(bundle.compose_hash.prefix(16))
+        // 3. compose_hash binding — two independent checks per
+        //    dstack-tutorial/01-attestation-and-reference-values:
+        //      (a) event_log contains a `compose-hash` event in RTMR3
+        //          whose payload equals the claimed compose_hash, and
+        //          replaying IMR=3 events reproduces the attested RTMR3
+        //      (b) mr_config_id[0] == 0x01 && mr_config_id[1:33] ==
+        //          compose_hash (dstack-kms binding, present on real
+        //          deployments; all zeros on the local simulator)
+        let parsed = (try? DCAPParser.parse(quoteBytes))
+        let rtmr3FromQuote = parsed?.rtmr3Hex ?? ""
+        let composeBinding = EventLogReplay.verify(
+            claimedComposeHash: bundle.compose_hash,
+            eventLogJSON: bundle.event_log_json ?? "[]",
+            attestedRTMR3: rtmr3FromQuote,
+            mrConfigIdHex: bundle.measurements?.mr_config_id ?? ""
+        )
 
-        // 4. TLS cert binding — for Phase 1 the enclave sends a placeholder
-        // all-zero fingerprint; Phase 3 moves TLS termination into the CVM
-        // and this becomes a real check against our URL session's peer cert.
+        // 4. TLS cert binding. Phase 1 sends a placeholder all-zero
+        //    fingerprint. Phase 3 will move TLS termination into the CVM
+        //    and report_data will carry the real fingerprint.
+        //    Orthogonal concern: pre-Phase-3 deployments where Caddy
+        //    (outside the enclave) terminates TLS — per dstack-tutorial
+        //    Step E case (3), the operator is trusted not to MITM
+        //    between the public endpoint and the enclave. Disclose this.
         let tlsChecked = bundle.enclave_tls_cert_fingerprint_hex != String(repeating: "0", count: 64)
+        let disclosure: String? = tlsChecked
+            ? nil
+            : "TLS is terminated by operator-controlled infrastructure outside the enclave. Until Phase 3 moves TLS into the CVM, you are implicitly trusting the operator not to MITM."
 
         // 5. Build on-chain tx URL from AppAuth info in the bundle
         var txURL: URL?
@@ -106,7 +124,8 @@ final class AuditViewModel: ObservableObject {
             chainValid: chainValid,
             bodySignatureValid: bodySigValid,
             tlsCertBindingChecked: tlsChecked,
-            composeHashMatchesClaim: composeMatches,
+            tlsTerminationDisclosure: disclosure,
+            composeBinding: composeBinding,
             enclaveContentPK: bundle.enclave_content_pk_hex,
             releaseGitCommit: bundle.enclave_release?.git_commit,
             onChainTxURL: txURL
@@ -134,9 +153,16 @@ final class AuditViewModel: ObservableObject {
         let enclave_content_pk_hex: String
         let enclave_tls_cert_fingerprint_hex: String
         let compose_hash: String
+        let event_log_json: String?
+        let measurements: Measurements?
         let enclave_release: Release?
         let app_auth: AppAuth?
 
+        struct Measurements: Decodable {
+            let mrtd: String?
+            let rtmr3: String?
+            let mr_config_id: String?
+        }
         struct Release: Decodable {
             let git_commit: String?
             let image_digest: String?
@@ -209,9 +235,10 @@ struct AuditCardView: View {
             row("PCK cert chain → Intel SGX Root CA", ok: r.chainValid)
             row("Body ECDSA signature valid", ok: r.bodySignatureValid,
                 note: r.bodySignatureValid ? nil : "expected in Phase 2 on real TDX; simulator skips")
-            row("compose_hash matches attested RTMR3", ok: r.composeHashMatchesClaim)
+            composeBindingRow(r.composeBinding)
             row("TLS cert bound to attestation", ok: r.tlsCertBindingChecked,
-                note: r.tlsCertBindingChecked ? nil : "Phase 1 placeholder; real binding in Phase 3")
+                note: r.tlsTerminationDisclosure
+                    ?? (r.tlsCertBindingChecked ? nil : "Phase 1 placeholder; real binding in Phase 3"))
 
             Divider().padding(.vertical, 4)
             Text("On-chain audit (public transparency, not security)")
@@ -242,6 +269,31 @@ struct AuditCardView: View {
             Text("Verified \(r.verifiedAt, style: .relative) ago")
                 .font(.caption2).foregroundStyle(.secondary)
                 .padding(.top, 4)
+        }
+    }
+
+    @ViewBuilder
+    private func composeBindingRow(_ result: EventLogReplay.Result?) -> some View {
+        switch result {
+        case .some(.mrConfigIdConfirmed):
+            row("compose_hash bound via mr_config_id (dstack-kms)", ok: true,
+                note: "Intel TDX attested mr_config_id[1:33] == claimed compose_hash. Strongest binding — requires key release from real dstack KMS.")
+        case .some(.eventLogConfirmed(let rtmr3Match)):
+            if rtmr3Match {
+                row("compose_hash in RTMR3 event log", ok: true,
+                    note: "compose-hash event present with matching payload; RTMR3 replays correctly from the event chain.")
+            } else {
+                row("compose_hash in RTMR3 event log", ok: false,
+                    note: "compose-hash event payload matches but RTMR3 replay disagreed with the attested value — event log may be truncated or tampered.")
+            }
+        case .some(.inconclusive(let reason)):
+            row("compose_hash binding", ok: false,
+                note: "Inconclusive: \(reason). Neither mr_config_id nor event-log binding confirmed; trust reduced.")
+        case .some(.mismatch(let detail)):
+            row("compose_hash binding — MISMATCH", ok: false,
+                note: detail)
+        case .none:
+            row("compose_hash binding", ok: false, note: "not checked")
         }
     }
 
