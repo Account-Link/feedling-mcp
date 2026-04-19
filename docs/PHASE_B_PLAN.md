@@ -27,35 +27,46 @@ Also reachable from Settings → "Show the intro again."
 
 ### Per-slide visual hierarchy (applies to all three screens)
 
+All token references below resolve to `DESIGN.md`. No raw hex,
+no raw point values, no raw font strings anywhere in Phase B code.
+
 ```
   +-----------------------------------------+
   |  [safe area top]                        |
   |                                         |
-  |   [illustration — ~45% of screen        |   ← primary visual anchor
-  |    height, centered, single element]    |
+  |   [SF Symbol — 120pt, feedlingSage,     |   ← primary visual anchor
+  |    centered, hierarchical rendering]    |
   |                                         |
-  |   Headline (28pt bold, single line)     |   ← captures intent
+  |   Headline (feedlingDisplayMedium       |   ← captures intent
+  |     = Instrument Serif 28pt Reg)        |
   |                                         |
-  |   Body text (15pt regular, 2 lines      |   ← the promise
-  |   max at 280pt width)                   |
+  |   Body text (.body system style;        |   ← the promise
+  |   max width 320pt, 2 lines max)         |
   |                                         |
   |   [optional: secondary content, e.g.    |   ← slide-specific
   |    two-column diagram on slide 2]       |
   |                                         |
   |                                         |
-  |   • • •   (pagination dots, subtle)     |
+  |   • • •   pagination dots (feedlingInkMuted)     |
   |                                         |
   |   [CTA button, bottom-anchored, 48pt    |   ← always reachable
-  |    tall, full-width with 20pt margin]   |
-  |  [safe area bottom]                     |
+  |    tall, full-width minus Spacing.xl,   |
+  |    fill: feedlingSage, radius: .md]     |
+  |  [safe area bottom, Spacing.xl inset]   |
   +-----------------------------------------+
 ```
 
+- Background: `feedlingPaper` light / base-color dark.
+- Illustration zone: ~45% of available vertical space.
+- Vertical rhythm between blocks: `Spacing.xl2` (48pt).
+- Horizontal edge padding: `Spacing.xl` (32pt).
+- CTA height: 48pt (exceeds 44pt a11y minimum for primary action).
+- Motion: slides cross-fade + 8pt horizontal slide on swipe,
+  `.easeOut` 350ms (Medium duration per DESIGN.md motion scale).
+
 The illustration dominates first (5-second visceral scan). Headline
 captures in the first breath. Body is a promise, not a paragraph.
-CTA is always one thumb-tap away. If a slide needs secondary content
-(e.g. Slide 2's two-column diagram), it goes BELOW the body, never
-competing with the illustration for primary attention.
+CTA is always one thumb-tap away.
 
 ### Illustration direction (locked in)
 
@@ -152,6 +163,12 @@ inside Settings, top of the list.
 ### Page structure
 
 ```
+All components below use `DESIGN.md` tokens. The page itself uses
+`title2` = `feedlingDisplaySmall` (Instrument Serif 22pt) for its
+navigation title — the ONLY iOS-navbar use of the serif display
+font in the app, reserved specifically for the Privacy section
+because the first impression of this page needs the "we care" signal.
+
 Settings > Privacy
 ├── Hero row: "Privacy status"  ← three distinct visual variants
 │   │   depending on state (not just text swaps):
@@ -386,27 +403,141 @@ Every moment in this journey is designed. None of it is "the UI by
 default." If a screen or copy choice doesn't explicitly serve one of
 these moments, it's unnecessary.
 
-## 6.9 Review state (as of 2026-04-20 in-progress)
+## 6.6 Responsive + accessibility
 
-Phase B plan went through 4 of 7 `/plan-design-review` passes:
+**Responsive scope**: iPhone only for Phase B. Supported device
+widths: iPhone SE (375pt) up to iPhone 16 Pro Max (440pt). No iPad,
+no Mac Catalyst, no Apple Vision. Every layout decision above assumes
+a single-column portrait layout; rotation is not specially handled
+(follow iOS defaults).
 
-- **Pass 1 — Information Architecture:** 7 → 9/10. Added per-slide visual
-  hierarchy spec + three-variant Privacy status hero.
-- **Pass 2 — Interaction States:** 3 → 10/10. Added state table
-  covering loading/empty/error/success/partial for every new feature.
-  Decision made: Delete flow defaults to "download my data first".
-- **Pass 3 — User Journey:** 4 → 9/10. Added storyboard (step / user-does
-  / user-feels / plan-supports-it) and Norman three-levels framing.
-- **Pass 4 — AI Slop Risk:** 4 → 9/10. Decision made: no custom
-  illustrations; SF Symbols + typography + one accent color.
-- **Pass 5 — Design System Alignment:** paused. No DESIGN.md exists.
-  Decision made: stop this review, run `/design-consultation` first to
-  produce DESIGN.md, then resume at Pass 5.
-- **Pass 6 — Responsive & A11y:** pending.
-- **Pass 7 — Unresolved Decisions:** pending.
+**Accessibility commitments** (every item verified pre-ship, not
+"we'll add later"):
 
-Resume after `/design-consultation` produces `DESIGN.md`. The decisions
-made in Passes 1-4 are locked in this doc regardless.
+| Feature | Dynamic Type | VoiceOver | Reduce Motion | Reduce Transparency | Contrast AA |
+|---|---|---|---|---|---|
+| Onboarding slides | Scales; display text uses tighter ratio so layout doesn't break at XXXL | Each slide's heading read first, body second, CTA labeled with its action ("Continue to next slide" / "Get started") | Cross-fade replaces slide animation, 250ms | Solid `feedlingPaper` background if on | Verified at palette definition in DESIGN.md |
+| Privacy hero row (3 states) | Scales | State read out explicitly: "Privacy status: all items encrypted" / "5 items need upgrading, in progress" / "Re-run privacy audit" — not the icon name | Progress bar animation replaced with static fill + percentage text | Solid `feedlingSurface` | Sage-shield meets 4.5:1 against both modes |
+| Export confirmation sheet | Scales | Checkbox labeled "Download a copy before deleting, on by default"; checked state announced | Sheet slide replaced with cross-fade | Solid sheet background | Red destructive button passes 4.5:1 |
+| Per-item visibility toggles | Scales; long row titles wrap cleanly (no truncation) | Toggle labeled "{title}, shared / local-only, double-tap to change" | No animation on toggle, just state change | Solid row background | Toggle states contrast each other beyond 3:1 |
+| Audit card | Scales | Each green checkmark row read as "{check name}, passed" or "{check name}, failed, {reason}" | Shield pulse replaced with static state | Solid card bg | `feedlingSage` green check vs warm-dark bg both pass |
+| SF Symbol illustrations | Scale via Dynamic Type's "Symbol Font Scaling" setting | Each symbol has explicit `accessibilityLabel` overriding the default — e.g. `lock.shield` → "Your data is encrypted end-to-end" | n/a (static) | n/a | Rendered with hierarchical style on `feedlingSage` tint |
+| Leaf-curve decorative motif | n/a | Marked `accessibilityHidden(true)` — decorative only | n/a (static) | n/a | 8% opacity, subordinate to content |
+
+**Explicit commitments:**
+- Every tappable element is ≥ 44pt on its smallest side; CTAs 48pt.
+- No color-only signaling — success/warning/error always pair color
+  with an SF Symbol (`checkmark.seal`, `exclamationmark.triangle`,
+  `xmark.circle`).
+- `UIAccessibility.isReduceMotionEnabled` checked before any spring
+  animation; fallback is a 250ms cross-fade with no transform.
+- `UIAccessibility.isReduceTransparencyEnabled` checked before any
+  `.ultraThinMaterial` / translucent backdrop; fallback is a solid
+  surface color.
+- VoiceOver test pass before the Phase B merge, documented in the
+  commit message ("verified with VoiceOver on iPhone 16 Pro sim").
+- Dynamic Type tested at XS, L (default), XXL, XXXL. Onboarding
+  verified to not break layout at XXXL.
+
+## 6.7 Unresolved design decisions
+
+Each decision below was surfaced during `/plan-design-review` Pass 7
+and has a chosen default. Anything that was a genuine product call
+(not mechanical) gets a one-line rationale.
+
+| Decision | Chosen default | Rationale / if-deferred-what-happens |
+|---|---|---|
+| Onboarding can be skipped or must be completed? | **Must complete sequentially** (swipe or Next); can revisit from Settings. | The privacy story is load-bearing. If users can skip, many will, and we lose the whole reason Phase B exists. If deferred: users skip, don't understand the model, churn at first sign of confusion. |
+| Pagination dots tappable for jumping? | **No, dots indicate position only.** | Keeps motion state predictable. Users who want to re-read go back via Settings → "Show the intro again." If deferred: engineer ships dots-as-buttons by default, users accidentally jump. |
+| Onboarding dismissal after first view | **Hard-dismissed** on completion; re-shown only via Settings. | Second-showing reduces perceived value. If deferred: user sees onboarding every cold-launch, resents it. |
+| Export file format | **.tar.gz with JSON per type + manifest.json containing attestation fingerprint at export time**. | Standard archive; future Agent can verify origin via manifest. If deferred: engineer picks .zip, loses the verify-origin property. |
+| Export file naming | **`feedling-export-{userId}-{yyyy-MM-dd-HHmm}.tar.gz`** | Includes user-visible identity + date; avoids collisions. If deferred: name collides, user confused. |
+| Per-item visibility UI — list or grid? | **List** grouped by date. Same as existing Memory Garden pattern. | Reuses existing visual vocabulary; no new component. If deferred: grid invented, inconsistent with rest of app. |
+| Settings — reorder or extend in place? | **Reorder**: Privacy moves to top-of-list, Dynamic Island / APNs controls pushed into a "Notifications" subsection below. | Privacy-first framing is the Phase B thesis. If deferred: Privacy lost among existing rows. |
+| MRTD-changed consent — modal or in-line banner? | **Full-screen modal** on app launch, blocks app until reviewed. | A changed enclave is a security event, not a notification. If deferred: banner dismissed without review, whole security story weakened. |
+| Reset & re-import step indicator — numeric or labeled? | **Both: "Step 2 of 3 · Re-registering your account"**. | Numeric progress + semantic label so users know both how far and what's happening. If deferred: spinner with no context, user anxious during a 30s operation. |
+| "Host it yourself" tone — neutral or invitational? | **Invitational**: "Your data, your server, your rules. Here's how." | Phase B thesis includes "walk away whenever." Self-hosted isn't the weird case; it's the other equal option. If deferred: reads as "escape hatch for power users," which contradicts the product voice. |
+
+No unresolved questions remain that require user input. Every
+decision above either has an obvious default per DESIGN.md, or has a
+one-line rationale above. The five genuine taste calls this review
+surfaced — illustration direction, design-system baseline,
+delete-flow default, review scope, product context confirmation —
+were all made during Passes 1-5.
+
+## 6.8 Not in scope for Phase B
+
+Considered and explicitly deferred:
+
+- **RTL (right-to-left) language support.** English + Chinese both
+  LTR; no Arabic/Hebrew users in current beta cohort. Revisit before
+  GA if the beta surfaces demand.
+- **iPad / Mac Catalyst / Apple Vision layouts.** iPhone-first beta;
+  larger-form-factor work is its own phase.
+- **Custom motion choreography / parallax / scroll-driven animation.**
+  DESIGN.md commits to iOS-native springs only. Anything more
+  expressive is a post-beta polish round.
+- **Localization of onboarding copy.** English-first; Chinese pass
+  comes after English copy is locked with @sxysun.
+- **Marketing site redesign.** `README.md` is the surface today;
+  landing-page work is scoped separately.
+- **Analytics / funnel instrumentation.** How users move through
+  onboarding is its own plan; Phase B just ships the UI.
+- **Identity card mutation flow post-Phase-A.** `identity.nudge` on
+  v1 cards waits on Phase C; Phase B's Privacy UX does NOT ship an
+  in-app identity-edit surface.
+
+## 6.95 What already exists (reuse, don't reinvent)
+
+- **`AuditCardView.swift`**: the existing 6/6 audit card.
+  Phase B uses this as the expand-content of the new Privacy
+  status hero row. Do NOT redesign it.
+- **`ContentEncryption.swift`** (iOS) +
+  **`backend/content_encryption.py`**: shared envelope primitives.
+  Phase B's export + visibility-flip features reuse these, never
+  reimplement.
+- **`POST /v1/content/rewrap`** (backend, Phase A.6): the per-item
+  replace endpoint. Phase B's per-item visibility toggles reuse
+  this endpoint with a different envelope body (K_enclave dropped
+  for local-only, re-included for shared).
+- **`skill/SKILL.md`** — the self-hosted runbook. Phase B's
+  "Host it yourself" deep-link surfaces this to users.
+- **Existing Settings → Storage toggle** (cloud / self-hosted) — keep
+  as-is; Phase B extends with the "Host it yourself" branch.
+- **iOS tab bar** (Chat / Identity / Garden / Settings) — no changes.
+- **`ChatMessage` / `MemoryMoment` / `IdentityCard` view models** —
+  their v0→v1 decode paths already work; Phase B does not touch
+  them except through reuse.
+
+## 6.9 Review state — final
+
+Phase B plan went through all 7 `/plan-design-review` passes.
+
+- **Pass 1 — Information Architecture:** 7 → 9/10.
+- **Pass 2 — Interaction States:** 3 → 10/10.
+- **Pass 3 — User Journey:** 4 → 9/10.
+- **Pass 4 — AI Slop Risk:** 4 → 9/10.
+- **Pass 5 — Design System Alignment:** 4 → 9/10 (DESIGN.md now
+  exists, plan annotated with tokens).
+- **Pass 6 — Responsive + A11y:** 5 → 9/10 (a11y table added,
+  Dynamic Type / VoiceOver / Reduce Motion / Reduce Transparency
+  all specified).
+- **Pass 7 — Unresolved Decisions:** 10 decisions resolved with
+  defaults + rationale; 0 genuinely unresolved.
+
+**Overall plan design score: 5 → 9/10.**
+
+Five taste calls made during the review, locked in the plan:
+1. Onboarding visual language — SF Symbols + typography, no custom
+   illustrations.
+2. Design system baseline — run `/design-consultation` first
+   (produced DESIGN.md).
+3. Delete flow — "download my data first" checkbox defaults to on.
+4. Full 7-dimension review scope chosen.
+5. Product context confirmed.
+
+Plan is design-complete. Ready for `/plan-eng-review` as the shipping
+gate, then implementation.
 
 ## 7. Exit criterion
 
