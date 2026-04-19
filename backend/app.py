@@ -1036,8 +1036,84 @@ def users_register():
 
 @app.route("/v1/users/whoami", methods=["GET"])
 def users_whoami():
+    """Identify the caller and return the public material needed to wrap
+    content for them.
+
+    Adds two fields beyond the legacy shape so v1-envelope writers
+    (MCP tools, iOS, etc.) can seal new items without a second round
+    trip:
+      - `public_key` — the caller's own X25519 content pubkey (base64),
+        from the user record. May be empty for pre-v1 users.
+      - `enclave_content_public_key_hex` — the live enclave's content
+        pubkey, fetched from /attestation and cached for 60s. Missing
+        when no enclave is reachable (e.g. single-user bare-VPS).
+    """
     store = require_user()
-    return jsonify({"user_id": store.user_id, "single_user": SINGLE_USER})
+    resp: dict = {"user_id": store.user_id, "single_user": SINGLE_USER}
+    pk = _get_user_public_key(store.user_id)
+    if pk:
+        resp["public_key"] = pk
+    info = _get_enclave_info()
+    if info:
+        resp["enclave_content_public_key_hex"] = info["content_pk_hex"]
+        resp["enclave_compose_hash"] = info["compose_hash"]
+    return jsonify(resp)
+
+
+def _get_user_public_key(user_id: str) -> str:
+    """Return the caller's base64 X25519 content pubkey from users.json,
+    or empty string if the user predates v1 registration."""
+    with _users_lock:
+        for u in _users:
+            if u.get("user_id") == user_id:
+                return (u.get("public_key") or "").strip()
+    return ""
+
+
+# Cached enclave attestation (for wrapping envelopes we can't decrypt
+# ourselves). Refetched every _ENCLAVE_INFO_TTL seconds — short enough
+# that a rotated enclave is reflected within the window, long enough
+# that writes don't pay a round-trip to the CVM per call.
+_ENCLAVE_INFO_TTL = 60.0
+_enclave_info_cache: dict = {"ts": 0.0, "data": None}
+_enclave_info_lock = threading.Lock()
+
+
+def _get_enclave_info() -> dict | None:
+    """Fetch the enclave's (content_pk_hex, compose_hash) with a short
+    cache. Returns None if no enclave is configured or reachable — the
+    caller should fall back to plaintext writes in that case."""
+    url = os.environ.get("FEEDLING_ENCLAVE_URL", "").strip()
+    if not url:
+        return None
+    now = time.time()
+    with _enclave_info_lock:
+        if _enclave_info_cache["data"] and now - _enclave_info_cache["ts"] < _ENCLAVE_INFO_TTL:
+            return _enclave_info_cache["data"]
+    try:
+        # verify=False because the in-cluster enclave presents a
+        # self-signed cert whose trust comes from REPORT_DATA, not a CA.
+        # We're not pinning here; just fetching public material. Any
+        # MITM between backend and enclave would at worst substitute a
+        # different pubkey, which would then fail AEAD verification on
+        # the enclave side when the agent tries to decrypt.
+        with httpx.Client(timeout=5, verify=False) as client:
+            r = client.get(f"{url.rstrip('/')}/attestation")
+            r.raise_for_status()
+            b = r.json()
+        data = {
+            "content_pk_hex": b.get("enclave_content_pk_hex", ""),
+            "compose_hash": b.get("compose_hash", ""),
+        }
+        if not data["content_pk_hex"]:
+            return None
+        with _enclave_info_lock:
+            _enclave_info_cache["ts"] = now
+            _enclave_info_cache["data"] = data
+        return data
+    except Exception as e:
+        print(f"[enclave-info] fetch failed from {url}: {e}")
+        return None
 
 
 # ---------------------------------------------------------------------------

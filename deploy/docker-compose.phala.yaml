@@ -79,7 +79,10 @@ services:
       FEEDLING_API_KEY: ""
       FEEDLING_DATA_DIR: "/data"
       FEEDLING_WS_PORT: "9998"
-      FEEDLING_ENCLAVE_URL: "http://enclave:5003"
+      # enclave service serves HTTPS since Phase 3. verify is disabled
+      # inside the compose network — the trust model is REPORT_DATA pin
+      # from outside, not PKI from inside.
+      FEEDLING_ENCLAVE_URL: "https://enclave:5003"
     ports:
       - "5001:5001"
       - "9998:9998"

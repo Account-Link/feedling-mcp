@@ -19,6 +19,8 @@ any key (the backend will accept unauthenticated requests), or set
 `FEEDLING_API_KEY=<shared>` on both sides.
 """
 
+import base64
+import json
 import os
 import threading
 from typing import Any
@@ -29,6 +31,8 @@ from fastmcp.server.dependencies import get_http_request
 from fastmcp.server.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
+
+from content_encryption import build_envelope
 
 FLASK_BASE = os.environ.get("FEEDLING_FLASK_URL", "http://127.0.0.1:5001")
 FALLBACK_API_KEY = os.environ.get("FEEDLING_API_KEY", "").strip()
@@ -191,6 +195,42 @@ def _delete(path: str, params: dict | None = None, ctx: Context | None = None) -
         return r.json()
 
 
+def _whoami_pubkeys(ctx: Context | None = None) -> tuple[str, bytes | None, bytes | None]:
+    """Resolve (owner_user_id, user_pk_bytes, enclave_pk_bytes) for the
+    current caller by hitting /v1/users/whoami on the backend.
+
+    Returns bytes=None for either pubkey if the backend can't supply it
+    (pre-v1 user with no uploaded pubkey, or no reachable enclave). The
+    caller should fall back to plaintext write in that case so agents
+    can still use the tool end-to-end.
+    """
+    try:
+        info = _get("/v1/users/whoami", ctx=ctx)
+    except Exception as e:
+        print(f"[wrap] whoami failed: {e}")
+        return ("", None, None)
+
+    user_id = info.get("user_id", "") or ""
+    user_pk_b64 = (info.get("public_key") or "").strip()
+    enc_pk_hex = (info.get("enclave_content_public_key_hex") or "").strip()
+
+    try:
+        user_pk_bytes = base64.b64decode(user_pk_b64) if user_pk_b64 else None
+        if user_pk_bytes is not None and len(user_pk_bytes) != 32:
+            user_pk_bytes = None
+    except Exception:
+        user_pk_bytes = None
+
+    try:
+        enc_pk_bytes = bytes.fromhex(enc_pk_hex) if enc_pk_hex else None
+        if enc_pk_bytes is not None and len(enc_pk_bytes) != 32:
+            enc_pk_bytes = None
+    except Exception:
+        enc_pk_bytes = None
+
+    return (user_id, user_pk_bytes, enc_pk_bytes)
+
+
 # ---------------------------------------------------------------------------
 # Push tools
 # ---------------------------------------------------------------------------
@@ -315,6 +355,33 @@ def identity_init(
     dimensions: list[dict],
     ctx: Context = None,
 ) -> dict:
+    """Wrap the identity card into a v1 envelope before POSTing when
+    wrapping prerequisites are available. Same pattern + fallback rules
+    as `feedling.memory.add_moment`.
+
+    Note: `feedling.identity.nudge` stays plaintext for now — in-place
+    mutation of an encrypted card requires a decrypt-mutate-rewrap
+    dance, which is cleanly solved by Phase C (MCP in TEE) and left
+    for that cut. See `docs/NEXT.md`.
+    """
+    user_id, user_pk, enclave_pk = _whoami_pubkeys(ctx=ctx)
+    if user_id and user_pk is not None and enclave_pk is not None:
+        inner = json.dumps({
+            "agent_name": agent_name,
+            "self_introduction": self_introduction,
+            "dimensions": dimensions,
+        }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        envelope = build_envelope(
+            plaintext=inner,
+            owner_user_id=user_id,
+            user_pk_bytes=user_pk,
+            enclave_pk_bytes=enclave_pk,
+            visibility="shared",
+        )
+        print(f"[mcp] identity.init v1 envelope id={envelope['id']}")
+        return _post("/v1/identity/init", {"envelope": envelope}, ctx=ctx)
+
+    print("[mcp] identity.init v0 plaintext (no user/enclave pubkey available)")
     return _post("/v1/identity/init", {
         "agent_name": agent_name,
         "self_introduction": self_introduction,
@@ -367,6 +434,44 @@ def memory_add_moment(
     source: str = "live_conversation",
     ctx: Context = None,
 ) -> dict:
+    """Wrap the memory moment into a v1 envelope before POSTing when the
+    backend returns the keys we need.
+
+    Plaintext fields stay plaintext on the wire only while the MCP
+    process is on the VPS (Phase A). Once MCP moves into the enclave
+    (Phase C), plaintext never leaves the TEE boundary. See
+    `docs/NEXT.md` for the migration plan.
+
+    Fallback: if the caller doesn't have a content pubkey uploaded
+    (pre-v1 registration) or the enclave is unreachable, the tool
+    reverts to the v0 plaintext POST so agents never lose write
+    capability mid-session.
+    """
+    user_id, user_pk, enclave_pk = _whoami_pubkeys(ctx=ctx)
+    if user_id and user_pk is not None and enclave_pk is not None:
+        inner = json.dumps({
+            "title": title,
+            "description": description,
+            "type": type,
+        }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        envelope = build_envelope(
+            plaintext=inner,
+            owner_user_id=user_id,
+            user_pk_bytes=user_pk,
+            enclave_pk_bytes=enclave_pk,
+            visibility="shared",
+        )
+        # occurred_at + source are plaintext metadata the server uses
+        # for sorting/indexing. They ride alongside the ciphertext inside
+        # the envelope dict per the schema in /v1/memory/add.
+        envelope["occurred_at"] = occurred_at
+        envelope["source"] = source
+        print(f"[mcp] memory.add v1 envelope id={envelope['id']} body_ct_len={len(envelope['body_ct'])}")
+        return _post("/v1/memory/add", {"envelope": envelope}, ctx=ctx)
+
+    # v0 plaintext fallback — keep the tool usable even when
+    # v1 prerequisites aren't in place (self-hosted, fresh register).
+    print("[mcp] memory.add v0 plaintext (no user/enclave pubkey available)")
     return _post("/v1/memory/add", {
         "title": title,
         "description": description,
