@@ -1,407 +1,239 @@
-# Feedling — Next Build Phase
+# Feedling — Next Build Phase (post-Phase 3)
 
-This document is the handoff spec for the next engineering session.
-Read this alone and you have everything needed to continue.
+Read this alone and you have everything needed to continue. The previous
+`NEXT.md` (multi-tenant backend + MCP SSE + iOS onboarding) shipped on
+2026-04-19; Phase 1-3 of the TDX E2E plan (`docs/DESIGN_E2E.md`) shipped
+between 2026-04-19 and 2026-04-20. See `docs/CHANGELOG.md` for the
+landmark diffs.
 
----
+## Current state (2026-04-20)
 
-## What Exists Today (working, deployed)
+- Flask + MCP SSE live on `api.feedling.app` / `mcp.feedling.app` (VPS,
+  multi-tenant, bcrypt-hashed keys, per-user dirs).
+- Phala TDX CVM (`feedling-enclave`, UUID `4386636e-…`) runs
+  `ghcr.io/account-link/feedling:451b5b0`. `/attestation` terminates
+  TLS **inside** the enclave (compose_hash `0xb0fb1f84…`, cert fingerprint
+  `5698f0ade4bb412d…`). On-chain: Eth Sepolia
+  `0x6c8A6f1e3eD4180B2048B808f7C4b2874649b88F`.
+- iOS audit card: **6/6 green**. CLI auditor (`tools/audit_live_cvm.py`):
+  **7/7 green**. Evidence: `docs/screenshots/audit_card_phase3_tls_pinned.png`.
+- Frame content (screen recording) is end-to-end encrypted via iOS
+  `ContentEncryption.swift` → v1 envelope → server stores ciphertext;
+  enclave decrypts on behalf of agents.
 
-```
-backend/app.py        Flask HTTP API (port 5001) — all business logic
-backend/mcp_server.py FastMCP server (port 5002) — wraps Flask as MCP tools
-testapp/              iOS SwiftUI app — Chat, Identity, Garden, Settings tabs
-deploy/               Caddy + systemd service files + setup.sh
-skill/SKILL.md        OpenClaw HTTP skill
-```
+## What's still plaintext
 
-**All endpoints (working on VPS at 54.209.126.4:5001):**
-
-```
-WS   /ws                           iOS streams screen frames here (with OCR text)
-GET  /v1/screen/analyze            keyword-based screen state (no model call)
-GET  /v1/screen/frames             list recent frames
-GET  /v1/screen/frames/latest      latest frame as base64
-GET  /v1/screen/frames/<file>      serve frame jpg
-
-POST /v1/push/live-activity        push to Dynamic Island + lock screen
-POST /v1/push/dynamic-island       push to Dynamic Island
-POST /v1/push/live-start           push-to-start a new Live Activity
-GET  /v1/push/tokens               list registered APNs tokens
-POST /v1/push/register-token       iOS app registers its APNs token
-
-GET  /v1/chat/history              fetch chat history
-POST /v1/chat/message              user sends message (iOS → server)
-POST /v1/chat/response             agent posts reply
-GET  /v1/chat/poll                 long-poll: blocks until user message
-
-GET  /v1/identity/get              read identity card
-POST /v1/identity/init             write identity card (5 dimensions)
-POST /v1/identity/nudge            adjust one dimension
-
-GET  /v1/memory/list               list memory moments
-GET  /v1/memory/get                get one moment by id
-POST /v1/memory/add                add a moment
-DELETE /v1/memory/delete           delete a moment
-
-POST /v1/bootstrap                 first-connection trigger
-```
-
-**MCP tools (14):** wrap all of the above (see mcp_server.py).
-
-**Current limitation:** single-user, all data flat in `~/feedling-data/`, one hardcoded API key (`mock-key`), no HTTPS.
+- Chat messages, identity card, memory garden — the iOS envelope code
+  exists, the enclave decrypt endpoints exist, but the iOS write paths
+  still POST plaintext. Server stores plaintext too.
+- MCP SSE TLS (`mcp.feedling.app` and `-5002.`) terminates at
+  Caddy / dstack-gateway, not inside the enclave.
+- Privacy UX is technically accurate but not beta-user-friendly — no
+  onboarding explanation, no per-item visibility, no export/delete.
 
 ---
 
-## Target Architecture
+## Plan — four phases, in order
 
-### Two user types
+Do them sequentially; each ends in a user-visible shipped state that
+doesn't regress any earlier guarantee.
 
-**Normal user** — iPhone + Claude.ai or ChatGPT, no VPS.
-- Data stored on feedling.app (we host).
-- E2E encrypted: we store ciphertext only, cannot read.
-- Onboarding: open app → register → copy one MCP string → paste into agent. Done.
+### Phase A — Content encryption rollout (~1–2 weeks)
 
-**Pro user** — iPhone + Hermes/OpenClaw + their own VPS.
-- Data stored on their VPS, we see nothing.
-- Agent (on same VPS) reads files directly via SSH MCP or HTTP skill.
-- Onboarding: agent deploys the server itself using SKILL.md runbook.
+**Goal:** chat, memory, identity all flow through the v1 envelope layer
+end-to-end. Backend never sees plaintext content again; agents read via
+the enclave's decrypt endpoints.
 
-### The onboarding string (normal user)
+**Work:**
+1. iOS write paths wrap before POST:
+   - `ChatViewModel.sendMessage` → wrap body, POST envelope to `/v1/chat/message`
+   - `IdentityViewModel.init/nudge` → wrap to `/v1/identity/init` / `/nudge`
+   - `MemoryViewModel.add` → wrap to `/v1/memory/add`
+   Envelope code is already in `ContentEncryption.swift`; see frame
+   broadcast extension (`FrameEnvelope.swift`) for the pattern.
+2. Backend write handlers accept v1 envelopes (chat/memory/identity
+   already accept on frame ingest; mirror for these three paths).
+3. iOS read paths:
+   - Shared-visibility items → fetch plaintext from the enclave decrypt
+     endpoints (`/v1/chat/history`, `/v1/memory/list`, `/v1/identity/get`
+     on the CVM origin, NOT the VPS Flask).
+   - `local_only` items → decrypt on-device from ciphertext fetched off
+     the VPS.
+4. Migration:
+   - On first launch post-update, iOS reads its own legacy plaintext,
+     wraps it, PUTs envelopes back, and deletes the plaintext. Show
+     progress in Settings → Privacy → "Upgrading your data".
+   - Per-user, incremental, non-blocking; retry on failure.
+5. Retire v0:
+   - Mark plaintext write endpoints deprecated; keep reads for 30 days
+     in case of rollback.
+   - After 30 days and no regressions, delete plaintext paths from
+     `backend/app.py`.
 
-```
-claude mcp add feedling --transport sse \
-  "https://mcp.feedling.app/sse?key=<api_key>"
-```
+**Test plan:**
+- Extend `backend/test_api.py` to write/read via v1 envelopes and assert
+  the server-side blob is ciphertext.
+- `tools/v1_envelope_roundtrip_test.py` already covers
+  chat/memory/identity roundtrip; make it CI-gated.
+- iOS: cold install → agent calls `feedling.memory.list` → plaintext
+  comes back. Inspect server blob via SSH, confirm ciphertext.
+- Migration: manual dev — seed a /tmp/fl dir with legacy plaintext,
+  launch iOS, confirm re-wrap + plaintext deletion.
 
-One string. The `key` query param authenticates the request and routes to the user's data. Works with Claude Desktop, Claude Code, any SSE MCP client.
+**Exit criterion:** a Feedling operator with full root on the VPS cannot
+read any content the user has written post-migration. No v0 plaintext
+endpoints remain in `backend/app.py`.
 
-For OpenClaw/HTTP skill users, same key used as header:
-```
-FEEDLING_API_URL=https://api.feedling.app
-FEEDLING_API_KEY=<api_key>
-```
+### Phase B — Privacy UX + onboarding (~1 week, ideally after a design review)
 
-### Encryption model
+**Goal:** a first-run user understands what Feedling can and cannot see,
+can exercise control (export, delete, visibility, self-hosted), and the
+privacy-card copy is production-quality.
 
-```
-At registration (on iOS device):
-  CryptoKit generates keypair (Curve25519 or P-256)
-  public key  → uploaded to feedling.app
-              → server encrypts all stored data with this key
-  private key → iOS Secure Enclave (Keychain)
-              → user copies to agent once during setup
+**Work:**
+1. Run `/plan-design-review` on the proposed onboarding + Privacy
+   settings layout BEFORE implementing. The current audit card copy was
+   drafted in-session and needs a pass for product voice (flagged in
+   HANDOFF.md).
+2. Onboarding (new flow, first-run only, dismissable):
+   - Slide 1: "What lives on your phone" — chat history, memory garden,
+     identity card. Your device, your keys.
+   - Slide 2: "What Feedling sees (and why it can't read it)" — encrypted
+     envelopes + enclave model in one diagram. Link to audit card.
+   - Slide 3: "You're in control" — export, delete, self-host.
+     Highlight the "Run your own server" option.
+3. Settings → Privacy redesign:
+   - Audit card stays (already built).
+   - **Export my data** button → tgz of all content (decrypted client-side).
+   - **Delete my data** → hard delete on server + revoke api_key + local wipe.
+   - **Per-item visibility toggles** on memory / chat items (designed in
+     DESIGN_E2E §12.3; shared is default).
+   - **Migration status** progress bar when Phase A's re-wrap is in
+     flight.
+   - **MRTD-changed review card** — when enclave measurements change
+     between sessions, block key usage until the user taps "I reviewed
+     the change."
+4. "Run your own" branch:
+   - Prominent in Settings → Storage (already partially there).
+   - Onboarding slide 3 links to `skill/SKILL.md` runbook with a
+     "Send this to my agent" button (copies the runbook + SSH prompt).
 
-We store:   public key + api_key hash (bcrypt) + ciphertext blobs
-We cannot:  decrypt any user content without their private key
+**Test plan:** first-run UX walkthrough on fresh-install sim; copy
+review sign-off by @sxysun; accessibility pass (VoiceOver for the
+audit card + toggles).
 
-Self-hosted users skip encryption — their own machine, full control.
-```
+**Exit criterion:** a fresh-install beta user completes onboarding and
+can articulate "what Feedling can see" and "how I'd run my own." Audit
+card copy approved by sxysun.
 
-### Data layout (hosted, multi-tenant)
+### Phase C — MCP into TEE (~3–5 days)
 
-```
-~/feedling-data/
-├── users.json                    { api_key_hash → user_id, pubkey }
-└── {user_id}/
-    ├── frames/                   encrypted frame blobs
-    ├── chat.json                 encrypted
-    ├── identity.json             encrypted
-    ├── memory.json               encrypted
-    ├── tokens.json               APNs tokens (not content, no encryption needed)
-    └── bootstrap.json
-```
+**Goal:** Claude.ai / Claude Desktop's MCP connection to Feedling
+terminates TLS inside the CVM, so the audit card's TLS row extends to
+the MCP port. Envelope crypto already protects content; this closes the
+metadata-plaintext gap for agent ↔ enclave traffic.
 
----
+**Work:**
+1. FastMCP is already in the enclave CVM (see `docker-compose.phala.yaml`
+   `mcp` service). What's missing is in-enclave TLS serving on that port.
+2. TLS path — decide between:
+   - **(a)** Use Phala's `-5002s.` passthrough suffix with the same
+     dstack-KMS-derived cert as attestation; iOS + Claude.ai see a
+     self-signed cert.
+     *Problem:* Claude.ai expects a browser-trusted CA chain. Won't work
+     without a shim.
+   - **(b)** ACME-DNS-01 inside the enclave against `mcp.feedling.app`
+     via Cloudflare or Namecheap DNS API. Lets Encrypt issues a real
+     cert; private key lives only in CVM memory.
+     *Needs:* DNS API token (security-audit: does token give too much
+     access?), renewal logic (certs expire every 90 days).
+   - **(c)** Keep Caddy on the VPS but downgrade `mcp.feedling.app` to
+     `layer4` SNI passthrough → Phala gateway → enclave. Enclave does
+     its own ACME. Caddy never sees plaintext.
+   - *Default:* **(c)** — minimal disruption to existing Caddy setup,
+     real CA cert, enclave-held key.
+3. Extend the audit card / CLI auditor to pin MCP port's TLS too.
 
-## Build Order
+**Test plan:** Claude.ai adds MCP connector; cert fingerprint pinned in
+bundle matches handshake; audit card row "MCP TLS bound to attestation"
+goes green.
 
-Everything below is sequential — each step depends on the previous.
+**Exit criterion:** two green TLS rows (attestation + MCP); full metadata
+path runs through attested TLS.
 
----
+### Phase D — Eth Sepolia → Ethereum mainnet migration (~1–2 days, DO LAST)
 
-### Step 1 — User registration + per-user data dirs
+**Goal:** on-chain authorization lives on a chain with real economic
+finality and validator set, removing the testnet-sunset / reorg risk.
 
-**Goal:** replace the flat single-user layout with per-user directories. Auth middleware resolves `api_key` → `user_id` on every request.
+**Note:** `docs/DESIGN_E2E.md` §12.14 originally proposed **Base mainnet**
+(Ethereum L2, cheaper gas). User direction on 2026-04-20 was "Eth mainnet."
+Before starting D, confirm: Base mainnet (L2) vs Ethereum L1 mainnet.
+L2 has ~100× lower gas for `addComposeHash` + faster finality; L1 has
+higher perceived trust for end users. Defer the decision until A-C ship.
 
-**New endpoint:**
+**Work:**
+1. Fresh deployer keypair on hardware wallet (Ledger / Trezor / similar).
+   Current Sepolia deployer `0xa0eBcd26D7816D68a74b0CdC8037C16F8fcbF9C0`
+   is a throwaway (per DEPLOYMENTS.md §Phase 1 testnet) and must not be
+   reused.
+2. Redeploy `FeedlingAppAuth` to the chosen mainnet; `forge verify-contract`
+   on Etherscan/Basescan.
+3. Batch `addComposeHash` for all historical hashes (initial + rehashes
+   + Phase 3) so users verifying older iOS builds still pass audit.
+4. Update `backend/enclave_app.py` APP_AUTH defaults + iOS pinned
+   contract address + chain_id.
+5. Ship iOS release with new pinned address ~1 week before the actual
+   cutover so accept-list is pre-approved. Same for CLI auditor.
+6. Update `deploy/DEPLOYMENTS.md` with the mainnet entry.
 
-```
-POST /v1/users/register
-Body: { "public_key": "<base64 pubkey>" }  ← optional for self-hosted
-Returns: { "user_id": "usr_xxx", "api_key": "<random 32 bytes hex>" }
-```
+**Pre-reqs (what needs to be green before starting D):**
+- Phase A shipped and stable ≥ 1 week — no rollback in flight.
+- Phase B shipped and onboarding/copy approved — users about to be
+  migrated have reviewed the privacy model.
+- Phase C shipped — audit card at full green including MCP TLS.
+- Hardware wallet procured + deployer key generated.
+- Etherscan (or Basescan) API key in hand.
+- No active security-relevant bugs open.
 
-**users.json schema:**
-
-```json
-[
-  {
-    "user_id": "usr_abc123",
-    "api_key_hash": "<bcrypt hash>",
-    "public_key": "<base64>",
-    "created_at": "2026-04-19T..."
-  }
-]
-```
-
-**Auth middleware (add to every route):**
-
-```python
-def get_current_user():
-    key = request.headers.get("X-API-Key") or request.args.get("key")
-    if not key:
-        abort(401)
-    user = resolve_user(key)   # bcrypt check against users.json
-    if not user:
-        abort(401)
-    return user
-
-def user_dir(user_id: str) -> Path:
-    d = FEEDLING_DIR / user_id
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-```
-
-**All file path references change from:**
-```python
-FEEDLING_DIR / "chat.json"
-```
-**to:**
-```python
-user_dir(current_user["user_id"]) / "chat.json"
-```
-
-This touches every endpoint but the logic inside each endpoint stays identical.
-
-**Single-user self-hosted mode (backward compat):**
-
-```python
-SINGLE_USER = os.environ.get("SINGLE_USER", "false").lower() == "true"
-
-# If SINGLE_USER=true: skip auth, use flat FEEDLING_DIR (current behavior)
-# If SINGLE_USER=false (default for hosted): enforce auth, use per-user dirs
-```
-
-Self-hosted users set `SINGLE_USER=true` + their own `FEEDLING_API_KEY` in env. No registration endpoint needed for them.
-
----
-
-### Step 2 — SSE endpoint on MCP server reads `?key=` from URL
-
-**Goal:** `claude mcp add feedling --transport sse "https://mcp.feedling.app/sse?key=xxx"` works.
-
-Currently `mcp_server.py` uses `transport="streamable-http"` with a single global API key from env. Change it so:
-
-1. Switch transport to SSE (`transport="sse"`)
-2. At connection time, read `key` from query param
-3. Validate key against users.json (same bcrypt check as Flask)
-4. Scope all MCP tool calls for that session to that user's data
-
-FastMCP supports per-connection context. The key passed to the MCP session should be forwarded as `X-API-Key` header on every internal call to Flask.
-
-The SSE endpoint URL pattern:
-```
-https://mcp.feedling.app/sse?key=<api_key>
-```
-
-Caddy routes `mcp.feedling.app` → `localhost:5002` (already in deploy/Caddyfile).
-
----
-
-### Step 3 — iOS keypair generation + Settings UI
-
-**Goal:** iOS app generates a keypair at first launch, stores private key in Keychain, and shows the agent setup string in Settings.
-
-**First launch flow:**
-
-```swift
-// FeedlingTestApp.swift or onboarding view
-if !hasRegistered {
-    let keyPair = generateKeyPair()           // CryptoKit P-256 or Curve25519
-    storePrivateKey(keyPair.private)          // iOS Keychain / Secure Enclave
-    let result = await register(pubKey: keyPair.public)
-    // result: { user_id, api_key }
-    store(apiKey: result.api_key)
-    store(userId: result.user_id)
-    hasRegistered = true
-}
-```
-
-**Settings tab additions:**
-
-```
-Storage
-  ● Feedling Cloud  (default)
-  ○ Self-hosted     [URL field]
-
-Agent Setup
-  ┌────────────────────────────────────────────────┐
-  │ claude mcp add feedling --transport sse \      │
-  │   "https://mcp.feedling.app/sse?key=<key>"    │
-  └────────────────────────────────────────────────┘
-  [Copy MCP string]
-
-  For OpenClaw / HTTP agents:
-  API URL:  https://api.feedling.app
-  API Key:  <key>
-  [Copy env vars]
-
-  [Regenerate key]   [Delete my data]
-```
-
-Relevant files to modify:
-- `testapp/FeedlingTest/FeedlingTestApp.swift` — first-launch check
-- `testapp/FeedlingTest/FeedlingAPI.swift` — base URL + api key config
-- `testapp/FeedlingTest/ContentView.swift` — Settings tab section
+**Exit criterion:** audit card shows "authorized on Ethereum mainnet"
+(or Base mainnet); DEPLOYMENTS.md `Phase 5 production cutover` section
+filled in; Sepolia contract kept as archive pointer only.
 
 ---
 
-### Step 4 — SKILL.md self-hosted setup runbook
+## Summary: what's left before Phase D (Eth mainnet)
 
-**Goal:** a pro user can tell their agent "set up Feedling on my VPS" and the agent follows the runbook in SKILL.md without any other instructions.
+| Phase | Scope | Est. | Blocker for D? |
+|---|---|---|---|
+| A | Content encryption rollout | 1-2 weeks | Yes |
+| B | Privacy UX + onboarding | 1 week | Yes |
+| C | MCP into TEE | 3-5 days | Yes |
+| D | Eth Sepolia → Eth mainnet | 1-2 days | — |
 
-Add a "Self-Hosted Setup" section to `skill/SKILL.md`:
-
-```markdown
-## Self-Hosted Setup (Pro Users)
-
-If the user wants to run their own Feedling server, follow these steps.
-You need SSH access to their VPS.
-
-1. Clone the repo
-   git clone https://github.com/Account-Link/feedling-mcp-v1 ~/feedling-mcp-v1
-
-2. Run the install script
-   cd ~/feedling-mcp-v1 && bash deploy/setup.sh
-
-3. Generate a strong API key
-   openssl rand -hex 32
-   → save this, you'll give it to the user
-
-4. Set env vars
-   mkdir -p ~/feedling-data
-   echo "FEEDLING_API_KEY=<key>" > ~/feedling-data/.env
-   echo "SINGLE_USER=true" >> ~/feedling-data/.env
-
-5. Restart services
-   systemctl --user restart feedling-backend feedling-mcp
-
-6. Verify running
-   curl http://localhost:5001/v1/push/tokens
-
-7. Tell the user
-   Server is ready.
-   In your iOS app Settings → Storage → Self-hosted:
-     URL: https://<your-domain>:5001
-     Key: <key>
-```
-
----
-
-### Step 5 — HTTPS on feedling.app
-
-**Goal:** `api.feedling.app` and `mcp.feedling.app` live behind TLS.
-
-DNS (do in Namecheap):
-```
-api.feedling.app  A  <VPS IP>
-mcp.feedling.app  A  <VPS IP>
-```
-
-Caddy config is already written at `deploy/Caddyfile`. Once DNS propagates:
-```bash
-sudo systemctl start caddy
-```
-Caddy auto-provisions Let's Encrypt certs. No manual cert work.
-
-After this step, the full normal-user onboarding string works end-to-end.
-
----
-
-## Key Files Reference
-
-```
-backend/app.py              All HTTP endpoints + business logic
-backend/mcp_server.py       FastMCP SSE server (14 MCP tools)
-backend/test_api.py         Full test suite — run after any backend change
-                            python3 test_api.py http://54.209.126.4:5001
-
-testapp/FeedlingTest/
-  FeedlingTestApp.swift     App entry + APNs setup
-  FeedlingAPI.swift         Base URL config
-  ContentView.swift         4-tab root + Settings tab
-  ChatView/ViewModel        Chat UI + polling
-  IdentityView/ViewModel    Radar chart + 10s poll
-  MemoryGardenView/VM       Moment cards + 10s poll
-  LiveActivityManager.swift Live Activity lifecycle
-
-deploy/
-  Caddyfile                 HTTPS reverse proxy config
-  setup.sh                  One-command VPS install
-  feedling-backend.service  systemd for app.py
-  feedling-mcp.service      systemd for mcp_server.py
-
-skill/SKILL.md              Agent-facing docs (OpenClaw HTTP mode)
-docs/NEXT.md                This file
-```
-
----
-
-## Test Suite
-
-After any backend change, run:
-
-```bash
-python3 backend/test_api.py http://54.209.126.4:5001
-```
-
-Current coverage: screen/analyze, frames, tokens, chat send/history,
-long-poll timeout + wake, full round-trip, bootstrap, identity CRUD, memory CRUD.
-
-All 30 tests should pass before merging anything.
-
----
+Total to D: **~3-4 weeks** of engineering if single-threaded, plus
+review/copy cycles in Phase B. Anything that reaches the "shipped"
+state from A/B/C can release to users incrementally — don't block on
+all of them landing simultaneously.
 
 ## What NOT to change
 
-- WebSocket frame ingest logic (`/ws` handler in app.py)
-- APNs push mechanism (JWT + .p8 key)
-- Screen analyze keyword logic (`_semantic_analysis`)
-- iOS UI tab structure (Chat / Identity / Garden / Settings)
-- ScreenActivityAttributes.ContentState fields (title/subtitle/body/data)
-- All existing endpoint URLs and response shapes (backward compat)
+- WebSocket frame ingest logic (`/ws` handler in `backend/app.py`).
+- APNs push mechanism (JWT + .p8 key, `~/feedling/AuthKey_*.p8`).
+- Screen analyze keyword logic (`_semantic_analysis`).
+- iOS UI tab structure (Chat / Identity / Garden / Settings).
+- `ScreenActivityAttributes.ContentState` fields.
+- Any endpoint URL or response shape used by existing released builds
+  (add new endpoints instead).
+- Phase 3 enclave TLS derivation (`feedling-tls-v1`) — changing the
+  path would break existing pinned attestations.
 
----
+## Reference
 
-## After Steps 1–5: the E2E + TEE phase
-
-`docs/DESIGN_E2E.md` (v0.3, decisions locked) specifies how we get from
-"multi-tenant plaintext backend" to "Feedling operationally cannot read
-your data and silent code updates are impossible." Summary:
-
-- User-generated content keypair on iOS + enclave-generated content keypair.
-- Every content item is wrapped under a random symmetric key; that key is
-  sealed independently to (user pubkey, enclave pubkey) — the "double-wrap."
-  AEAD additional-data binds ciphertext to `owner_user_id` to defeat
-  cross-user ciphertext substitution by a malicious server.
-- MCP server runs inside a **Phala-deployed dstack TDX CVM** and terminates
-  TLS there. Caddy downgrades to SNI pass-through for `mcp.feedling.app`.
-- **Authorization is enforced on-chain via an `AppAuth` contract on Base
-  L2** (per `amiller/dstack-tutorial/05`). DstackKms refuses to release
-  the enclave's content-privkey unless the running `compose_hash` is in
-  the on-chain whitelist — so silent updates are architecturally
-  impossible, not merely detectable.
-- **iOS is the active auditor.** On every session, the phone runs the
-  full `sxysun/is-this-real-tea` checklist against the live deployment
-  (compose_hash match, AppAuth event log, compose reproduces, no
-  operator-controllable env vars, TLS cert bound) and surfaces a card.
-- **Indexing / aggregation compute runs on iOS by default.** Server-side
-  compute is opt-in via user-placed enclave-cron jobs (Phase 6 and beyond).
-- Migration is iOS-driven: the phone re-wraps old data after each enclave
-  update; `compose_hash` changes are already published on-chain before
-  rollout so the audit card just reflects the new authorized version.
-
-Phase 1 (TEE infra + AppAuth deploy) is the blocker for everything else.
-Don't start it until prod is running stably on multi-tenant mode from
-this doc. Six phases total, ~6–7 weeks of engineering to Phase 5 cutover.
+- `docs/DESIGN_E2E.md` — master architecture doc, now v0.3 with Phase 3
+  marked partially shipped.
+- `docs/CHANGELOG.md` — landmark diffs with dates.
+- `deploy/DEPLOYMENTS.md` — every deployed artifact on VPS + CVM + chain.
+- `HANDOFF.md` — current-state snapshot for next agent pickup.
+- `tools/audit_live_cvm.py` — run this after any enclave change to
+  confirm 7/7 before marking shipped.
