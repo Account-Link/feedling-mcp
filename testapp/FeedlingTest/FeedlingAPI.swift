@@ -255,7 +255,11 @@ final class FeedlingAPI: ObservableObject {
             let mcp = baseURL.replacingOccurrences(of: "api.", with: "mcp.")
             return URL(string: "\(mcp)/attestation")
         }
-        return URL(string: "https://mcp.feedling.app/attestation")
+        // Phase 2: Phala dstack-pha-prod5 CVM feedling-enclave.
+        // app_id = 051a174f2457a6c474680a5d745372398f97b6ad
+        // compose_hash on-chain @ 0x6c8A6f1e3eD4180B2048B808f7C4b2874649b88F
+        // (Eth Sepolia tx 0xdfbc0b8d…). See deploy/DEPLOYMENTS.md §Phase 2.
+        return URL(string: "https://051a174f2457a6c474680a5d745372398f97b6ad-5003.dstack-pha-prod5.phala.network/attestation")
     }
 
     /// Load (or lazily generate) the user's long-lived content keypair.
