@@ -29,6 +29,7 @@ See docs/DESIGN_E2E.md §5, §7 for the full architecture.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -36,10 +37,13 @@ import sys
 import time
 from typing import Any
 
-import nacl.signing
-import nacl.public
+import httpx
+import nacl.bindings
 import nacl.encoding
-from flask import Flask, jsonify, Response
+import nacl.exceptions
+import nacl.public
+import nacl.signing
+from flask import Flask, jsonify, Response, request
 from dstack_sdk import DstackClient
 
 
@@ -54,6 +58,12 @@ if SIMULATOR_ENDPOINT and not os.environ.get("DSTACK_SIMULATOR_ENDPOINT"):
     os.environ["DSTACK_SIMULATOR_ENDPOINT"] = SIMULATOR_ENDPOINT
 
 ENCLAVE_PORT = int(os.environ.get("FEEDLING_ENCLAVE_PORT", 5003))
+
+# Internal HTTPS (or HTTP in dev) to the non-TEE Flask backend. This is the
+# only network dependency the enclave has after boot. Requests carry the
+# caller's api_key so Flask's require_user resolves to the right user's
+# ciphertext. The enclave never sees users.json directly.
+FLASK_URL = os.environ.get("FEEDLING_FLASK_URL", "http://127.0.0.1:5001")
 
 # Release metadata — normally injected via build-time env or read from a
 # sidecar file baked into the image. For Phase 1 we accept env values with
@@ -275,6 +285,237 @@ def attestation():
     resp = Response(json.dumps(bundle, indent=2), mimetype="application/json")
     resp.headers["Cache-Control"] = "public, max-age=60"
     return resp
+
+
+# ---------------------------------------------------------------------------
+# Decryption helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_api_key() -> str:
+    """Pull the caller's api_key from X-API-Key / Bearer / ?key=.
+    Mirrors app.py's auth path so the enclave stays a thin tool-caller."""
+    h = request.headers.get("X-API-Key", "").strip()
+    if h:
+        return h
+    auth = request.headers.get("Authorization", "").strip()
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return request.args.get("key", "").strip()
+
+
+def _flask_get(path: str, api_key: str, params: dict | None = None) -> dict:
+    """Fetch JSON from the backend Flask as the authenticated user. The
+    enclave forwards the caller's key rather than using a privileged one —
+    same scope the user granted, nothing more."""
+    headers = {"X-API-Key": api_key} if api_key else {}
+    with httpx.Client(timeout=15) as client:
+        r = client.get(f"{FLASK_URL}{path}", params=params, headers=headers)
+        r.raise_for_status()
+        return r.json()
+
+
+def _build_aead_aad(owner_user_id: str, v: int, item_id: str) -> bytes:
+    """Per docs/DESIGN_E2E.md §3.4, content's AEAD additional-data must
+    authenticate (owner_user_id, v, item_id). The enclave recomputes this
+    from the plaintext metadata the server claims + the user_id it
+    resolved the api_key to — mismatch → AEAD verification fails →
+    cross-user ciphertext substitution attack is detected."""
+    payload = f"{owner_user_id}|{v}|{item_id}".encode("utf-8")
+    return payload
+
+
+class DecryptFailure(Exception):
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _decrypt_envelope(env: dict, authorized_user_id: str, content_sk: nacl.public.PrivateKey) -> bytes:
+    """Given a v1 envelope dict (from Flask chat history), return the
+    plaintext body. Raises DecryptFailure on any integrity problem —
+    missing fields, wrong enclave pubkey fingerprint, AEAD tag mismatch,
+    owner_user_id ≠ authorized_user_id (cross-user substitution attack).
+    """
+    # Shape checks
+    for field in ("body_ct", "nonce", "K_enclave", "owner_user_id"):
+        if not env.get(field):
+            raise DecryptFailure(f"envelope missing {field}")
+
+    # Binding: whoever authorized this call must be the same user who wrote it.
+    if env["owner_user_id"] != authorized_user_id:
+        raise DecryptFailure(
+            f"owner mismatch: envelope claims owner={env['owner_user_id']} "
+            f"but caller is {authorized_user_id}"
+        )
+
+    try:
+        k_enclave_sealed = base64.b64decode(env["K_enclave"])
+        body_ct = base64.b64decode(env["body_ct"])
+        nonce = base64.b64decode(env["nonce"])
+    except Exception as e:
+        raise DecryptFailure(f"base64 decode: {e}")
+
+    # 1. Unseal K_enclave → K
+    try:
+        sealed_box = nacl.public.SealedBox(content_sk)
+        K = sealed_box.decrypt(k_enclave_sealed)
+    except nacl.exceptions.CryptoError as e:
+        raise DecryptFailure(f"SealedBox.decrypt failed: {e}")
+
+    if len(K) != 32:
+        raise DecryptFailure(f"unexpected K length: {len(K)}")
+
+    # 2. AEAD-decrypt body_ct with K + nonce, aad = owner||v||id
+    v = int(env.get("v", 1))
+    item_id = env.get("id", "")
+    aad = _build_aead_aad(env["owner_user_id"], v, item_id)
+    try:
+        plaintext = nacl.bindings.crypto_aead_xchacha20poly1305_ietf_decrypt(
+            body_ct, aad, nonce, K
+        )
+    except nacl.exceptions.CryptoError as e:
+        # AEAD failure — either tampering, wrong aad, or wrong K
+        raise DecryptFailure(f"AEAD verify: {e}")
+
+    return plaintext
+
+
+# ---------------------------------------------------------------------------
+# /v2 tool handlers — agent-facing decrypt-and-serve
+# ---------------------------------------------------------------------------
+
+
+@app.route("/v2/chat/get_history", methods=["GET"])
+def v2_chat_get_history():
+    """Decrypt-and-serve chat history for the authenticated user.
+
+    Query params:
+      since (float, default 0): only return messages with ts > since
+      limit (int,   default 200, max 200)
+
+    The caller's api_key determines whose content gets decrypted. Items
+    with visibility=local_only come back as placeholders (content = null)
+    — the enclave doesn't have K_enclave for them and the agent never will.
+    """
+    if not _state["ready"]:
+        return jsonify({"error": "not_ready", "detail": _state["error"]}), 503
+
+    api_key = _extract_api_key()
+    if not api_key:
+        return jsonify({"error": "missing api_key"}), 401
+
+    # Resolve whose content we're decrypting. In multi-tenant this returns
+    # the user's usr_...; in single-user it's always "default".
+    try:
+        whoami = _flask_get("/v1/users/whoami", api_key)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 401:
+            return jsonify({"error": "unauthorized"}), 401
+        return jsonify({"error": f"backend_error: {e}"}), 502
+    authorized_user_id = whoami.get("user_id", "")
+    if not authorized_user_id:
+        return jsonify({"error": "cannot resolve user_id"}), 401
+
+    # Fetch the raw history (envelopes + legacy plaintext).
+    since = request.args.get("since", "0")
+    limit = request.args.get("limit", "200")
+    try:
+        hist = _flask_get(
+            "/v1/chat/history",
+            api_key,
+            params={"since": since, "limit": limit},
+        )
+    except httpx.HTTPError as e:
+        return jsonify({"error": f"backend_error: {e}"}), 502
+
+    # Reconstruct content_sk here — we cached only the pubkey on boot, the
+    # privkey is always in-memory under _state but we didn't store it.
+    # Fix: also cache the sk. For now, re-derive once on first call.
+    content_sk = _get_or_derive_content_sk()
+
+    decrypted = []
+    errors = []
+    for m in hist.get("messages", []):
+        v = int(m.get("v", 0))
+        if v == 0:
+            # Legacy plaintext path — just pass through.
+            decrypted.append({
+                "id": m["id"],
+                "role": m["role"],
+                "ts": m["ts"],
+                "source": m.get("source"),
+                "content": m.get("content", ""),
+                "v": 0,
+                "decrypt_status": "plaintext",
+            })
+            continue
+
+        # v1+ envelope.
+        if m.get("visibility") == "local_only":
+            decrypted.append({
+                "id": m["id"],
+                "role": m["role"],
+                "ts": m["ts"],
+                "source": m.get("source"),
+                "content": None,
+                "v": v,
+                "visibility": "local_only",
+                "decrypt_status": "local_only_agent_cannot_read",
+            })
+            continue
+
+        try:
+            plaintext = _decrypt_envelope(m, authorized_user_id, content_sk)
+            decrypted.append({
+                "id": m["id"],
+                "role": m["role"],
+                "ts": m["ts"],
+                "source": m.get("source"),
+                "content": plaintext.decode("utf-8", errors="replace"),
+                "v": v,
+                "visibility": m.get("visibility", "shared"),
+                "decrypt_status": "ok",
+            })
+        except DecryptFailure as e:
+            # Surface the failure per-item so the agent sees partial
+            # progress rather than a blanket 500 on one bad blob.
+            errors.append({"id": m.get("id"), "reason": e.reason})
+            decrypted.append({
+                "id": m["id"],
+                "role": m["role"],
+                "ts": m["ts"],
+                "content": None,
+                "v": v,
+                "decrypt_status": f"error: {e.reason}",
+            })
+
+    return jsonify({
+        "user_id": authorized_user_id,
+        "messages": decrypted,
+        "total": hist.get("total", len(decrypted)),
+        "decrypt_errors": errors,
+    })
+
+
+def _get_or_derive_content_sk() -> nacl.public.PrivateKey:
+    """Return the enclave's content X25519 private key, deriving if needed.
+
+    bootstrap() stashes only the pubkey hex in _state — we derive on first
+    use and cache in a module-level slot. This keeps the key's exposure
+    surface minimal (one process-lifetime reference), not that there's
+    anywhere for it to leak from inside the enclave anyway.
+    """
+    global _cached_content_sk
+    if _cached_content_sk is not None:
+        return _cached_content_sk
+    dstack = DstackClient()
+    keys = derive_keys(dstack)
+    _cached_content_sk = keys["content_sk"]
+    return _cached_content_sk
+
+
+_cached_content_sk: nacl.public.PrivateKey | None = None
 
 
 # ---------------------------------------------------------------------------

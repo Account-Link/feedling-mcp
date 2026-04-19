@@ -481,6 +481,84 @@ if MULTI_TENANT:
 
 
 # ---------------------------------------------------------------------------
+# 9. Chat v1 envelope (ciphertext) storage round-trip
+# ---------------------------------------------------------------------------
+
+section("9. Chat v1 envelope round-trip")
+
+# These tests don't actually encrypt anything — they verify the server
+# stores and returns envelope fields verbatim, without inspecting them.
+# Actual encryption semantics are covered by the end-to-end enclave test.
+import base64
+dummy_body = base64.b64encode(b"\x01" * 64).decode()
+dummy_nonce = base64.b64encode(b"\x02" * 24).decode()
+dummy_k = base64.b64encode(b"\x03" * 48).decode()
+owner = "usr_testowner"
+
+# v1 shared envelope
+env = {
+    "v": 1,
+    "body_ct": dummy_body,
+    "nonce": dummy_nonce,
+    "K_user": dummy_k,
+    "K_enclave": dummy_k,
+    "enclave_pk_fpr": "00" * 16,
+    "visibility": "shared",
+    "owner_user_id": owner,
+}
+r = requests.post(f"{BASE_URL}/v1/chat/message", json={"envelope": env}, timeout=5)
+check("POST v1 envelope returns 200", r.status_code == 200)
+check("v1 response has v=1", r.status_code == 200 and r.json().get("v") == 1)
+env_msg_id = r.json().get("id") if r.status_code == 200 else None
+
+# v0 plaintext continues to work (backward compat)
+r = requests.post(f"{BASE_URL}/v1/chat/message", json={"content": "plaintext-coexists"}, timeout=5)
+check("POST v0 plaintext returns 200", r.status_code == 200)
+check("v0 response has v=0", r.status_code == 200 and r.json().get("v") == 0)
+
+# History returns envelope fields intact
+r = requests.get(f"{BASE_URL}/v1/chat/history?limit=50", timeout=5)
+msgs = r.json().get("messages", [])
+found = next((m for m in msgs if m.get("id") == env_msg_id), None)
+check("v1 envelope message appears in history", found is not None)
+if found:
+    check("history preserves body_ct", found.get("body_ct") == dummy_body)
+    check("history preserves nonce", found.get("nonce") == dummy_nonce)
+    check("history preserves K_enclave", found.get("K_enclave") == dummy_k)
+    check("history preserves visibility", found.get("visibility") == "shared")
+    check("history preserves owner_user_id", found.get("owner_user_id") == owner)
+
+# local_only envelope — K_enclave should be acceptable as null/missing
+env_lo = dict(env)
+env_lo.pop("K_enclave")
+env_lo["visibility"] = "local_only"
+r = requests.post(f"{BASE_URL}/v1/chat/message", json={"envelope": env_lo}, timeout=5)
+check("POST local_only envelope (no K_enclave) returns 200", r.status_code == 200)
+
+# Shared envelope without K_enclave should be rejected
+env_bad = dict(env)
+env_bad.pop("K_enclave")
+r = requests.post(f"{BASE_URL}/v1/chat/message", json={"envelope": env_bad}, timeout=5)
+check("shared without K_enclave → 400", r.status_code == 400)
+
+# Missing required field → 400
+env_missing = dict(env)
+env_missing.pop("body_ct")
+r = requests.post(f"{BASE_URL}/v1/chat/message", json={"envelope": env_missing}, timeout=5)
+check("envelope missing body_ct → 400", r.status_code == 400)
+
+# Invalid visibility → 400
+env_badvis = dict(env)
+env_badvis["visibility"] = "public"
+r = requests.post(f"{BASE_URL}/v1/chat/message", json={"envelope": env_badvis}, timeout=5)
+check("envelope with bad visibility → 400", r.status_code == 400)
+
+# No content or envelope → 400
+r = requests.post(f"{BASE_URL}/v1/chat/message", json={}, timeout=5)
+check("no content/envelope → 400", r.status_code == 400)
+
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 

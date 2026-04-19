@@ -354,14 +354,47 @@ class UserStore:
         except Exception as e:
             print(f"[{self.user_id}/chat] save failed: {e}")
 
-    def append_chat(self, role: str, content: str, source: str = "chat") -> dict:
-        msg = {
-            "id": uuid.uuid4().hex,
+    def append_chat(self, role: str, content: str, source: str = "chat", envelope: dict | None = None) -> dict:
+        """Append a chat message. If `envelope` is provided, the message is
+        stored in v1 ciphertext form (content = "" for server; envelope
+        holds the encrypted payload). If not, v0 plaintext form is used.
+
+        See docs/DESIGN_E2E.md §3.2 for envelope field definitions. Server
+        never decrypts — envelope is stored verbatim.
+
+        For v1: the client may supply an `id` inside the envelope. That id
+        becomes the stored message id so the AEAD additional-data the
+        client baked in (owner||v||id) stays verifiable by the enclave on
+        read-back. If the envelope omits id, we assign a uuid and the
+        client is expected to have used the nonce for its AAD instead.
+        """
+        msg_id = None
+        if envelope is not None and isinstance(envelope.get("id"), str) and envelope["id"]:
+            msg_id = envelope["id"]
+        if not msg_id:
+            msg_id = uuid.uuid4().hex
+
+        msg: dict = {
+            "id": msg_id,
             "role": role,
-            "content": content,
             "ts": time.time(),
             "source": source,
         }
+        if envelope is not None:
+            msg["v"] = envelope.get("v", 1)
+            msg["body_ct"] = envelope["body_ct"]
+            msg["nonce"] = envelope["nonce"]
+            msg["K_user"] = envelope["K_user"]
+            if envelope.get("K_enclave") is not None:
+                msg["K_enclave"] = envelope["K_enclave"]
+            msg["enclave_pk_fpr"] = envelope.get("enclave_pk_fpr", "")
+            msg["visibility"] = envelope.get("visibility", "shared")
+            msg["owner_user_id"] = envelope.get("owner_user_id", self.user_id)
+            msg["content"] = ""     # empty plaintext slot so legacy readers don't choke
+        else:
+            msg["v"] = 0
+            msg["content"] = content
+
         with self.chat_lock:
             self.chat_messages.append(msg)
             if len(self.chat_messages) > MAX_CHAT_MESSAGES:
@@ -1469,15 +1502,44 @@ def chat_history():
 
 @app.route("/v1/chat/message", methods=["POST"])
 def chat_message():
+    """User sends a chat message.
+
+    Accepts either of two body shapes:
+      - v0 plaintext (legacy):  {"content": "hello"}
+      - v1 ciphertext envelope (E2E, see docs/DESIGN_E2E.md §3.2):
+          {"envelope": {"v":1, "body_ct":..., "nonce":..., "K_user":...,
+                        "K_enclave":..., "enclave_pk_fpr":..., "visibility":"shared",
+                        "owner_user_id":"usr_..."}}
+    The server never decrypts the envelope — it is stored verbatim and
+    later surfaced by the enclave's /v2/* handlers.
+    """
     store = require_user()
     payload = request.get_json(silent=True) or {}
+    envelope = payload.get("envelope")
     content = (payload.get("content") or "").strip()
+
+    if envelope is not None:
+        # Ciphertext path — validate the minimum fields so we fail loud.
+        required = ["body_ct", "nonce", "K_user", "visibility", "owner_user_id"]
+        missing = [f for f in required if not envelope.get(f)]
+        if missing:
+            return jsonify({"error": f"envelope missing fields: {missing}"}), 400
+        if envelope["visibility"] not in ("shared", "local_only"):
+            return jsonify({"error": "envelope.visibility must be 'shared' or 'local_only'"}), 400
+        # local_only omits K_enclave; shared must have it.
+        if envelope["visibility"] == "shared" and not envelope.get("K_enclave"):
+            return jsonify({"error": "envelope with visibility=shared requires K_enclave"}), 400
+        msg = store.append_chat("user", "", source="chat", envelope=envelope)
+        store.notify_chat_waiters()
+        print(f"[chat:{store.user_id}] user(v1, ciphertext, visibility={envelope['visibility']}) id={msg['id']}")
+        return jsonify({"id": msg["id"], "ts": msg["ts"], "v": msg["v"]})
+
     if not content:
-        return jsonify({"error": "content required"}), 400
+        return jsonify({"error": "content or envelope required"}), 400
     msg = store.append_chat("user", content, source="chat")
     store.notify_chat_waiters()
     print(f"[chat:{store.user_id}] user: {content[:80]}")
-    return jsonify({"id": msg["id"], "ts": msg["ts"]})
+    return jsonify({"id": msg["id"], "ts": msg["ts"], "v": 0})
 
 
 @app.route("/v1/chat/response", methods=["POST"])
