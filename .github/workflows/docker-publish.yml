@@ -52,3 +52,24 @@ jobs:
         run: |
           echo "Published: ${{ steps.tags.outputs.tags }}"
           echo "Digest tracked in run logs; pin from the docker.build output above."
+
+      # Auto-publish the container package so anyone (including Phala CVMs)
+      # can pull without a token. Required for reproducible-build
+      # verification — if the image is private, third parties can't
+      # recompute the compose_hash.
+      - name: Set package visibility to public
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          # org-owned path
+          gh api --method PATCH \
+            -H "Accept: application/vnd.github+json" \
+            "/orgs/${{ github.repository_owner }}/packages/container/feedling" \
+            -f visibility=public 2>&1 | tail -5 || true
+          # user-owned fallback
+          gh api --method PATCH \
+            -H "Accept: application/vnd.github+json" \
+            "/user/packages/container/feedling" \
+            -f visibility=public 2>&1 | tail -5 || true
