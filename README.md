@@ -53,7 +53,7 @@ feedling-mcp-v1/
 
 **Pending**
 - [ ] HTTPS + DNS for `api.feedling.app` + `mcp.feedling.app`
-- [ ] End-to-end encryption of stored user content — designed in `docs/DESIGN_E2E.md` (dstack TDX + per-user-keypair-on-iOS + double-wrap); implementation is ~6 weeks
+- [ ] End-to-end encryption of stored user content — designed in `docs/DESIGN_E2E.md` v0.2 (Phala dstack TDX + per-user-keypair-on-iOS + double-wrap; indexing on iOS, server-side compute opt-in via enclave cron); ~6–7 weeks
 - [ ] Claude.ai connector submission
 
 ---

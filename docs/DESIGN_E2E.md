@@ -1,6 +1,6 @@
-# Feedling End-to-End Encryption — Design Doc (v0.1)
+# Feedling End-to-End Encryption — Design Doc (v0.2)
 
-Status: **draft, pre-implementation**
+Status: **v0.2 — decisions locked, pre-implementation**
 Owner: @sxysun
 Target ship: after `NEXT.md` Steps 1–5 land in prod and multi-tenant is stable.
 Companion doc: `docs/NEXT.md` (the plaintext multi-tenant backend this layers on top of).
@@ -190,9 +190,99 @@ overhead. Negligible.
 
 ---
 
-## 4. Attestation protocol
+## 4. Indexing and aggregation compute location
 
-### 4.1 What the enclave publishes
+This is the single organizing principle for *"where does non-trivial compute
+over user content run?"* It resolves not just today's classifier and
+aggregation choices but every future server-side feature we'll want to add.
+
+### 4.1 Principle
+
+**v1 / default: all indexing, classification, search, and aggregation
+compute runs on iOS.** Anything that needs to look across a user's frames,
+memories, chat, or identity card happens on the device. The server sees
+encrypted blobs plus the minimum plaintext metadata needed for routing
+(timestamps, ids, roles). No exceptions by default.
+
+**v2 / opt-in: user-placed cron jobs inside the enclave.** When a user
+explicitly wants server-side compute — e.g. *"email me a weekly TikTok
+report,"* *"run a better ML classifier on new frames,"* *"let me search
+across all my memories server-side"* — they opt in to a named job spec.
+That job runs inside the TDX enclave, with a short-lived decryption
+capability that iOS delegates specifically for that job. Output is
+delivered through a user-approved channel (email, push, a new MCP tool,
+or a pull-based API).
+
+### 4.2 Why this framing
+
+1. **Privacy default is tight.** A new Feedling engineer who wants to add
+   a server-side feature must first answer *"is this a v2 user-opt-in cron,
+   or is this already supported in the v1 iOS path?"* There is no
+   accidental path to server-side plaintext access.
+
+2. **One uniform decision for every future feature.** ML-model-powered
+   classifier, weekly summary email, cross-memory semantic search,
+   research-consented aggregation, any SaaS integration that needs
+   bulk-read access — they all get the same answer: *does the user
+   explicitly opt in?* Scales better than case-by-case arbitration.
+
+3. **The upgrade path is visible and user-owned.** A user can see, in
+   Settings, the list of enclave-cron jobs they've approved. Each job
+   has a name, what data it touches, what outputs it produces, and a
+   revoke button. Permissions are concrete and auditable, not buried in
+   a ToS.
+
+4. **The enclave's TCB doesn't bloat for features nobody has asked for
+   yet.** Bigger classifiers, server-side search indexes, analytics —
+   none of them need to ship in Phase 1. They ship Phase 6+ as the
+   specific opt-in features users are willing to trade some privacy for.
+
+### 4.3 How v2 enclave-cron will work (sketch, for Phase 6)
+
+When we eventually add a specific v2 feature (weekly summary email as
+the most likely first one):
+
+1. Feedling publishes a **job spec** in the enclave image: the exact
+   Python code that will run, what fields it reads, what outputs it
+   produces, and its cron schedule.
+2. User taps *"Enable weekly TikTok report"* in iOS Settings. iOS shows
+   the job's plain-English description + a link to the code. User
+   confirms.
+3. iOS delegates a **scoped, time-limited decryption capability** to the
+   enclave: specifically, the user's `content_privkey` wrapped under the
+   enclave's attested pubkey, with an attached constraint token
+   authorizing only this named job, only for the expected data fields,
+   expiring at the next natural refresh.
+4. The enclave stores the delegation alongside the user's record. On
+   schedule, it runs the job inside TDX, producing an output
+   (e.g. an email body). Output leaves the enclave via the user-approved
+   channel.
+5. User can revoke at any time in Settings → Privacy → Enclave Jobs.
+   Revocation means deleting the delegation blob on our side; a malicious
+   server keeping a copy still can't use it once the enclave image
+   rotates.
+
+None of this ships in Phases 1–5. It's called out here so the early
+architecture doesn't accidentally preclude it.
+
+### 4.4 What this means concretely for decisions §12.4, §12.5, §12.6
+
+- **Frame `app` field encrypted.** Per-app aggregation (weekly screen
+  time, top-apps list, etc.) runs on iOS in v1. When users ask for
+  "Feedling emails me weekly screen-time summaries," that's v2 cron.
+- **Semantic classifier on iOS.** The 30-line keyword matcher today
+  lives on the phone. When we want a real on-device model, we ship it
+  in the iOS app. When we want a heavier server-side model, it's a v2
+  cron feature users opt in to per-classifier.
+- **Identity-dim values encrypted.** Cross-user aggregation
+  ("population distribution of 温柔 scores for research purposes") is
+  v2 opt-in with explicit research consent.
+
+---
+
+## 5. Attestation protocol
+
+### 5.1 What the enclave publishes
 
 On CVM boot, the enclave generates its keypair(s) and TLS cert, then requests
 a TDX quote from dstack's guest agent. The quote's `REPORT_DATA` field (64
@@ -228,7 +318,7 @@ The quote is served at `https://mcp.feedling.app/attestation` as:
 This endpoint is unauthenticated and heavily cached (it only changes when the
 enclave restarts).
 
-### 4.2 iOS verifier logic
+### 5.2 iOS verifier logic
 
 The iOS app ships with:
 
@@ -289,7 +379,7 @@ the presented cert's SHA-256 fingerprint must match the one pinned by
 `verifyEnclave`. Standard Let's Encrypt CA verification is still done — TEE
 attestation is additive, not replacing PKI.
 
-### 4.3 MRTD review UX
+### 5.3 MRTD review UX
 
 When the iOS accept-list does not contain the server's current `MRTD`:
 
@@ -323,9 +413,9 @@ update.
 
 ---
 
-## 5. Core data flows
+## 6. Core data flows
 
-### 5.1 Registration
+### 6.1 Registration
 
 ```
 iOS                                     Flask                    Enclave CVM
@@ -353,7 +443,7 @@ The enclave is not involved in registration. It doesn't need to be: Flask
 stores the user's public keys; the enclave only needs its own keypair plus
 access to Flask to do decrypt-on-read. This keeps the TEE code minimal.
 
-### 5.2 Content write (chat message example)
+### 6.2 Content write (chat message example)
 
 ```
 iOS                                     Flask
@@ -387,7 +477,7 @@ Flask changes:
 - Legacy plaintext write path (`content` field) is kept behind a deprecation
   header for the migration window (see §8).
 
-### 5.3 Content read by Agent via MCP
+### 6.3 Content read by Agent via MCP
 
 ```
 Claude.ai                 Caddy          Enclave CVM                      Flask
@@ -430,7 +520,7 @@ Plaintext exists in two places:
 It does **not** exist in Caddy's memory, in the host OS buffers, on any disk,
 in any log. This is the Option 2.5 property.
 
-### 5.4 Rotation
+### 6.4 Rotation
 
 **User content key rotation:** iOS generates a new `user_content_kp`, signs a
 rotation message with `user_identity_sk`, uploads the new pubkey. Old content
@@ -459,7 +549,7 @@ means enclave-image changes can't secretly smuggle forward access — iOS
 controls whether to bless the new enclave by re-wrapping, and it only does so
 after explicit user approval (unless pre-shipped in app).
 
-### 5.5 Migration from today's plaintext data
+### 6.5 Migration from today's plaintext data
 
 Users whose accounts were created under the current plaintext multi-tenant
 mode need a one-time upgrade. Server changes:
@@ -494,7 +584,7 @@ that's fine, iOS is trusted. It never touches Feedling's infra after that.
 
 ---
 
-## 6. Component architecture
+## 7. Component architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -556,7 +646,7 @@ Why not put Caddy in the TEE:
 
 ---
 
-## 7. iOS responsibilities (summary)
+## 8. iOS responsibilities (summary)
 
 1. **Keypair lifecycle.** Generate, store in Keychain with
    `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`. Optionally export as
@@ -572,7 +662,7 @@ Why not put Caddy in the TEE:
 6. **Local-only flag UI.** A "private memory" toggle on memory-add and a
    global default in Settings.
 
-### 7.1 iOS dependencies (new)
+### 8.1 iOS dependencies (new)
 
 - `swift-sodium` (libsodium bindings) — content encryption.
 - `SwiftDCAP` or custom Swift wrapper around Intel's DCAP verify library —
@@ -581,74 +671,121 @@ Why not put Caddy in the TEE:
 
 ---
 
-## 8. Phased implementation plan
+## 9. Phased implementation plan
 
 Each phase is independently ship-able and does not break users on the
-previous phase.
+previous phase. Phases 1–5 constitute the MVP scope; Phase 6 is explicitly
+future work enabling the v2 "enclave cron" path from §4.
 
-### Phase 1 — TEE infrastructure (1–2 weeks)
+### Phase 1 — TEE infrastructure (~1–2 weeks)
 
-- [ ] Pick TDX deployment target (see Open Decision #1).
-- [ ] Dockerfile + reproducible build for the enclave app.
-- [ ] Minimal dstack deployment: just `/attestation` endpoint + key derivation.
-- [ ] iOS: add libsodium, add attestation verifier, pin first MRTD.
-- [ ] E2E smoke test: iOS app fetches attestation, verifies, displays "🔒
-      Verified: dstack CVM image abc123" in Settings.
+- [ ] Provision a Phala dstack deployment (chosen per decision §12.1). Use
+      Phala's managed TDX network for Phase 1; we can migrate to our own
+      bare-metal TDX later if economics demand.
+- [ ] Reproducible container build for the enclave app. Pin base image by
+      digest; publish sha256 on GitHub Releases.
+- [ ] Minimal enclave service: `GET /attestation` returning the TDX quote
+      plus published pubkeys, and deterministic key derivation from dstack
+      KMS.
+- [ ] iOS: add libsodium (via `swift-sodium`), add DCAP-verifying attestation
+      library, ship with pinned Intel root + first accept-listed MRTD.
+- [ ] E2E smoke test: iOS fetches attestation, verifies, displays in
+      Settings *"🔒 Verified — enclave image abc123, git commit xyz."*
 
-**Exit criterion:** iOS can verify the enclave is running published code. No
-content encryption yet.
+**Exit criterion:** iOS cryptographically verifies the Phala enclave is
+running the exact code published at a specific GitHub commit. No content
+encryption yet.
 
-### Phase 2 — Content encryption, backend still serves plaintext-compatible (2 weeks)
+### Phase 2 — Content encryption (iOS side) + dual-format backend (~2 weeks)
 
-- [ ] Define and implement content format (§3.2) on iOS: wrap each write.
-- [ ] Flask: accept both plaintext (legacy) and ciphertext (v1) forms; store
-      both formats side-by-side during migration window.
-- [ ] Enclave: implement `/v2/*` tool handlers that decrypt before returning.
-- [ ] MCP server: start routing v2-marked users through enclave, v1 users
-      through legacy Flask-direct path.
-- [ ] iOS: Migration UI — one-time re-encrypt flow.
+- [ ] Implement the content format (§3.2) on iOS: every chat / memory /
+      identity / frame / OCR write goes through the double-wrap scheme
+      before upload.
+- [ ] Flask: accept both plaintext (v0, legacy) and ciphertext (v1) forms on
+      writes during the migration window. Store whichever arrived.
+- [ ] Enclave: implement `/v2/*` tool handlers that decrypt ciphertexts
+      before returning to the Agent. v0 requests continue to flow through
+      Flask-direct.
+- [ ] Move the `_semantic_analysis()` classifier to iOS per decision §12.5.
+      iOS uploads the tag (`semantic_scene`, `task_intent`) as plaintext
+      metadata; raw OCR never leaves the phone unencrypted.
+- [ ] iOS Migration UI: one-time "Encrypt your existing data" flow for
+      pre-E2E users.
 
-**Exit criterion:** A fresh iOS install writes ciphertext, Agent reads
-plaintext via enclave; existing users can upgrade on demand.
+**Exit criterion:** A fresh iOS install writes ciphertext end-to-end; the
+Agent reads via enclave decrypt; existing users can voluntarily upgrade.
 
-### Phase 3 — MCP in TEE + TLS termination (1 week)
+### Phase 3 — MCP moves into TEE + TLS termination + key backup (~1–2 weeks)
 
-- [ ] Move FastMCP into the CVM. Configure rustls for `mcp.feedling.app`.
-- [ ] Caddy config: change `mcp.feedling.app` from `reverse_proxy` to
-      `layer4 tls passthrough`.
-- [ ] ACME-DNS-01 plumbing so the CVM can auto-renew certs without exposing
-      the privkey.
-- [ ] Audit: confirm no plaintext path leaves the CVM.
+- [ ] Move FastMCP into the Phala CVM. Terminate TLS for `mcp.feedling.app`
+      inside the CVM using rustls.
+- [ ] Caddy config: `mcp.feedling.app` downgrades from `reverse_proxy` to
+      `layer4 tls passthrough` — Caddy only routes by SNI, never
+      decrypts.
+- [ ] ACME-DNS-01 plumbing so the CVM can auto-renew certs without the
+      TLS privkey ever existing outside TDX memory.
+- [ ] iCloud Keychain backup of content `privkey` per decision §12.7: 24-word
+      mnemonic shown once at onboarding, primary restore path is iCloud
+      Keychain auto-sync across the user's Apple devices.
+- [ ] Audit pass: confirm no plaintext can leave the CVM except as
+      already-encrypted TLS bytes.
 
-**Exit criterion:** Even Feedling ops with root on the non-TEE host cannot
-observe live plaintext.
+**Exit criterion:** A Feedling operator with full root on the non-TEE host
+cannot observe active-session plaintext. Losing an iPhone no longer means
+losing local data access.
 
-### Phase 4 — User-facing privacy UI (1 week)
+### Phase 4 — Privacy UI + polish (~1 week)
 
-- [ ] Settings → Privacy section:
-      - Enclave status (MRTD, git commit, verified-at timestamp)
-      - Per-item local-only default toggle
-      - Export / backup keys (phase-2 lite: encrypted mnemonic QR code)
+- [ ] Settings → Privacy screen:
+      - Enclave status: current MRTD, git commit link, verified-at timestamp
+      - Link to enclave source on GitHub
+      - Per-item `visibility` toggle on memory compose + chat compose
+      - Global default visibility switch in Advanced (default `shared` per
+        decision §12.3)
+      - Placeholder row for future "Enclave jobs" (Phase 6) — ships empty
+- [ ] MRTD-changed review card (per §5.3 UX mock).
 - [ ] Migration status view.
-- [ ] MRTD change review card.
-- [ ] Onboarding copy: the three asterisks (§2.3) in plain language.
+- [ ] Onboarding copy with the three honest asterisks (§2.3 and §13) in
+      plain language.
 
-**Exit criterion:** A user can open the app, see the privacy state concretely,
-and decide whether to approve updates.
+**Exit criterion:** A user can open the app cold and understand exactly who
+can read their data, under what conditions, and what recourse they have.
 
-### Phase 5 — Production cutover (spread)
+### Phase 5 — Production cutover (~2–4 weeks rolling)
 
-- [ ] Migrate prod users in batches.
-- [ ] Retire plaintext endpoints (phase out over 30 days).
-- [ ] Update website / product copy to reflect new guarantees.
+- [ ] Migrate prod users in batches. Email + in-app prompt.
+- [ ] Retire v0 plaintext write endpoints over 30 days.
+- [ ] Update website / product copy / `README.md` / `skill/SKILL.md` to
+      reflect the new guarantees.
+- [ ] Decommission old Flask-direct read paths for content (metadata/admin
+      paths stay).
 
-Total calendar time: **~6 weeks** for a clean, audit-ready implementation.
+**Exit criterion:** 100% of active users on v1. Plaintext content endpoints
+deleted from the codebase.
+
+### Phase 6 — Future: user-placed enclave cron (post-MVP, not scoped)
+
+This phase ships feature-by-feature as demand materializes. Each feature
+introduces a new named job spec. Representative examples:
+
+- [ ] Weekly screen-time summary email (job: aggregate frame metadata →
+      format email → send via SendGrid).
+- [ ] Heavier on-enclave semantic classifier with an embedded ML model.
+- [ ] Cross-memory server-side search for users with large gardens.
+- [ ] Opt-in research aggregation (e.g., "contribute anonymized 温柔-dim
+      distribution to a public dataset").
+
+Each shipped job spec follows the delegation pattern in §4.3: scoped,
+time-limited, user-revocable. None of them changes the Phase 1–5
+architecture.
+
+Total calendar time to Phase 5 cutover: **~6–7 weeks** of engineering.
 
 ---
 
-## 9. Threat model
+## 10. Threat model
 
-### 9.1 Adversaries we defend against
+### 10.1 Adversaries we defend against
 
 | Adversary | Attack | Defense |
 |---|---|---|
@@ -662,7 +799,7 @@ Total calendar time: **~6 weeks** for a clean, audit-ready implementation.
 | Compromised Agent | Agent-side exfil | Out of scope — any data the Agent is authorized to read can be exfiltrated by a compromised Agent. Limit blast radius with per-item local-only. |
 | Lost / stolen iOS device | Attacker has phone | Keychain requires device passcode / biometrics post-first-unlock; api_key remotely revocable via a different device |
 
-### 9.2 Adversaries we do NOT defend against
+### 10.2 Adversaries we do NOT defend against
 
 | Adversary | Why | Mitigation |
 |---|---|---|
@@ -674,9 +811,9 @@ Total calendar time: **~6 weeks** for a clean, audit-ready implementation.
 
 ---
 
-## 10. Operational concerns
+## 11. Operational concerns
 
-### 10.1 Debugging
+### 11.1 Debugging
 
 We lose the ability to `cat chat.json` in prod. Mitigations:
 
@@ -690,7 +827,7 @@ We lose the ability to `cat chat.json` in prod. Mitigations:
   staging user whose data is freely inspectable because we control the
   phone.
 
-### 10.2 Disaster recovery
+### 11.2 Disaster recovery
 
 - **Flask data:** ciphertext backups are fine to store in S3 / wherever;
   nobody can read them without a user's iOS device.
@@ -701,62 +838,134 @@ We lose the ability to `cat chat.json` in prod. Mitigations:
   enclave path (remote Agent reads) keeps working indefinitely via the
   stored api_key.
 
-### 10.3 Cost
+### 11.3 Cost
 
-- dstack / TDX CVM: ~$40–$100/month for a small instance, depending on
-  deployment target.
+- Phala-deployed TDX CVM: see Phala's pricing for current rates. Ballpark
+  ~$40–$150/month for a small instance sufficient for a low-to-medium
+  traffic MCP server. Migrating to self-hosted TDX later is a cost
+  optimization, not an architectural change.
 - Additional TCP bandwidth for TLS pass-through: negligible.
 - Engineering time: ~6 weeks as laid out.
 
 ---
 
-## 11. Open decisions (need sign-off before Phase 1)
+## 12. Decisions (locked in v0.2)
 
-1. **TDX deployment target.** Options:
-   a. Phala mainnet (fully decentralized, attestation is public).
-   b. GCP Confidential VM (easy, matches rest of likely infra).
-   c. Azure Confidential Computing (similar).
-   d. Bare metal TDX server in a colo (most control, highest ops cost).
-   → My recommendation: **(b) GCP Confidential VM** for simplicity now, keep
-     Phala option open for a future "decentralized tier."
+The seven questions flagged in v0.1 have been resolved. Each answer below
+is load-bearing — later phases assume these.
 
-2. **MRTD pre-approval policy.** How often are we willing to ship iOS updates
-   just to bump an accept-list? Proposal: batch enclave updates with iOS
-   releases monthly; emergency patches trigger an MRTD review prompt,
-   justified by the diff.
+### 12.1 TDX deployment target: **Phala**
 
-3. **Local-only default.** Ship with default `visibility=shared` (Agent can
-   read all memories unless user flips) or default `local_only`?
-   Recommendation: **default shared** — otherwise Agent experience degrades
-   silently. Make local-only a clear opt-in per item.
+Chosen over GCP Confidential VM / Azure Confidential Computing / self-hosted
+bare metal.
 
-4. **Frame `app` field.** Current design keeps the foreground app bundle ID
-   plaintext (so server can do per-app aggregation). This leaks that the
-   user was in, e.g., Signal. Do we encrypt it?
-   Recommendation: encrypt it. `/v1/screen/analyze` can run in the enclave if
-   needed, or move its per-app aggregation into the iOS client.
+**Rationale:** Phala's managed TDX network gives us public,
+third-party-verifiable attestation out of the box — any user (or auditor) can
+independently check that the measurement we publish matches what's actually
+running. The "anyone can verify" property matches the product's privacy
+narrative better than a single-cloud provider. Operational cost is slightly
+higher than GCP for equivalent CPU, but the auditability is worth it and we
+can migrate off Phala later without changing the cryptographic construction.
 
-5. **OCR-less semantic analysis.** `_semantic_analysis()` currently reads OCR
-   text plaintext. Under E2E:
-   a. Move the classifier to iOS; upload only the resulting tag
-      (`semantic_scene: ecommerce_choice_paralysis`).
-   b. Run the classifier inside the enclave.
-   → Recommendation: **(a)**. The classifier is 30 lines of keyword matching.
-      Pushing it to iOS keeps the enclave TCB smaller. iOS uploads the tag
-      plaintext (metadata class — we already accept that) and no raw OCR.
+**Implication:** Phase 1 integrates with dstack (Phala's TDX runtime). The
+enclave container must be publishable to Phala's infrastructure. Our
+`deploy/docker-compose.yaml` stays the unit of deployment.
 
-6. **Identity-dim values.** These are integers 0–100, tiny. Encrypting them
-   costs nothing but prevents stats/aggregation. Probably encrypt.
+### 12.2 MRTD pre-approval cadence: **monthly batches + review-card for emergency patches**
 
-7. **Backup story timeline.** Phase 2 adds mnemonic-based iCloud Keychain
-   backup. Before shipping Phase 5, we need this — otherwise users who lose
-   their phone before backing up lose local access. (Remote via enclave
-   still works, so the situation isn't catastrophic, but is worth
-   communicating.)
+Pre-ship upcoming MRTDs in the iOS binary on a monthly release cadence so
+99% of enclave updates are silent for users. Emergency patches between iOS
+releases trigger the review card UX from §5.3.
+
+**Rationale:** Silent updates undermine the "your phone verifies our code"
+story. Surfaced updates with a diff link let users participate in the change
+consciously — which is the whole point of attestation. Monthly batching keeps
+the prompt rare enough not to train users to tap "Approve" reflexively.
+
+**Implication:** Our deploy process always ships iOS release alongside
+enclave release. Out-of-band enclave hotfixes are rare and visible.
+
+### 12.3 Default visibility: **`shared`**
+
+New content items default to `visibility: "shared"` (both user and enclave
+can decrypt). A per-item toggle exposes `local_only`; a global default
+switch in Advanced Settings lets power users flip the baseline.
+
+**Rationale:** Defaulting to `local_only` makes the Agent experience feel
+broken ("Claude doesn't remember our previous conversation"). Default-shared
+keeps the product coherent while still letting any user with a concrete
+privacy need scope individual items or flip the default.
+
+**Implication:** iOS UI ships with a small "🔒 private" toggle on memory-add
+and chat-compose. Advanced Settings exposes the global default.
+
+### 12.4 Frame `app` field: **encrypted**
+
+Foreground-app bundle IDs are wrapped alongside image and OCR, not kept
+plaintext for server-side aggregation.
+
+**Rationale:** *"You were in Signal at 11pm"* is exactly the kind of
+metadata we claimed not to leak. Per-app aggregation (weekly screen time,
+top-apps list, etc.) moves to iOS (§4 principle). Any future "Feedling
+emails me a weekly summary" feature becomes a v2 enclave-cron opt-in.
+
+**Implication:** `/v1/screen/analyze` returns tags derived on iOS;
+server-side per-app dashboards are off the roadmap for v1.
+
+### 12.5 `_semantic_analysis()` classifier: **on iOS**
+
+The current 30-line keyword matcher moves to the iOS client. iOS uploads
+the resulting tag (`semantic_scene`, `task_intent`, `friction_point`) as
+plaintext metadata — the raw OCR never leaves the phone in plaintext.
+
+**Rationale:** Keeps the enclave TCB small. The classifier is tiny and
+doesn't need server-side state. When we later want a heavier on-device ML
+model, it's an iOS release. When we want a heavy server-side model, it's
+a v2 enclave-cron feature per §4.
+
+**Implication:** iOS picks up a small classifier library (the same Python
+logic ported to Swift). Server still consumes the tag for cooldown / trigger
+decisions.
+
+### 12.6 Identity-dim values: **encrypted**
+
+0–100 integer values in the identity card are wrapped under the double-wrap
+scheme like all other content.
+
+**Rationale:** Consistency. The storage cost is trivial. Cross-user
+aggregation ("distribution of 温柔 scores across users") becomes a v2
+opt-in enclave-cron feature with explicit research consent.
+
+**Implication:** Server sees encrypted integer fields; iOS and Agent
+(via enclave decrypt) see plaintext.
+
+### 12.7 Content key backup: **Phase 3, iCloud Keychain as primary**
+
+Backup ships in Phase 3 (alongside MCP-in-TEE), not deferred to Phase 5.
+Primary mechanism: the content private key is stored under iOS Keychain
+with `kSecAttrSynchronizable = true`, allowing iCloud Keychain to sync
+across the user's Apple devices. Secondary fallback: a one-time 24-word
+BIP39-style mnemonic shown during onboarding for users who distrust iCloud
+or want paper backup.
+
+**Rationale:** Losing a phone before backup = losing local read access.
+Remote reads via the enclave still work (api_key resurrects with a new
+phone) but offline mode and local decrypt break. Phase 3 timing means
+backup is live before we ask any user to migrate their production data in
+Phase 5.
+
+**Implication:** Phase 3 scope grows slightly. Phase 4 Privacy UI exposes
+"Your encryption key is backed up to iCloud Keychain" status plus "show
+mnemonic" action.
+
+### 12.8 Indexing/aggregation compute location: **v1 iOS, v2 enclave-cron opt-in**
+
+See §4 for the full principle. Not a separate question but stated here for
+completeness since several of the above decisions depend on it.
 
 ---
 
-## 12. What we will tell users
+## 13. What we will tell users
 
 Proposed marketing / onboarding copy, to be iterated:
 
@@ -792,7 +1001,7 @@ Proposed marketing / onboarding copy, to be iterated:
 
 ---
 
-## 13. References
+## 14. References
 
 - `docs/NEXT.md` — prerequisite multi-tenant backend this layers on top of.
 - `skill/SKILL.md` — self-hosted runbook for users who prefer that over TEE.
@@ -804,7 +1013,15 @@ Proposed marketing / onboarding copy, to be iterated:
 
 ---
 
-## 14. Change log
+## 15. Change log
 
+- v0.2 (2026-04-19): decisions locked. Added §4 indexing-location principle
+  (v1 iOS, v2 enclave-cron opt-in) and cross-referenced into §12.
+  Resolved all seven v0.1 open questions; §11 renamed to §12 *"Decisions
+  (locked in v0.2)"* with rationale per item. TDX target chosen: **Phala**.
+  Restructured §9 (was §8) phases to a crisper 6-phase layout; Phase 6
+  added as explicitly future / post-MVP for the enclave-cron features.
+  Section numbering shifted by +1 from §4 onward to accommodate the new
+  §4.
 - v0.1 (2026-04-19): initial draft. Owner: @sxysun. Pending review +
-  decisions on §11 open questions before Phase 1 starts.
+  decisions on seven open questions before Phase 1 starts.

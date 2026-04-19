@@ -376,17 +376,22 @@ All 30 tests should pass before merging anything.
 
 ## After Steps 1–5: the E2E + TEE phase
 
-`docs/DESIGN_E2E.md` specifies how we get from "multi-tenant plaintext
-backend" to "Feedling cannot read your data." Summary:
+`docs/DESIGN_E2E.md` (v0.2, decisions locked) specifies how we get from
+"multi-tenant plaintext backend" to "Feedling cannot read your data."
+Summary:
 
 - User-generated content keypair on iOS + enclave-generated content keypair.
-- Every content item is wrapped under a random symmetric key, with that key
-  sealed to both recipients independently (double-wrap).
-- MCP server moves inside a dstack TDX CVM and terminates TLS there.
-- iOS verifies the enclave's TDX attestation on every session and pins the
-  MRTD.
+- Every content item is wrapped under a random symmetric key; that key is
+  sealed independently to (user pubkey, enclave pubkey) — the "double-wrap."
+- MCP server runs inside a **Phala-deployed dstack TDX CVM** and terminates
+  TLS there. Caddy downgrades to SNI pass-through for `mcp.feedling.app`.
+- iOS verifies the enclave's TDX attestation on every session, pins MRTD,
+  surfaces a review card when the enclave image changes out-of-band.
+- **Indexing / aggregation compute runs on iOS by default.** Server-side
+  compute is opt-in via user-placed enclave-cron jobs (Phase 6 and beyond).
 - Migration is iOS-driven: the phone re-wraps old data after each enclave
   update, so enclave image changes require user approval.
 
 Phase 1 (TEE infra) is the blocker for everything else. Don't start it until
-prod is running stably on multi-tenant mode from this doc.
+prod is running stably on multi-tenant mode from this doc. Six phases total,
+~6–7 weeks of engineering to Phase 5 cutover.
