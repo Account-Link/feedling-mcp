@@ -38,6 +38,12 @@ jobs:
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           echo "tags=$IMAGE:$COMMIT_SHORT,$IMAGE:latest" >> "$GITHUB_OUTPUT"
 
+      - name: Derive release metadata
+        id: meta
+        run: |
+          echo "git_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - uses: docker/build-push-action@v6
         with:
           context: .
@@ -45,6 +51,9 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            FEEDLING_GIT_COMMIT=${{ steps.meta.outputs.git_commit }}
+            FEEDLING_BUILT_AT=${{ steps.meta.outputs.built_at }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

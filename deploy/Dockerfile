@@ -41,6 +41,19 @@ RUN pip install --require-hashes -r requirements.lock
 
 COPY backend/ ./backend/
 
+# Release metadata — baked at build time, read at runtime by
+# backend/enclave_app.py and served inside /attestation.enclave_release
+# so the iOS audit card can show "git_commit abc1234" instead of "dev".
+#
+# CI passes these via --build-arg (see .github/workflows/docker-publish.yml).
+# Anything missing is OK — enclave_app falls back to "dev".
+ARG FEEDLING_GIT_COMMIT=dev
+ARG FEEDLING_BUILT_AT=dev
+ARG FEEDLING_IMAGE_DIGEST=sha256:dev
+ENV FEEDLING_GIT_COMMIT=${FEEDLING_GIT_COMMIT} \
+    FEEDLING_BUILT_AT=${FEEDLING_BUILT_AT} \
+    FEEDLING_IMAGE_DIGEST=${FEEDLING_IMAGE_DIGEST}
+
 # Run as a fixed non-root UID so bind-mounted volumes on the host can be
 # chowned predictably.
 RUN useradd --system --uid 1000 --home-dir /home/feedling --create-home feedling \
