@@ -80,11 +80,11 @@ RELEASE = {
     "built_at": os.environ.get("FEEDLING_BUILT_AT", "dev"),
     "compose_yaml_url": os.environ.get(
         "FEEDLING_COMPOSE_YAML_URL",
-        "https://github.com/Account-Link/feedling-mcp-v1/raw/main/deploy/docker-compose.yaml",
+        "https://github.com/Account-Link/feedling-mcp/raw/main/deploy/docker-compose.yaml",
     ),
     "build_recipe_url": os.environ.get(
         "FEEDLING_BUILD_RECIPE_URL",
-        "https://github.com/Account-Link/feedling-mcp-v1/blob/main/deploy/BUILD.md",
+        "https://github.com/Account-Link/feedling-mcp/blob/main/deploy/BUILD.md",
     ),
 }
 

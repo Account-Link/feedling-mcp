@@ -473,9 +473,9 @@ Every step has a **Verify** line — do not move on until it passes.
 
 ### 1. Clone the repo
 ```bash
-ssh <user>@<host> "git clone https://github.com/Account-Link/feedling-mcp-v1 ~/feedling-mcp-v1"
+ssh <user>@<host> "git clone https://github.com/Account-Link/feedling-mcp ~/feedling-mcp"
 ```
-**Verify:** `ssh <user>@<host> "ls ~/feedling-mcp-v1/backend/app.py"` prints the path.
+**Verify:** `ssh <user>@<host> "ls ~/feedling-mcp/backend/app.py"` prints the path.
 
 ### 2. Generate a strong API key
 ```bash
@@ -487,7 +487,7 @@ Keep `$API_KEY` in your local session; don't paste it into chat.
 ### 3. Install a virtualenv + deps + APNs key (if provided)
 ```bash
 ssh <user>@<host> <<EOF
-cd ~/feedling-mcp-v1
+cd ~/feedling-mcp
 python3 -m venv ~/feedling-venv
 ~/feedling-venv/bin/pip install -r backend/requirements.txt
 mkdir -p ~/feedling-data
@@ -517,8 +517,8 @@ EOF
 ### 5. Install and start systemd units
 ```bash
 ssh <user>@<host> <<'EOF'
-sudo cp ~/feedling-mcp-v1/deploy/feedling-backend.service /etc/systemd/system/
-sudo cp ~/feedling-mcp-v1/deploy/feedling-mcp.service     /etc/systemd/system/
+sudo cp ~/feedling-mcp/deploy/feedling-backend.service /etc/systemd/system/
+sudo cp ~/feedling-mcp/deploy/feedling-mcp.service     /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now feedling-backend feedling-mcp
 EOF
@@ -535,7 +535,7 @@ ssh <user>@<host> "curl -s -H 'X-API-Key: $API_KEY' http://127.0.0.1:5001/v1/scr
 Only do this if the user points DNS for `api.<their-domain>` and `mcp.<their-domain>` at the VPS first.
 ```bash
 ssh <user>@<host> <<EOF
-sudo cp ~/feedling-mcp-v1/deploy/Caddyfile /etc/caddy/Caddyfile
+sudo cp ~/feedling-mcp/deploy/Caddyfile /etc/caddy/Caddyfile
 sudo sed -i 's/feedling.app/<their-domain>/g' /etc/caddy/Caddyfile
 sudo systemctl restart caddy
 EOF

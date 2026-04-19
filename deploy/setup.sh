@@ -13,7 +13,7 @@
 
 set -e
 
-REPO_DIR="$HOME/feedling-mcp-v1"
+REPO_DIR="$HOME/feedling-mcp"
 VENV_DIR="$HOME/feedling-venv"
 DATA_DIR="$HOME/feedling-data"
 ENV_FILE="$HOME/feedling.env"
