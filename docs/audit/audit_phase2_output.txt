@@ -1,0 +1,19 @@
+Row 1 [✓] /attestation reachable + valid JSON
+       quote_hex=10020 chars, event_log=4927 chars
+Row 2 [✓] TDX quote parses (v4, tee_type=0x81)
+       version=4 tee_type=0x81
+       mrtd=f06dfda6dce1cf904d4e2bab1dc37063...
+       rtmr3=df74fe52065c1a1d695a70c6bb7b257f...
+Row 3 [✓] measurements non-zero + mr_config_id flag set
+       mrtd=f06dfda6dce1cf904d4e2bab1dc37063... rtmr3=df74fe52065c1a1d695a70c6bb7b257f...
+       mr_config_id[0]=0x01 (dstack compose-binding flag)
+Row 4 [✓] compose_hash authorized on FeedlingAppAuth (Eth Sepolia)
+       isAppAllowed(0xd118700eeb70555a...) = true
+       contract = 0x6c8A6f1e3eD4180B2048B808f7C4b2874649b88F
+Row 5 [✓] mr_config_id binds this compose_hash directly
+       mr_config_id[1:33] = d118700eeb70555a8a874e880a3b679db17c7f3118fa72e382574ea1f7361b0a
+       compose_hash       = d118700eeb70555a8a874e880a3b679db17c7f3118fa72e382574ea1f7361b0a
+Row 6 [✓] event_log contains compose-hash event with this compose_hash
+       event_payload = d118700eeb70555a8a874e880a3b679db17c7f3118fa72e382574ea1f7361b0a
+
+===== 6/6 rows green — ALL PASS =====
