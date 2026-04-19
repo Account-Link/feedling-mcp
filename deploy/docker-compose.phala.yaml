@@ -25,7 +25,7 @@ name: feedling-enclave
 
 services:
   enclave:
-    image: ghcr.io/account-link/feedling:451b5b0
+    image: ghcr.io/account-link/feedling:8b53404
     command: ["python", "-u", "backend/enclave_app.py"]
     restart: unless-stopped
     environment:
@@ -71,7 +71,7 @@ services:
       start_period: 120s
 
   backend:
-    image: ghcr.io/account-link/feedling:451b5b0
+    image: ghcr.io/account-link/feedling:8b53404
     command: ["python", "-u", "backend/app.py"]
     restart: unless-stopped
     environment:
@@ -93,7 +93,7 @@ services:
         condition: service_healthy
 
   mcp:
-    image: ghcr.io/account-link/feedling:451b5b0
+    image: ghcr.io/account-link/feedling:8b53404
     command: ["python", "-u", "backend/mcp_server.py"]
     restart: unless-stopped
     environment:
