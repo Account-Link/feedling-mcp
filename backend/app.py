@@ -1793,6 +1793,21 @@ def identity_nudge():
     if identity is None:
         return jsonify({"error": "not_initialized"}), 404
 
+    # v1 cards store dimensions inside body_ct; server cannot mutate in
+    # place without decrypting first. The decrypt-mutate-rewrap dance is
+    # Phase C scope (once MCP lives inside the enclave). Surface a clear
+    # error so agents don't see a mystery "dimension not found."
+    if int(identity.get("v", 0)) >= 1:
+        return jsonify({
+            "error": "nudge_not_supported_on_v1_cards_yet",
+            "detail": "The identity card is stored as ciphertext; server-side"
+                      " mutation requires the decrypt-mutate-rewrap flow that"
+                      " ships with Phase C (MCP in TEE). Until then, agents"
+                      " should call identity.init with the full updated card"
+                      " to replace it atomically.",
+            "phase_reference": "docs/NEXT.md §Phase C",
+        }), 409
+
     payload = request.get_json(silent=True) or {}
     dimension_name = (payload.get("dimension_name") or "").strip()
     delta = payload.get("delta")
@@ -2024,6 +2039,163 @@ def bootstrap():
 # ---------------------------------------------------------------------------
 # Error handlers
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Content migration: v0 → v1 envelope rewrap.
+#
+# Used by iOS's first-launch-post-update migration to upgrade pre-existing
+# plaintext rows (chat messages + memory moments) into v1 envelopes without
+# the user ever noticing. Idempotent — already-v1 items are a no-op.
+#
+# Identity is *not* supported in this pass: identity.nudge can't currently
+# mutate a v1 card (decrypt-mutate-rewrap requires Phase C), and migrating a
+# card without a working nudge would trap the user. Phase C will add both at
+# once. See docs/NEXT.md.
+#
+# The endpoint is client-driven: iOS holds both user_sk (to decrypt any pre-
+# existing v1 blobs, which it doesn't need here) and the fresh v1 envelope
+# for each item. Server just swaps ciphertext fields in place, preserving
+# plaintext metadata (ts, role, source, occurred_at, created_at).
+# ---------------------------------------------------------------------------
+
+
+@app.route("/v1/content/rewrap", methods=["POST"])
+def content_rewrap():
+    store = require_user()
+    payload = request.get_json(silent=True) or {}
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return jsonify({"error": "items must be a list"}), 400
+    if not items:
+        return jsonify({"results": [], "summary": _rewrap_summary([])})
+
+    results: list[dict] = []
+    chat_dirty = False
+    memory_dirty = False
+    moments = None  # lazy-load; only one read per request
+
+    for item in items:
+        if not isinstance(item, dict):
+            results.append({"type": None, "id": None, "status": "error: item must be a dict"})
+            continue
+        itype = item.get("type")
+        iid = (item.get("id") or "").strip()
+        env = item.get("envelope")
+        if itype not in ("chat", "memory"):
+            results.append({"type": itype, "id": iid, "status": "error: unsupported type (chat, memory only)"})
+            continue
+        if not iid:
+            results.append({"type": itype, "id": None, "status": "error: id required"})
+            continue
+        missing = _rewrap_envelope_missing(env)
+        if missing:
+            results.append({"type": itype, "id": iid, "status": f"error: envelope missing {missing}"})
+            continue
+        if env["visibility"] not in ("shared", "local_only"):
+            results.append({"type": itype, "id": iid, "status": "error: envelope.visibility must be 'shared' or 'local_only'"})
+            continue
+        if env["visibility"] == "shared" and not env.get("K_enclave"):
+            results.append({"type": itype, "id": iid, "status": "error: shared visibility requires K_enclave"})
+            continue
+        # Enforce AEAD binding: the envelope's owner_user_id must match the
+        # resolved caller. If it doesn't, the enclave would fail AEAD on
+        # read-back anyway — reject here to fail loud.
+        if env["owner_user_id"] != store.user_id:
+            results.append({"type": itype, "id": iid, "status": "error: owner_user_id does not match caller"})
+            continue
+
+        if itype == "chat":
+            status = _rewrap_chat(store, iid, env)
+            if status == "ok":
+                chat_dirty = True
+            results.append({"type": "chat", "id": iid, "status": status})
+        else:  # memory
+            if moments is None:
+                moments = _load_moments(store)
+            status = _rewrap_memory_inplace(moments, iid, env)
+            if status == "ok":
+                memory_dirty = True
+            results.append({"type": "memory", "id": iid, "status": status})
+
+    if chat_dirty:
+        with store.chat_lock:
+            store._persist_chat()
+    if memory_dirty and moments is not None:
+        _save_moments(store, moments)
+
+    return jsonify({"results": results, "summary": _rewrap_summary(results)})
+
+
+def _rewrap_envelope_missing(env) -> list:
+    if not isinstance(env, dict):
+        return ["envelope"]
+    return [f for f in ("body_ct", "nonce", "K_user", "visibility", "owner_user_id") if not env.get(f)]
+
+
+def _rewrap_summary(results: list) -> dict:
+    summary = {"ok": 0, "already_v1": 0, "not_found": 0, "error": 0, "total": len(results)}
+    for r in results:
+        status = r.get("status", "")
+        if status == "ok":
+            summary["ok"] += 1
+        elif status == "already_v1":
+            summary["already_v1"] += 1
+        elif status == "not_found":
+            summary["not_found"] += 1
+        else:
+            summary["error"] += 1
+    return summary
+
+
+def _rewrap_chat(store: "UserStore", msg_id: str, env: dict) -> str:
+    """Replace a chat message's v0 plaintext with v1 envelope fields.
+    Preserves id/role/ts/source. Idempotent when message is already v1.
+    """
+    with store.chat_lock:
+        for msg in store.chat_messages:
+            if msg.get("id") != msg_id:
+                continue
+            if int(msg.get("v", 0)) >= 1:
+                return "already_v1"
+            # Strip the old plaintext field and swap in envelope fields.
+            msg.pop("content", None)
+            msg["v"] = int(env.get("v", 1))
+            msg["body_ct"] = env["body_ct"]
+            msg["nonce"] = env["nonce"]
+            msg["K_user"] = env["K_user"]
+            if env.get("K_enclave"):
+                msg["K_enclave"] = env["K_enclave"]
+            msg["enclave_pk_fpr"] = env.get("enclave_pk_fpr", "")
+            msg["visibility"] = env["visibility"]
+            msg["owner_user_id"] = env["owner_user_id"]
+            return "ok"
+    return "not_found"
+
+
+def _rewrap_memory_inplace(moments: list, mom_id: str, env: dict) -> str:
+    """Replace a memory moment's v0 plaintext with v1 envelope fields.
+    Preserves id/occurred_at/created_at/source. Idempotent on v1 items.
+    """
+    for m in moments:
+        if m.get("id") != mom_id:
+            continue
+        if int(m.get("v", 0)) >= 1:
+            return "already_v1"
+        m.pop("title", None)
+        m.pop("description", None)
+        m.pop("type", None)
+        m["v"] = int(env.get("v", 1))
+        m["body_ct"] = env["body_ct"]
+        m["nonce"] = env["nonce"]
+        m["K_user"] = env["K_user"]
+        if env.get("K_enclave"):
+            m["K_enclave"] = env["K_enclave"]
+        m["enclave_pk_fpr"] = env.get("enclave_pk_fpr", "")
+        m["visibility"] = env["visibility"]
+        m["owner_user_id"] = env["owner_user_id"]
+        return "ok"
+    return "not_found"
 
 
 @app.route("/healthz", methods=["GET"])

@@ -25,9 +25,15 @@ struct FeedlingTestApp: App {
                     //    encryption (Keychain-backed, lives forever)
                     // 3. pull the enclave's attestation + content pubkey so
                     //    outgoing chat/memory writes can be encrypted to it
+                    // 4. silent re-wrap of any pre-Phase-A v0 rows into v1
+                    //    envelopes. Gated on a UserDefaults flag so it only
+                    //    runs once. Non-blocking — nothing on screen
+                    //    depends on completion.
                     await FeedlingAPI.shared.ensureRegisteredIfCloud()
+                    await FeedlingAPI.shared.ensureUserIdIfNeeded()
                     FeedlingAPI.shared.ensureContentKeypair()
                     await FeedlingAPI.shared.refreshEnclaveAttestation()
+                    await FeedlingAPI.shared.runSilentV1MigrationIfNeeded()
                 }
                 .onOpenURL { url in
                     guard url.scheme == "feedlingtest" else { return }
