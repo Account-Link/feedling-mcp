@@ -144,3 +144,28 @@ jobs:
 
       - name: Compile all Python
         run: python -m compileall -q backend tools 2>/dev/null || python -m compileall -q backend
+
+  # -------------------------------------------------------------------------
+  # DCAP parser — Python reference tests
+  # -------------------------------------------------------------------------
+  dcap-python:
+    name: DCAP parser (python reference)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run parser tests
+        run: cd tools/dcap && python3 -m unittest test_dcap_parse.py -v
+
+  # -------------------------------------------------------------------------
+  # DCAP parser — Swift package tests (runs on macOS)
+  # -------------------------------------------------------------------------
+  dcap-swift:
+    name: DCAP parser (swift package)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: swift test
+        run: cd ios/FeedlingDCAP && swift test --parallel
