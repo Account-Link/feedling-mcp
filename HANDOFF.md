@@ -24,9 +24,12 @@ Whoever picks this up next — start here.
   - *Still plaintext*: `feedling.identity.nudge` (mutate-in-place),
     `feedling.chat.post_message` (agent→user reply). Both pending Phase C
     (MCP-in-TEE) because they need decrypt→mutate→rewrap semantics.
-  - *Not yet re-wrapped*: any pre-Phase-A v0 data on disk. Migration to
-    v1 is the open A.6 work (iOS-driven, silent on first post-update launch,
-    per `docs/NEXT.md`).
+  - *Not yet re-wrapped*: any pre-Phase-A v0 data on disk — **migration
+    code now live (A.6), runs silently on the next iOS launch**. Live
+    endpoint: `POST /v1/content/rewrap` on the CVM (idempotent,
+    batched). Exactly one production user to verify against (noted in
+    task #23); once her migration completes, v0 accept paths + the
+    rewrap endpoint itself get stripped.
 - **Key rotation observation worth knowing**: Phala dstack-KMS derives
   per-app keys from `(kms_root, app_id, path)`, not from `compose_hash`.
   That means `enclave_content_pk` and the enclave-TLS cert stay stable
