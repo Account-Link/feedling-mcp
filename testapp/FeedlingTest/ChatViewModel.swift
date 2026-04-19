@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SwiftUI
 
@@ -33,6 +34,22 @@ class ChatViewModel: ObservableObject {
 
     // MARK: - Fetch
 
+    /// Load user_content_sk from Keychain once per poll cycle. iOS has it
+    /// locally so we can decrypt v1 envelopes client-side without going
+    /// through the enclave.
+    private func contentSK() -> Curve25519.KeyAgreement.PrivateKey? {
+        do {
+            return try ContentKeyStore.shared.loadPrivateKey()
+        } catch {
+            return nil
+        }
+    }
+
+    private func decryptBatch(_ msgs: [ChatMessage]) -> [ChatMessage] {
+        guard let sk = contentSK() else { return msgs }
+        return msgs.map { $0.decryptedIfNeeded(withUserSK: sk) }
+    }
+
     func loadHistory() async {
         // Pull a larger initial window so user messages are not drowned by
         // assistant-only bursts (e.g. replayed auto-replies).
@@ -43,7 +60,7 @@ class ChatViewModel: ObservableObject {
         do {
             let (data, _) = try await URLSession.shared.data(for: req)
             let resp = try JSONDecoder().decode(ChatHistoryResponse.self, from: data)
-            messages = resp.messages
+            messages = decryptBatch(resp.messages)
             latestTs = messages.last?.ts ?? 0
             let roleCounts = Dictionary(grouping: messages, by: { $0.role }).mapValues { $0.count }
             print("[chat] loadHistory count=\(messages.count) roles=\(roleCounts)")
@@ -59,7 +76,8 @@ class ChatViewModel: ObservableObject {
         ) else { return }
         do {
             let (data, _) = try await URLSession.shared.data(for: req)
-            let resp = try JSONDecoder().decode(ChatHistoryResponse.self, from: data)
+            let rawResp = try JSONDecoder().decode(ChatHistoryResponse.self, from: data)
+            let resp = ChatHistoryResponse(messages: decryptBatch(rawResp.messages), total: rawResp.total)
             // Only process OpenClaw messages via polling.
             // User messages are inserted optimistically — ignoring server echoes prevents duplicates.
             let newFromOpenClaw = resp.messages.filter { m in
@@ -94,7 +112,10 @@ class ChatViewModel: ObservableObject {
             role: "user",
             content: text,
             ts: Date().timeIntervalSince1970,
-            source: "chat"
+            source: "chat",
+            v: nil, body_ct: nil, nonce: nil,
+            K_user: nil, K_enclave: nil,
+            visibility: nil, owner_user_id: nil
         )
         messages.append(optimistic)
         latestTs = optimistic.ts

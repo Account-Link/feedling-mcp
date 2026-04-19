@@ -247,9 +247,11 @@ final class FeedlingAPI: ObservableObject {
     /// URL for the /attestation endpoint. Defaults to the cloud MCP host;
     /// in self-hosted mode it swaps to the user's own.
     private var attestationURL: URL? {
+        if let override = ProcessInfo.processInfo.environment["FEEDLING_ATTESTATION_URL"],
+           let u = URL(string: override) {
+            return u
+        }
         if storageMode == .selfHosted {
-            // Self-hosted users point baseURL at api.<their-domain>; the
-            // enclave sits on mcp.<their-domain> by convention.
             let mcp = baseURL.replacingOccurrences(of: "api.", with: "mcp.")
             return URL(string: "\(mcp)/attestation")
         }
