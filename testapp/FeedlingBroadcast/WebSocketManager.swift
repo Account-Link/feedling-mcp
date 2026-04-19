@@ -84,6 +84,20 @@ final class WebSocketManager: NSObject {
         }
     }
 
+    /// Send an arbitrary JSON-encodable dictionary. Used by the v1
+    /// envelope path — the envelope is assembled in FrameEnvelope and
+    /// doesn't fit into IngestFramePayload's schema.
+    @discardableResult
+    func sendJSON(_ object: [String: Any]) -> Bool {
+        queue.sync {
+            guard isConnected, let task = webSocketTask,
+                  let data = try? JSONSerialization.data(withJSONObject: object),
+                  let text = String(data: data, encoding: .utf8) else { return false }
+            task.send(.string(text)) { _ in }
+            return true
+        }
+    }
+
     var connected: Bool { queue.sync { isConnected } }
 
     private func openSocket(url: URL) {

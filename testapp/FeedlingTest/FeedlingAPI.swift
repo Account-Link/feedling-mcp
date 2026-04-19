@@ -265,12 +265,34 @@ final class FeedlingAPI: ObservableObject {
     /// Load (or lazily generate) the user's long-lived content keypair.
     /// Backed by Keychain entries distinct from the identity keypair.
     func ensureContentKeypair() {
-        if userContentPublicKey != nil { return }
+        if userContentPublicKey != nil {
+            publishContentKeysToAppGroup()
+            return
+        }
         do {
             let sk = try ContentKeyStore.shared.ensureContentKeypair()
             userContentPublicKey = sk.publicKey
+            publishContentKeysToAppGroup()
         } catch {
             print("[content-keypair] failed to load/generate: \(error)")
+        }
+    }
+
+    /// Publish the content pubkeys + user_id to the shared App Group
+    /// UserDefaults so the broadcast extension can build v1 envelopes
+    /// around frame payloads. Only public info is shared — the user's
+    /// content private key stays in the main app's Keychain.
+    /// See FeedlingBroadcast/FrameEnvelope.swift for the reader side.
+    func publishContentKeysToAppGroup() {
+        guard let shared = UserDefaults(suiteName: "group.com.feedling.mcp") else { return }
+        shared.set(userId, forKey: "feedling.userID")
+        if let pk = userContentPublicKey {
+            shared.set(pk.rawRepresentation.base64EncodedString(),
+                       forKey: "feedling.userContentPublicKey")
+        }
+        if let pk = enclaveContentPublicKey {
+            shared.set(pk.rawRepresentation.base64EncodedString(),
+                       forKey: "feedling.enclaveContentPublicKey")
         }
     }
 
@@ -295,6 +317,7 @@ final class FeedlingAPI: ObservableObject {
             self.enclaveContentPublicKey = pk
             self.enclaveComposeHash = b.compose_hash
             self.enclaveMRTD = b.measurements?.mrtd
+            publishContentKeysToAppGroup()
             print("[attestation] refreshed: compose_hash=\(b.compose_hash?.prefix(16) ?? "nil")…")
         } catch {
             print("[attestation] refresh failed: \(error)")

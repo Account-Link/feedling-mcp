@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		0C85193D472663A67369BAB1 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D833B2E56FA8C84DA0950F72 /* ChatView.swift */; };
+		0CEE44CF96B770CC31DC1076 /* FrameEnvelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4454ED28BF794E7F9872A64 /* FrameEnvelope.swift */; };
 		12A04CB5B88BD594DB35E87A /* EventLogReplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60A34364A5493B52BCEC8FFB /* EventLogReplay.swift */; };
 		17B110E5A293426BC46750B6 /* ScreenActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 059AB22EE40CB3F08CADCAE2 /* ScreenActivityAttributes.swift */; };
 		2D6C4681A184D00774C9AAD3 /* SampleHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8585B7EF732F6D6EF2D5BEE6 /* SampleHandler.swift */; };
@@ -112,6 +113,7 @@
 		DC254589B7C9DE146214048D /* IntelSGXRootCA.der */ = {isa = PBXFileReference; lastKnownFileType = None; name = IntelSGXRootCA.der; path = FeedlingTest/DCAP/IntelSGXRootCA.der; sourceTree = SOURCE_ROOT; };
 		DEE35E8B1037B48E755426C1 /* ChatMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMessage.swift; sourceTree = "<group>"; };
 		E399D1BD2C8215413FDD2675 /* FeedlingTest.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FeedlingTest.entitlements; sourceTree = "<group>"; };
+		E4454ED28BF794E7F9872A64 /* FrameEnvelope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = FrameEnvelope.swift; path = FeedlingBroadcast/FrameEnvelope.swift; sourceTree = SOURCE_ROOT; };
 		E760771C17EAF8147D096B4E /* LiveActivityManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityManager.swift; sourceTree = "<group>"; };
 		E807384089044501BDD54BFA /* FeedlingTestWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedlingTestWidgetBundle.swift; sourceTree = "<group>"; };
 		ED7965843E2AE2F74B88A5FC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -187,6 +189,7 @@
 				EFC04E45A4517F7284A87DB7 /* ContentEncryption.swift */,
 				F838482FB88280B0AB365FC0 /* AuditCardView.swift */,
 				60A34364A5493B52BCEC8FFB /* EventLogReplay.swift */,
+				E4454ED28BF794E7F9872A64 /* FrameEnvelope.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -354,6 +357,7 @@
 				2D6C4681A184D00774C9AAD3 /* SampleHandler.swift in Sources */,
 				61F24F4911D4423B125600EF /* SharedConfig.swift in Sources */,
 				56BEDBB90CCEE5017A47D79C /* WebSocketManager.swift in Sources */,
+				0CEE44CF96B770CC31DC1076 /* FrameEnvelope.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
