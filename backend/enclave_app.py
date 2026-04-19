@@ -59,9 +59,14 @@ from dstack_sdk import DstackClient
 
 # For local dev we point at the simulator; in a real CVM, dstack-sdk defaults
 # to /var/run/dstack.sock inside the container.
-SIMULATOR_ENDPOINT = os.environ.get("DSTACK_SIMULATOR_ENDPOINT", "")
-if SIMULATOR_ENDPOINT and not os.environ.get("DSTACK_SIMULATOR_ENDPOINT"):
-    os.environ["DSTACK_SIMULATOR_ENDPOINT"] = SIMULATOR_ENDPOINT
+#
+# dstack-sdk checks `"DSTACK_SIMULATOR_ENDPOINT" in os.environ` — presence,
+# not truthiness. An env var set to "" counts as present and makes the SDK
+# try to connect to "" (EINVAL). Drop it if it's empty so the SDK falls
+# through to /var/run/dstack.sock. A non-empty value means "I really do
+# want the simulator" and stays put.
+if os.environ.get("DSTACK_SIMULATOR_ENDPOINT", "") == "":
+    os.environ.pop("DSTACK_SIMULATOR_ENDPOINT", None)
 
 ENCLAVE_PORT = int(os.environ.get("FEEDLING_ENCLAVE_PORT", 5003))
 
