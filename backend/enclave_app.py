@@ -382,12 +382,19 @@ def _decrypt_envelope(env: dict, authorized_user_id: str, content_sk: nacl.publi
 
 
 # ---------------------------------------------------------------------------
-# /v2 tool handlers — agent-facing decrypt-and-serve
+# Agent-facing decrypt-and-serve handlers.
+#
+# These live at the SAME path as Flask's versions (/v1/chat/history,
+# /v1/memory/list, /v1/identity/get) — Flask and the enclave are different
+# services at different origins. Flask returns opaque envelopes; the enclave
+# returns decrypted plaintext. Agents talk to the enclave; iOS + other
+# internals talk to Flask. No "v2 API" — just a different service at the
+# same path.
 # ---------------------------------------------------------------------------
 
 
-@app.route("/v2/chat/get_history", methods=["GET"])
-def v2_chat_get_history():
+@app.route("/v1/chat/history", methods=["GET"])
+def v1_chat_history():
     """Decrypt-and-serve chat history for the authenticated user.
 
     Query params:
@@ -498,8 +505,8 @@ def v2_chat_get_history():
     })
 
 
-@app.route("/v2/memory/list", methods=["GET"])
-def v2_memory_list():
+@app.route("/v1/memory/list", methods=["GET"])
+def v1_memory_list():
     """Decrypt-and-serve memory garden for the authenticated user.
 
     Query params:
@@ -586,8 +593,8 @@ def v2_memory_list():
     })
 
 
-@app.route("/v2/identity/get", methods=["GET"])
-def v2_identity_get():
+@app.route("/v1/identity/get", methods=["GET"])
+def v1_identity_get():
     """Decrypt-and-serve the identity card for the authenticated user.
 
     Returns the same shape as /v1/identity/get (agent_name, self_introduction,

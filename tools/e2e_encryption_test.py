@@ -6,7 +6,7 @@ Spins up Flask backend + enclave service against the dstack simulator,
 registers a user, generates a client-side content keypair, encrypts a
 message per docs/DESIGN_E2E.md §3.2 (double-wrap + AEAD aad binding),
 POSTs it via /v1/chat/message, then fetches it back through the enclave's
-/v2/chat/get_history and verifies the plaintext round-trips. Plus
+/v1/chat/history and verifies the plaintext round-trips. Plus
 negative tests: cross-user aad substitution rejected, missing K_enclave
 for shared rejected, local_only surfaces as placeholder.
 
@@ -253,8 +253,8 @@ def main():
         check("POST v1 envelope 200", r.status_code == 200)
         check("server returns v=1", r.status_code == 200 and r.json().get("v") == 1)
 
-        section("Enclave /v2/chat/get_history decrypts + returns plaintext")
-        r = requests.get("http://127.0.0.1:5003/v2/chat/get_history",
+        section("Enclave /v1/chat/history decrypts + returns plaintext")
+        r = requests.get("http://127.0.0.1:5003/v1/chat/history",
                          headers={"X-API-Key": api_key}, timeout=10)
         check("enclave v2 returns 200", r.status_code == 200, r.text[:200])
         if r.status_code == 200:
@@ -281,7 +281,7 @@ def main():
                           headers={"X-API-Key": api_key},
                           json={"envelope": env_lo}, timeout=5)
         check("POST local_only 200", r.status_code == 200)
-        r = requests.get("http://127.0.0.1:5003/v2/chat/get_history",
+        r = requests.get("http://127.0.0.1:5003/v1/chat/history",
                          headers={"X-API-Key": api_key}, timeout=10)
         body = r.json()
         lo_items = [m for m in body["messages"] if m.get("visibility") == "local_only"]
@@ -316,7 +316,7 @@ def main():
         check("spoofed envelope accepted by backend (Flask doesn't validate crypto)",
               r.status_code == 200)
         # Now the enclave should fail AEAD verification when user2 reads back.
-        r = requests.get("http://127.0.0.1:5003/v2/chat/get_history",
+        r = requests.get("http://127.0.0.1:5003/v1/chat/history",
                          headers={"X-API-Key": user2_key}, timeout=10)
         body = r.json()
         spoofed = [m for m in body["messages"] if m.get("v") == 1]
@@ -324,7 +324,7 @@ def main():
               any("error:" in (m.get("decrypt_status") or "") for m in spoofed))
         check("decrypt_errors non-empty", len(body.get("decrypt_errors", [])) > 0)
 
-        section("Memory garden: encrypted round-trip via /v2/memory/list")
+        section("Memory garden: encrypted round-trip via /v1/memory/list")
         # Build a memory envelope. body = JSON {title, description, type}
         mem_plain = {"title": "第一次聊到她奶奶",
                      "description": "她说起奶奶做的包子，停顿了很久。",
@@ -352,9 +352,9 @@ def main():
                           json={"envelope": mem_env}, timeout=5)
         check("POST memory v1 envelope 200", r.status_code == 201,
               f"{r.status_code}: {r.text[:120]}")
-        r = requests.get("http://127.0.0.1:5003/v2/memory/list",
+        r = requests.get("http://127.0.0.1:5003/v1/memory/list",
                          headers={"X-API-Key": api_key}, timeout=10)
-        check("enclave /v2/memory/list 200", r.status_code == 200)
+        check("enclave /v1/memory/list 200", r.status_code == 200)
         if r.status_code == 200:
             body = r.json()
             ours = [m for m in body.get("moments", []) if m.get("id") == mem_id]
@@ -366,7 +366,7 @@ def main():
                 check("memory occurred_at preserved as metadata",
                       ours[0].get("occurred_at") == "2025-11-03T14:00:00")
 
-        section("Identity: encrypted round-trip via /v2/identity/get")
+        section("Identity: encrypted round-trip via /v1/identity/get")
         # Fresh user so identity isn't already set.
         u3 = requests.post("http://127.0.0.1:5001/v1/users/register", json={}, timeout=5).json()
         user3_id = u3["user_id"]; user3_key = u3["api_key"]
@@ -398,9 +398,9 @@ def main():
                           json={"envelope": id_env}, timeout=5)
         check("POST identity v1 envelope 201", r.status_code == 201,
               f"{r.status_code}: {r.text[:120]}")
-        r = requests.get("http://127.0.0.1:5003/v2/identity/get",
+        r = requests.get("http://127.0.0.1:5003/v1/identity/get",
                          headers={"X-API-Key": user3_key}, timeout=10)
-        check("enclave /v2/identity/get 200", r.status_code == 200)
+        check("enclave /v1/identity/get 200", r.status_code == 200)
         if r.status_code == 200:
             ident = r.json().get("identity")
             check("identity decrypted ok",
@@ -412,11 +412,11 @@ def main():
                       len(ident.get("dimensions", [])) == 5)
 
         section("Negative: unauth hits 401")
-        r = requests.get("http://127.0.0.1:5003/v2/chat/get_history", timeout=5)
+        r = requests.get("http://127.0.0.1:5003/v1/chat/history", timeout=5)
         check("no api_key → 401 (chat)", r.status_code == 401)
-        r = requests.get("http://127.0.0.1:5003/v2/memory/list", timeout=5)
+        r = requests.get("http://127.0.0.1:5003/v1/memory/list", timeout=5)
         check("no api_key → 401 (memory)", r.status_code == 401)
-        r = requests.get("http://127.0.0.1:5003/v2/identity/get", timeout=5)
+        r = requests.get("http://127.0.0.1:5003/v1/identity/get", timeout=5)
         check("no api_key → 401 (identity)", r.status_code == 401)
 
         section("Summary")

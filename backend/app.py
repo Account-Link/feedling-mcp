@@ -1453,7 +1453,7 @@ def chat_message():
                         "K_enclave":..., "enclave_pk_fpr":..., "visibility":"shared",
                         "owner_user_id":"usr_..."}}
     The server never decrypts the envelope — it is stored verbatim and
-    later surfaced by the enclave's /v2/* handlers.
+    later surfaced by the enclave's /v1/* (enclave) handlers.
     """
     store = require_user()
     payload = request.get_json(silent=True) or {}

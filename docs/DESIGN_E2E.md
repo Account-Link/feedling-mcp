@@ -956,7 +956,7 @@ buildable from the pinned git commit. No content encryption yet.
       with AEAD additional-data = `owner_user_id || v || id`.
 - [ ] Flask: accept both plaintext (v0, legacy) and ciphertext (v1) forms on
       writes during the migration window. Store whichever arrived.
-- [ ] Enclave: `/v2/*` tool handlers that unseal `K_enclave`, decrypt with
+- [ ] Enclave: `/v1/* (enclave)` tool handlers that unseal `K_enclave`, decrypt with
       AEAD-aad set to the authorized user_id, and refuse if aad ≠ that
       user_id. v0 requests continue to flow through Flask-direct.
 - [ ] Audit `deploy/docker-compose.yaml` against §7.2 env-var hygiene rules.
