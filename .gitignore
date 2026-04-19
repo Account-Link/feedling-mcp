@@ -1,1 +1,19 @@
 backend/__pycache__/
+**/__pycache__/
+
+# Foundry build artifacts — contracts/lib is a vendored dep we do commit
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+
+# Local env files
+.env
+deploy/.env
+contracts/.env
+
+# macOS
+.DS_Store
+
+# Xcode
+testapp/FeedlingTest.xcodeproj/xcuserdata/
+testapp/FeedlingTest.xcodeproj/project.xcworkspace/xcuserdata/
