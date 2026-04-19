@@ -53,7 +53,7 @@ feedling-mcp-v1/
 
 **Pending**
 - [ ] HTTPS + DNS for `api.feedling.app` + `mcp.feedling.app`
-- [ ] End-to-end encryption of stored user content — designed in `docs/DESIGN_E2E.md` v0.3 (Phala dstack TDX + per-user-keypair-on-iOS + double-wrap + AEAD user_id binding + on-chain AppAuth on Base L2 for authorization & transparency; iOS runs `is-this-real-tea` audit on-device every session); ~6–7 weeks, targets ERC-733 Stage 1 DevProof
+- [ ] End-to-end encryption of stored user content — designed in `docs/DESIGN_E2E.md` v0.3 (Phala dstack TDX + per-user-keypair-on-iOS + double-wrap + AEAD user_id binding + on-chain AppAuth on Base L2 for authorization & transparency; iOS runs `is-this-real-tea` audit on-device every session); ~6–7 weeks
 - [ ] Claude.ai connector submission
 
 ---

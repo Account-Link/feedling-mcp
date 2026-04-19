@@ -376,10 +376,9 @@ All 30 tests should pass before merging anything.
 
 ## After Steps 1–5: the E2E + TEE phase
 
-`docs/DESIGN_E2E.md` (v0.3, decisions locked, targets ERC-733 Stage 1
-DevProof) specifies how we get from "multi-tenant plaintext backend" to
-"Feedling operationally cannot read your data and silent code updates are
-impossible."  Summary:
+`docs/DESIGN_E2E.md` (v0.3, decisions locked) specifies how we get from
+"multi-tenant plaintext backend" to "Feedling operationally cannot read
+your data and silent code updates are impossible." Summary:
 
 - User-generated content keypair on iOS + enclave-generated content keypair.
 - Every content item is wrapped under a random symmetric key; that key is

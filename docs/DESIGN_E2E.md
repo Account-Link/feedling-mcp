@@ -824,10 +824,11 @@ contract FeedlingAppAuth {
 }
 ```
 
-Per dstack-tutorial/05, no timelock in v1. Upgrading to Stage 1.5 later
-is a one-line change (add `uint64 activatesAt` and enforce `block.timestamp
->= activatesAt` in `isAppAllowed`). We leave the door open without shipping
-the governance now.
+Per dstack-tutorial/05, no timelock in v1. Adding one later is a one-line
+change (add `uint64 activatesAt` and enforce `block.timestamp >= activatesAt`
+in `isAppAllowed`). We leave the door open without shipping the governance
+now. Similarly, moving `owner` from an EOA to a multisig contract is a
+drop-in change when we outgrow single-key authority.
 
 Cost per release: one `addComposeHash` transaction, ~$0.05 on Base L2.
 
@@ -1320,16 +1321,8 @@ The audit tool will check, and we commit to passing all of these:
 - Audit tool: https://github.com/sxysun/is-this-real-tea
 - Pattern we follow: [`dstack-tutorial/05-onchain-authorization`](https://github.com/amiller/dstack-tutorial/tree/main/05-onchain-authorization)
 - Reference values explanation: [`dstack-tutorial/01-attestation-and-reference-values`](https://github.com/amiller/dstack-tutorial/tree/main/01-attestation-and-reference-values)
-- ERC-733 stages framework: https://draftv4.erc733.org
 
-### 14.4 What DevProof stage we claim
-
-Per the ERC-733 framework: **Stage 1 (DevProof), without timelock.**
-Upgrade path to Stage 1.5 (with timelock) and Stage 2 (with multisig /
-DAO-governed AppAuth owner) is a one-contract-edit away; we'll move up
-when the product demands it.
-
-### 14.5 Scope of our claim
+### 14.4 Scope of our claim
 
 We claim:
 
@@ -1372,9 +1365,7 @@ not promise.
   - §01 attestation-and-reference-values — framing RTMR3 / compose_hash
   - §02 bitrot-and-reproducibility — reproducible builds
   - §05 onchain-authorization — AppAuth + DstackKms delegation (our §7.3)
-  - §08 extending-appauth — timelocks / multi-vendor (our Stage 1.5 / 2
-    upgrade path)
-- ERC-733 draft: <https://draftv4.erc733.org>
+  - §08 extending-appauth — timelocks + multi-vendor (future upgrade path)
 - Intel TDX attestation spec: <https://cdrdv2-public.intel.com/726790>
 - libsodium sealed boxes: <https://doc.libsodium.org/public-key_cryptography/sealed_boxes>
 - libsodium AEAD (XChaCha20-Poly1305): <https://doc.libsodium.org/secret-key_cryptography/aead>
