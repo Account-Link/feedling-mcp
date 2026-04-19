@@ -46,6 +46,26 @@ Flip-to-multi-tenant plan (when iOS app with registration client ships):
 | Purpose | Phase 1 integration testing only. Not yet on Base — we deployed where the test wallet happened to be funded. Will be re-deployed to Base Sepolia before Phase 2 to match production chain choice per `docs/DESIGN_E2E.md` §12.14. |
 | Deployer key status | **Throwaway. Rotate before any Phase 2 work.** The private key was pasted in a chat transcript (Apr 19, 2026) and must not be reused for anything that holds real value. |
 
+### Phase 2 TDX CVM (provisioning, 2026-04-20)
+
+| | |
+|---|---|
+| Provider | Phala Cloud (dstack-dev-0.5.8, Intel TDX) |
+| Name | `feedling-enclave` |
+| App ID | `app_051a174f2457a6c474680a5d745372398f97b6ad` |
+| VM UUID | `4386636e-1325-4b92-99d8-f2ca00befdb4` |
+| Instance | tdx.small (1 vCPU, 2 GB RAM, 20 GB disk) |
+| Compose | `deploy/docker-compose.phala.yaml` @ commit `d8737a3` |
+| Image | `ghcr.io/account-link/feedling:d8737a3` |
+| Dashboard | https://cloud.phala.com/dashboard/cvms/4386636e-1325-4b92-99d8-f2ca00befdb4 |
+| Purpose | First-ever Feedling deployment onto a real TDX CVM. Pairs with the iOS audit card — once running, its `/attestation` provides the `compose_hash`, `mrtd`, `rtmr3`, and event log that the audit card replays. |
+
+**Action items before this CVM is usable end-to-end:**
+- [ ] Make `ghcr.io/account-link/feedling` package **public** (Org Settings → Packages → feedling → Change visibility). Currently private; needed for third-party reproducible-build verification.
+- [ ] Wait for CVM to reach `running` status (`phala cvms get feedling-enclave`), capture its public hostname.
+- [ ] Run `deploy/publish-compose-hash.sh eth_sepolia` with `FEEDLING_COMPOSE_FILE=deploy/docker-compose.phala.yaml` to publish the new compose_hash on FeedlingAppAuth.
+- [ ] Update `FeedlingAPI.swift` attestationURL default to the CVM hostname (or leave the env-var override and set via TestFlight config).
+
 ## Planned
 
 ### Phase 2 pre-prod

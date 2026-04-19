@@ -1,0 +1,87 @@
+# Feedling — Phala TDX CVM compose.
+#
+# This compose runs inside a Phala dstack CVM. The compose_hash of this
+# file is what the on-chain FeedlingAppAuth contract authorizes and what
+# iOS's audit card replays out of RTMR3.
+#
+# Run locally first to confirm healthy:
+#   docker compose -f deploy/docker-compose.phala.yaml pull
+#   docker compose -f deploy/docker-compose.phala.yaml up -d
+#
+# Deploy to Phala:
+#   phala deploy -c deploy/docker-compose.phala.yaml -n feedling-enclave
+#
+# After deploy:
+#   1. Read CVM's public URL from `phala cvms get <name>`
+#   2. Compute compose_hash with deploy/publish-compose-hash.sh
+#   3. Publish hash on-chain via FeedlingAppAuth.addComposeHash
+#   4. Point iOS app's enclave URL at the CVM (Settings or env var)
+#
+# CRITICAL: every literal in this file becomes part of the compose_hash.
+# Any ${VAR} below must be category (A) — cosmetic / non-security.
+# See deploy/docker-compose.yaml for the full env-var hygiene rules.
+
+name: feedling-enclave
+
+services:
+  enclave:
+    image: ghcr.io/account-link/feedling:d8737a3
+    command: ["python", "-u", "backend/enclave_app.py"]
+    restart: unless-stopped
+    environment:
+      # --- BAKED: security-relevant ---
+      FEEDLING_ENCLAVE_PORT: "5003"
+      FEEDLING_DATA_DIR: "/data"
+      # dstack inside the CVM exposes its socket here
+      DSTACK_SIMULATOR_ENDPOINT: ""
+    ports:
+      - "5003:5003"
+    volumes:
+      - feedling_enclave_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:5003/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  backend:
+    image: ghcr.io/account-link/feedling:d8737a3
+    command: ["python", "-u", "backend/app.py"]
+    restart: unless-stopped
+    environment:
+      SINGLE_USER: "false"
+      FEEDLING_API_KEY: ""
+      FEEDLING_DATA_DIR: "/data"
+      FEEDLING_WS_PORT: "9998"
+      FEEDLING_ENCLAVE_URL: "http://enclave:5003"
+    ports:
+      - "5001:5001"
+      - "9998:9998"
+    volumes:
+      - feedling_backend_data:/data
+    depends_on:
+      enclave:
+        condition: service_healthy
+
+  mcp:
+    image: ghcr.io/account-link/feedling:d8737a3
+    command: ["python", "-u", "backend/mcp_server.py"]
+    restart: unless-stopped
+    environment:
+      SINGLE_USER: "false"
+      FEEDLING_API_KEY: ""
+      FEEDLING_FLASK_URL: "http://backend:5001"
+      FEEDLING_MCP_PORT: "5002"
+      FEEDLING_MCP_TRANSPORT: "sse"
+    ports:
+      - "5002:5002"
+    depends_on:
+      backend:
+        condition: service_started
+
+volumes:
+  feedling_enclave_data:
+    name: feedling_enclave_data
+  feedling_backend_data:
+    name: feedling_backend_data
