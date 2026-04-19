@@ -324,9 +324,100 @@ def main():
               any("error:" in (m.get("decrypt_status") or "") for m in spoofed))
         check("decrypt_errors non-empty", len(body.get("decrypt_errors", [])) > 0)
 
+        section("Memory garden: encrypted round-trip via /v2/memory/list")
+        # Build a memory envelope. body = JSON {title, description, type}
+        mem_plain = {"title": "第一次聊到她奶奶",
+                     "description": "她说起奶奶做的包子，停顿了很久。",
+                     "type": "温柔时刻"}
+        mem_body = json.dumps(mem_plain, ensure_ascii=False).encode("utf-8")
+        K_m = secrets.token_bytes(32); nonce_m = secrets.token_bytes(24)
+        mem_id = f"mom_{secrets.token_hex(6)}"
+        aad_m = build_aead_aad(user_id, 1, mem_id)
+        mem_ct = nacl.bindings.crypto_aead_xchacha20poly1305_ietf_encrypt(
+            mem_body, aad_m, nonce_m, K_m)
+        mem_env = {
+            "id": mem_id,
+            "body_ct": b64(mem_ct),
+            "nonce": b64(nonce_m),
+            "K_user": b64(nacl.public.SealedBox(user_pk).encrypt(K_m)),
+            "K_enclave": b64(nacl.public.SealedBox(enclave_pk).encrypt(K_m)),
+            "enclave_pk_fpr": enclave_pk.encode()[:16].hex(),
+            "visibility": "shared",
+            "owner_user_id": user_id,
+            "occurred_at": "2025-11-03T14:00:00",
+            "source": "bootstrap",
+        }
+        r = requests.post("http://127.0.0.1:5001/v1/memory/add",
+                          headers={"X-API-Key": api_key},
+                          json={"envelope": mem_env}, timeout=5)
+        check("POST memory v1 envelope 200", r.status_code == 201,
+              f"{r.status_code}: {r.text[:120]}")
+        r = requests.get("http://127.0.0.1:5003/v2/memory/list",
+                         headers={"X-API-Key": api_key}, timeout=10)
+        check("enclave /v2/memory/list 200", r.status_code == 200)
+        if r.status_code == 200:
+            body = r.json()
+            ours = [m for m in body.get("moments", []) if m.get("id") == mem_id]
+            check("memory decrypted ok", len(ours) == 1 and ours[0].get("decrypt_status") == "ok")
+            if ours:
+                check("memory title round-trips", ours[0].get("title") == mem_plain["title"])
+                check("memory description round-trips",
+                      ours[0].get("description") == mem_plain["description"])
+                check("memory occurred_at preserved as metadata",
+                      ours[0].get("occurred_at") == "2025-11-03T14:00:00")
+
+        section("Identity: encrypted round-trip via /v2/identity/get")
+        # Fresh user so identity isn't already set.
+        u3 = requests.post("http://127.0.0.1:5001/v1/users/register", json={}, timeout=5).json()
+        user3_id = u3["user_id"]; user3_key = u3["api_key"]
+        user3_sk = nacl.public.PrivateKey.generate()
+        user3_pk = user3_sk.public_key
+
+        id_plain = {"agent_name": "Luna",
+                    "self_introduction": "我是 Luna",
+                    "dimensions": [{"name": n, "value": 50, "description": "…"}
+                                   for n in ["好奇", "温柔", "锐利", "稳定", "幽默"]]}
+        id_body = json.dumps(id_plain, ensure_ascii=False).encode("utf-8")
+        K_i = secrets.token_bytes(32); nonce_i = secrets.token_bytes(24)
+        id_id = f"id_{secrets.token_hex(8)}"
+        aad_i = build_aead_aad(user3_id, 1, id_id)
+        id_ct = nacl.bindings.crypto_aead_xchacha20poly1305_ietf_encrypt(
+            id_body, aad_i, nonce_i, K_i)
+        id_env = {
+            "id": id_id,
+            "body_ct": b64(id_ct),
+            "nonce": b64(nonce_i),
+            "K_user": b64(nacl.public.SealedBox(user3_pk).encrypt(K_i)),
+            "K_enclave": b64(nacl.public.SealedBox(enclave_pk).encrypt(K_i)),
+            "enclave_pk_fpr": enclave_pk.encode()[:16].hex(),
+            "visibility": "shared",
+            "owner_user_id": user3_id,
+        }
+        r = requests.post("http://127.0.0.1:5001/v1/identity/init",
+                          headers={"X-API-Key": user3_key},
+                          json={"envelope": id_env}, timeout=5)
+        check("POST identity v1 envelope 201", r.status_code == 201,
+              f"{r.status_code}: {r.text[:120]}")
+        r = requests.get("http://127.0.0.1:5003/v2/identity/get",
+                         headers={"X-API-Key": user3_key}, timeout=10)
+        check("enclave /v2/identity/get 200", r.status_code == 200)
+        if r.status_code == 200:
+            ident = r.json().get("identity")
+            check("identity decrypted ok",
+                  ident and ident.get("decrypt_status") == "ok")
+            if ident:
+                check("identity agent_name round-trips",
+                      ident.get("agent_name") == "Luna")
+                check("identity has 5 dimensions",
+                      len(ident.get("dimensions", [])) == 5)
+
         section("Negative: unauth hits 401")
         r = requests.get("http://127.0.0.1:5003/v2/chat/get_history", timeout=5)
-        check("no api_key → 401", r.status_code == 401)
+        check("no api_key → 401 (chat)", r.status_code == 401)
+        r = requests.get("http://127.0.0.1:5003/v2/memory/list", timeout=5)
+        check("no api_key → 401 (memory)", r.status_code == 401)
+        r = requests.get("http://127.0.0.1:5003/v2/identity/get", timeout=5)
+        check("no api_key → 401 (identity)", r.status_code == 401)
 
         section("Summary")
         if _failures:

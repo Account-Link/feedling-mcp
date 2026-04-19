@@ -20,6 +20,48 @@
 #   When the E2E phase ships, the `mcp` service here gets replaced by a
 #   dstack-deployed CVM. This compose file will continue to run the `backend`
 #   service on the non-TEE host. No rewrite; the mcp block just moves out.
+#
+# -----------------------------------------------------------------------------
+# § ENV-VAR HYGIENE AUDIT (see docs/DESIGN_E2E.md §7.2, §12.11)
+# -----------------------------------------------------------------------------
+# The compose_hash we publish on-chain via FeedlingAppAuth is SHA-256 of this
+# literal file. Any ${VAR}-interpolated value changes what runs without
+# changing the hash — which is exactly the "operator can redirect data" rug
+# vector is-this-real-tea flags. So every ${VAR} below must fall into one of
+# three categories:
+#
+#   (A) NOT security-relevant — purely timing / volume / cosmetic; operator
+#       can tune without changing trust posture. Documented per-var.
+#   (B) Baked-in literal — see below; no ${VAR}.
+#   (C) Derived at runtime from dstack-attested primitives (future, not
+#       present in this file yet — Phase 2+).
+#
+# Anything that would fit under "(A) security-relevant: yes, keep mutable"
+# is NOT allowed and would fail the iOS audit card.
+#
+# Current audit:
+#   SINGLE_USER                     — BAKED to true for this file.
+#                                     Hosted multi-tenant deploys override in
+#                                     a separate deploy/docker-compose.prod.yaml
+#                                     whose hash gets its own on-chain entry.
+#   FEEDLING_API_KEY                — BAKED empty. Single-user no-auth. If
+#                                     you want pre-shared-key auth for
+#                                     self-hosted, fork this file + publish
+#                                     your own compose_hash.
+#   FEEDLING_MCP_TRANSPORT          — BAKED to sse. No silent downgrade.
+#   FEEDLING_FLASK_URL              — BAKED to the compose-internal DNS name.
+#                                     Operator can't redirect to a snooping
+#                                     Flask.
+#   FEEDLING_DATA_DIR               — BAKED to /data; matches the named
+#                                     volume mount. Operator can't relocate.
+#   FEEDLING_WS_PORT                — BAKED to 9998; matches port publish.
+#   FEEDLING_PUSH_COOLDOWN_SEC      — Category (A) — cosmetic rate-limit,
+#                                     tunable via ${}.
+#   FEEDLING_LIVE_ACTIVITY_DEDUPE_SEC — Category (A) — cosmetic dedupe window.
+#   FEEDLING_PUBLIC_BASE_URL        — Category (A) — cosmetic; only affects
+#                                     how frame URLs are rendered back to
+#                                     clients. Plaintext frame URLs are
+#                                     authed-only anyway.
 
 name: feedling
 
@@ -32,12 +74,12 @@ services:
     command: ["python", "-u", "backend/app.py"]
     restart: unless-stopped
     environment:
-      # Deployment mode — see backend/app.py
-      SINGLE_USER: "${SINGLE_USER:-true}"
-      FEEDLING_API_KEY: "${FEEDLING_API_KEY:-}"
-      # Storage + networking
+      # --- BAKED: security-relevant, audited by iOS ---
+      SINGLE_USER: "true"
+      FEEDLING_API_KEY: ""
       FEEDLING_DATA_DIR: "/data"
       FEEDLING_WS_PORT: "9998"
+      # --- MUTABLE: category (A), not security-relevant ---
       FEEDLING_PUBLIC_BASE_URL: "${FEEDLING_PUBLIC_BASE_URL:-}"
       FEEDLING_PUSH_COOLDOWN_SEC: "${FEEDLING_PUSH_COOLDOWN_SEC:-300}"
       FEEDLING_LIVE_ACTIVITY_DEDUPE_SEC: "${FEEDLING_LIVE_ACTIVITY_DEDUPE_SEC:-900}"
@@ -61,14 +103,12 @@ services:
     command: ["python", "-u", "backend/mcp_server.py"]
     restart: unless-stopped
     environment:
-      # Same mode flag as backend so the MCP server knows which auth model
-      # it's routing keys under.
-      SINGLE_USER: "${SINGLE_USER:-true}"
-      FEEDLING_API_KEY: "${FEEDLING_API_KEY:-}"
-      # Internal hostname — docker-compose gives each service a DNS entry.
+      # --- BAKED: security-relevant ---
+      SINGLE_USER: "true"
+      FEEDLING_API_KEY: ""
       FEEDLING_FLASK_URL: "http://backend:5001"
       FEEDLING_MCP_PORT: "5002"
-      FEEDLING_MCP_TRANSPORT: "${FEEDLING_MCP_TRANSPORT:-sse}"
+      FEEDLING_MCP_TRANSPORT: "sse"
     ports:
       - "5002:5002"
     depends_on:

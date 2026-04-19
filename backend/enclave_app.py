@@ -498,6 +498,167 @@ def v2_chat_get_history():
     })
 
 
+@app.route("/v2/memory/list", methods=["GET"])
+def v2_memory_list():
+    """Decrypt-and-serve memory garden for the authenticated user.
+
+    Query params:
+      since (ISO string, optional): pass-through to /v1/memory/list
+      limit (int, default 50, max 200)
+    """
+    if not _state["ready"]:
+        return jsonify({"error": "not_ready", "detail": _state["error"]}), 503
+    api_key = _extract_api_key()
+    if not api_key:
+        return jsonify({"error": "missing api_key"}), 401
+
+    try:
+        whoami = _flask_get("/v1/users/whoami", api_key)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 401:
+            return jsonify({"error": "unauthorized"}), 401
+        return jsonify({"error": f"backend_error: {e}"}), 502
+    authorized_user_id = whoami.get("user_id", "")
+    if not authorized_user_id:
+        return jsonify({"error": "cannot resolve user_id"}), 401
+
+    limit = request.args.get("limit", "50")
+    since = request.args.get("since", "")
+    params = {"limit": limit}
+    if since:
+        params["since"] = since
+    try:
+        listing = _flask_get("/v1/memory/list", api_key, params=params)
+    except httpx.HTTPError as e:
+        return jsonify({"error": f"backend_error: {e}"}), 502
+
+    content_sk = _get_or_derive_content_sk()
+    decrypted = []
+    errors = []
+    for m in listing.get("moments", []):
+        v = int(m.get("v", 0))
+        base = {
+            "id": m["id"],
+            "occurred_at": m.get("occurred_at"),
+            "created_at": m.get("created_at"),
+            "source": m.get("source"),
+            "v": v,
+        }
+        if v == 0:
+            base.update({
+                "title": m.get("title"),
+                "description": m.get("description"),
+                "type": m.get("type"),
+                "decrypt_status": "plaintext",
+            })
+            decrypted.append(base); continue
+        if m.get("visibility") == "local_only":
+            base.update({
+                "title": None, "description": None, "type": None,
+                "visibility": "local_only",
+                "decrypt_status": "local_only_agent_cannot_read",
+            })
+            decrypted.append(base); continue
+        try:
+            plaintext = _decrypt_envelope(m, authorized_user_id, content_sk)
+            inner = json.loads(plaintext.decode("utf-8"))
+            base.update({
+                "title": inner.get("title"),
+                "description": inner.get("description"),
+                "type": inner.get("type"),
+                "visibility": m.get("visibility", "shared"),
+                "decrypt_status": "ok",
+            })
+        except (DecryptFailure, json.JSONDecodeError) as e:
+            reason = e.reason if isinstance(e, DecryptFailure) else f"json: {e}"
+            errors.append({"id": m.get("id"), "reason": reason})
+            base.update({
+                "title": None, "description": None, "type": None,
+                "decrypt_status": f"error: {reason}",
+            })
+        decrypted.append(base)
+
+    return jsonify({
+        "user_id": authorized_user_id,
+        "moments": decrypted,
+        "total": listing.get("total", len(decrypted)),
+        "decrypt_errors": errors,
+    })
+
+
+@app.route("/v2/identity/get", methods=["GET"])
+def v2_identity_get():
+    """Decrypt-and-serve the identity card for the authenticated user.
+
+    Returns the same shape as /v1/identity/get (agent_name, self_introduction,
+    dimensions[]), assembled from decrypted ciphertext when stored as v1.
+    """
+    if not _state["ready"]:
+        return jsonify({"error": "not_ready", "detail": _state["error"]}), 503
+    api_key = _extract_api_key()
+    if not api_key:
+        return jsonify({"error": "missing api_key"}), 401
+
+    try:
+        whoami = _flask_get("/v1/users/whoami", api_key)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 401:
+            return jsonify({"error": "unauthorized"}), 401
+        return jsonify({"error": f"backend_error: {e}"}), 502
+    authorized_user_id = whoami.get("user_id", "")
+    if not authorized_user_id:
+        return jsonify({"error": "cannot resolve user_id"}), 401
+
+    try:
+        resp = _flask_get("/v1/identity/get", api_key)
+    except httpx.HTTPError as e:
+        return jsonify({"error": f"backend_error: {e}"}), 502
+
+    identity = resp.get("identity")
+    if identity is None:
+        return jsonify({"identity": None, "user_id": authorized_user_id})
+
+    v = int(identity.get("v", 0))
+    base = {
+        "v": v,
+        "created_at": identity.get("created_at"),
+        "updated_at": identity.get("updated_at"),
+    }
+    if v == 0:
+        base.update({
+            "agent_name": identity.get("agent_name"),
+            "self_introduction": identity.get("self_introduction"),
+            "dimensions": identity.get("dimensions", []),
+            "decrypt_status": "plaintext",
+        })
+        return jsonify({"identity": base, "user_id": authorized_user_id})
+
+    if identity.get("visibility") == "local_only":
+        base.update({
+            "visibility": "local_only",
+            "decrypt_status": "local_only_agent_cannot_read",
+        })
+        return jsonify({"identity": base, "user_id": authorized_user_id})
+
+    content_sk = _get_or_derive_content_sk()
+    try:
+        plaintext = _decrypt_envelope(identity, authorized_user_id, content_sk)
+        inner = json.loads(plaintext.decode("utf-8"))
+        base.update({
+            "agent_name": inner.get("agent_name"),
+            "self_introduction": inner.get("self_introduction"),
+            "dimensions": inner.get("dimensions", []),
+            "visibility": identity.get("visibility", "shared"),
+            "decrypt_status": "ok",
+        })
+        return jsonify({"identity": base, "user_id": authorized_user_id})
+    except (DecryptFailure, json.JSONDecodeError) as e:
+        reason = e.reason if isinstance(e, DecryptFailure) else f"json: {e}"
+        base.update({"decrypt_status": f"error: {reason}"})
+        return jsonify({"identity": base, "user_id": authorized_user_id,
+                        "decrypt_errors": [{"reason": reason}]})
+
+
 def _get_or_derive_content_sk() -> nacl.public.PrivateKey:
     """Return the enclave's content X25519 private key, deriving if needed.
 

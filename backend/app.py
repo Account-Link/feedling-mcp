@@ -593,70 +593,12 @@ def _mark_active_token_success(store: UserStore, entry: dict):
 
 
 # ---------------------------------------------------------------------------
-# Semantic helpers (stateless, unchanged from previous version)
+# Semantic screen classifier — imported from a portable module so the iOS
+# port can translate 1:1. See backend/semantic_analysis.py and
+# docs/DESIGN_E2E.md §4 for the "classification on iOS" plan.
 # ---------------------------------------------------------------------------
 
-
-def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
-    t = (text or "").lower()
-    return any(k in t for k in keywords)
-
-
-def _semantic_analysis(current_app: str, ocr_summary: str) -> dict:
-    app = (current_app or "unknown").lower()
-    text = (ocr_summary or "").lower()
-
-    ecom_apps = ("taobao", "tmall", "jd", "pinduoduo", "xhs", "red", "amazon", "shop")
-    compare_words = (
-        "加入购物车", "购物车", "比价", "对比", "参数", "评价", "评论", "销量", "券", "优惠", "选哪个", "纠结", "尺码", "颜色",
-        "cart", "review", "compare", "coupon", "which one", "size", "color",
-    )
-    chat_apps = ("wechat", "telegram", "whatsapp", "messenger", "imessage", "discord", "slack")
-    chat_words = (
-        "输入", "正在输入", "撤回", "删了", "草稿", "怎么回", "回什么", "算了", "生气", "误会", "抱歉", "对不起", "别这样", "随便",
-        "typing", "draft", "unsent", "sorry", "angry", "misunderstand",
-    )
-
-    if (_contains_any(app, ecom_apps) or _contains_any(text, ecom_apps)) and _contains_any(text, compare_words):
-        return {
-            "semantic_scene": "ecommerce_choice_paralysis",
-            "task_intent": "compare_then_decide",
-            "friction_point": "choice_overload",
-            "semantic_strength": "strong",
-            "confidence": 0.86,
-            "suggested_openers": [
-                "你像在 A/B 里卡住了：你更在意省钱，还是少踩雷？",
-                "先别全看，我帮你偷懒：差评关键词 + 近30天销量 + 退货评价，三项就够定。",
-                "给你一个止损线：再看 5 分钟就选一个，剩下放收藏。",
-            ],
-        }
-
-    if (_contains_any(app, chat_apps) or _contains_any(text, chat_apps)) and _contains_any(text, chat_words):
-        return {
-            "semantic_scene": "social_chat_hesitation",
-            "task_intent": "draft_or_repair_message",
-            "friction_point": "hesitation_or_conflict",
-            "semantic_strength": "strong",
-            "confidence": 0.83,
-            "suggested_openers": [
-                "这句你更想保住关系，还是讲清立场？我给你两版一句话。",
-                "你像在反复删改。先发降温版一句话，别让情绪抬高。",
-                "要硬一点还是软一点？我各给一版，10 秒选。",
-            ],
-        }
-
-    return {
-        "semantic_scene": "ambiguous_context",
-        "task_intent": "unknown",
-        "friction_point": "unclear_state",
-        "semantic_strength": "weak",
-        "confidence": 0.38,
-        "suggested_openers": [
-            "我可能看错了，这会儿你是在想事，还是在躲这件事？",
-            "我没完全读懂这屏，但感觉你有点绷着。要我陪你理一下吗？",
-            "你现在更需要：被提醒一下，还是被安静陪着？",
-        ],
-    }
+from semantic_analysis import analyze as _semantic_analysis  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -1628,12 +1570,49 @@ def identity_get():
 
 @app.route("/v1/identity/init", methods=["POST"])
 def identity_init():
+    """Initialize the identity card. Accepts either v0 plaintext
+    {agent_name, self_introduction, dimensions} or v1 envelope (body_ct
+    wrapping all three fields serialized as JSON). v1 metadata that stays
+    plaintext: created_at, updated_at. See docs/DESIGN_E2E.md §3.2.
+    """
     store = require_user()
     existing = _load_identity(store)
     if existing is not None:
         return jsonify({"error": "already_initialized", "identity": existing}), 409
 
     payload = request.get_json(silent=True) or {}
+    envelope = payload.get("envelope")
+    now = datetime.now().isoformat()
+
+    if envelope is not None:
+        required = ["body_ct", "nonce", "K_user", "visibility", "owner_user_id"]
+        missing = [f for f in required if not envelope.get(f)]
+        if missing:
+            return jsonify({"error": f"envelope missing fields: {missing}"}), 400
+        if envelope["visibility"] not in ("shared", "local_only"):
+            return jsonify({"error": "envelope.visibility must be 'shared' or 'local_only'"}), 400
+        if envelope["visibility"] == "shared" and not envelope.get("K_enclave"):
+            return jsonify({"error": "envelope with visibility=shared requires K_enclave"}), 400
+
+        identity = {
+            "v": 1,
+            "id": envelope.get("id") or uuid.uuid4().hex,
+            "body_ct": envelope["body_ct"],
+            "nonce": envelope["nonce"],
+            "K_user": envelope["K_user"],
+            "enclave_pk_fpr": envelope.get("enclave_pk_fpr", ""),
+            "visibility": envelope["visibility"],
+            "owner_user_id": envelope["owner_user_id"],
+            "created_at": now,
+            "updated_at": now,
+        }
+        if envelope.get("K_enclave"):
+            identity["K_enclave"] = envelope["K_enclave"]
+        _save_identity(store, identity)
+        _log_bootstrap_event(store, "identity_written_v1", success=True)
+        print(f"[identity:{store.user_id}] initialized v1 (ciphertext) visibility={envelope['visibility']}")
+        return jsonify({"status": "created", "identity": identity, "v": 1}), 201
+
     agent_name = (payload.get("agent_name") or "").strip()
     self_introduction = (payload.get("self_introduction") or "").strip()
     dimensions = payload.get("dimensions", [])
@@ -1650,8 +1629,8 @@ def identity_init():
         if not (0 <= int(d["value"]) <= 100):
             return jsonify({"error": f"dimension value must be 0-100, got {d['value']}"}), 400
 
-    now = datetime.now().isoformat()
     identity = {
+        "v": 0,
         "agent_name": agent_name,
         "self_introduction": self_introduction,
         "dimensions": [
@@ -1668,7 +1647,7 @@ def identity_init():
     _save_identity(store, identity)
     _log_bootstrap_event(store, "identity_written", success=True)
     print(f"[identity:{store.user_id}] initialized: agent_name={agent_name}")
-    return jsonify({"status": "created", "identity": identity}), 201
+    return jsonify({"status": "created", "identity": identity, "v": 0}), 201
 
 
 @app.route("/v1/identity/nudge", methods=["POST"])
@@ -1757,8 +1736,54 @@ def memory_get():
 
 @app.route("/v1/memory/add", methods=["POST"])
 def memory_add():
+    """Add a memory moment.
+
+    Accepts either v0 plaintext {title, description, type, occurred_at, source}
+    or v1 envelope where body_ct wraps {title, description, type} as JSON.
+    Plaintext metadata in v1: id, occurred_at, created_at, source
+    (these are kept unencrypted so the server can sort + index).
+    See docs/DESIGN_E2E.md §3.2.
+    """
     store = require_user()
     payload = request.get_json(silent=True) or {}
+    envelope = payload.get("envelope")
+    now = datetime.now().isoformat()
+
+    if envelope is not None:
+        required = ["body_ct", "nonce", "K_user", "visibility", "owner_user_id"]
+        missing = [f for f in required if not envelope.get(f)]
+        if missing:
+            return jsonify({"error": f"envelope missing fields: {missing}"}), 400
+        if envelope["visibility"] not in ("shared", "local_only"):
+            return jsonify({"error": "envelope.visibility must be 'shared' or 'local_only'"}), 400
+        if envelope["visibility"] == "shared" and not envelope.get("K_enclave"):
+            return jsonify({"error": "envelope with visibility=shared requires K_enclave"}), 400
+        occurred_at = (envelope.get("occurred_at") or "").strip()
+        if not occurred_at:
+            return jsonify({"error": "occurred_at required (plaintext metadata for ordering)"}), 400
+
+        moment = {
+            "v": 1,
+            "id": envelope.get("id") or f"mom_{uuid.uuid4().hex[:12]}",
+            "occurred_at": occurred_at,
+            "created_at": now,
+            "source": (envelope.get("source") or "live_conversation").strip(),
+            "body_ct": envelope["body_ct"],
+            "nonce": envelope["nonce"],
+            "K_user": envelope["K_user"],
+            "enclave_pk_fpr": envelope.get("enclave_pk_fpr", ""),
+            "visibility": envelope["visibility"],
+            "owner_user_id": envelope["owner_user_id"],
+        }
+        if envelope.get("K_enclave"):
+            moment["K_enclave"] = envelope["K_enclave"]
+        moments = _load_moments(store)
+        moments.append(moment)
+        _save_moments(store, moments)
+        _log_bootstrap_event(store, "memory_moment_added_v1", success=True)
+        print(f"[memory:{store.user_id}] added v1 id={moment['id']} visibility={envelope['visibility']}")
+        return jsonify({"status": "created", "moment": moment, "v": 1}), 201
+
     title = (payload.get("title") or "").strip()
     description = (payload.get("description") or "").strip()
     occurred_at = (payload.get("occurred_at") or "").strip()
@@ -1771,12 +1796,13 @@ def memory_add():
         return jsonify({"error": "occurred_at required"}), 400
 
     moment = {
+        "v": 0,
         "id": f"mom_{uuid.uuid4().hex[:12]}",
         "type": moment_type,
         "title": title,
         "description": description,
         "occurred_at": occurred_at,
-        "created_at": datetime.now().isoformat(),
+        "created_at": now,
         "source": source,
     }
     moments = _load_moments(store)
@@ -1784,7 +1810,7 @@ def memory_add():
     _save_moments(store, moments)
     _log_bootstrap_event(store, "memory_moment_added", success=True)
     print(f"[memory:{store.user_id}] added: {title[:60]} occurred_at={occurred_at}")
-    return jsonify({"status": "created", "moment": moment}), 201
+    return jsonify({"status": "created", "moment": moment, "v": 0}), 201
 
 
 @app.route("/v1/memory/delete", methods=["DELETE"])
