@@ -1,6 +1,6 @@
-# Feedling End-to-End Encryption — Design Doc (v0.3)
+# Feedling End-to-End Encryption — Design Doc (v0.4)
 
-Status: **v0.3 — decisions locked, pre-implementation**
+Status: **v0.4 — decisions locked, pre-implementation**
 Owner: @sxysun
 Target ship: after `NEXT.md` Steps 1–5 land in prod and multi-tenant is stable.
 Companion doc: `docs/NEXT.md` (the plaintext multi-tenant backend this layers on top of).
@@ -371,11 +371,24 @@ boot or cert rotation).
 ### 5.2 iOS auditor (the is-this-real-tea skill, on-device)
 
 The iOS app ships as an active auditor, not a passive verifier. Every
-session start (cached 24h) runs the full is-this-real-tea checklist against
-the live deployment and surfaces a user-facing audit card (§5.3). The
-audit has no single "accept-list on the phone" — the **phone reads the
-on-chain AppAuth contract** and uses that as the source of truth for
-what's authorized.
+first launch, every compose_hash change, and every 24h (cached in
+between) it runs the full is-this-real-tea checklist and surfaces a
+user-facing audit card (§5.3).
+
+**Scope of what's load-bearing vs enrichment.** The security-critical
+checks are all local — DCAP quote verification, MRTD/RTMR matching,
+REPORT_DATA binding, TLS fingerprint matching, compose_hash acceptance.
+Zero network dependencies in that path beyond fetching the enclave's
+own `/attestation`. The on-chain AppAuth read is an **enrichment step**
+that populates the audit card with Basescan links and release timestamps
+— security is not affected if it fails or returns stale data, because
+DstackKms already enforced on-chain authorization at key-release time
+and we can't be talking to the enclave at all without that having passed.
+
+This matters because: (1) it lets us verify infrequently without leaving
+the phone at risk during cache periods; (2) RPC providers don't sit in the
+trust path for enforcement; (3) a Base network hiccup degrades the audit
+card but doesn't break the app.
 
 Pseudocode:
 
@@ -401,19 +414,31 @@ func auditFeedling() throws -> AuditReport {
     else { throw .composeHashMismatch }
     report.add(.composeHashFromQuote(composeHash))
 
-    // ─── 4. Is this compose authorized on-chain? ───────────────────
-    // Belt-and-suspenders: if the CVM is serving us at all, DstackKms
-    // already checked this. We re-check via a public Base RPC so the
-    // user sees the audit trail explicitly.
-    let appAuth = BaseRPC.appAuthContract(bundle.dstack_meta.app_auth_contract)
-    let authEvent = try appAuth.findComposeHashAddedEvent(composeHash)
-        ?? { throw .composeHashNotOnChain(composeHash) }()
-    report.add(.composeAuthorizedOnChain(
-        contract: appAuth.address,
-        txHash: authEvent.txHash,
-        blockNumber: authEvent.blockNumber,
-        basescanURL: "https://basescan.org/tx/\(authEvent.txHash)"
-    ))
+    // ─── 4. On-chain audit enrichment (non-blocking) ───────────────
+    // Chain read is for the user-facing audit card, not enforcement.
+    // DstackKms already gated key release on AppAuth.isAppAllowed — if the
+    // enclave is serving us at all, compose_hash was on-chain at that
+    // moment. We query Basescan here just to show the user WHEN it was
+    // added + provide a Basescan link. If the RPC is unreachable, the
+    // audit card shows "⚠ on-chain history unavailable" and the session
+    // still proceeds; security is unaffected.
+    do {
+        let appAuth = BaseRPC.appAuthContract(bundle.dstack_meta.app_auth_contract)
+        if let authEvent = try appAuth.findComposeHashAddedEvent(composeHash) {
+            report.add(.composeAuthorizedOnChain(
+                contract: appAuth.address,
+                txHash: authEvent.txHash,
+                blockNumber: authEvent.blockNumber,
+                basescanURL: "https://basescan.org/tx/\(authEvent.txHash)"
+            ))
+        } else {
+            report.add(.onChainAuditUnavailable(reason: "compose_hash not found in event log"))
+            // Note: this is suspicious but not fatal — could be RPC lag.
+            // User sees a yellow row; can tap "re-verify" later.
+        }
+    } catch {
+        report.add(.onChainAuditUnavailable(reason: "RPC error: \(error)"))
+    }
 
     // ─── 5. Can the operator redirect user data?  ───────────────────
     // Fetch the attested compose.yaml + Dockerfile from the URLs the
@@ -476,23 +501,35 @@ Every launch, Settings → Privacy renders the latest `AuditReport`:
 ┌──────────────────────────────────────────────────────────┐
 │  🔒 Feedling audit — verified just now                   │
 │                                                          │
+│  Security (all checked locally on this device):          │
 │  ✅ Hardware attestation valid (Intel TDX)              │
 │  ✅ Base image: dstack-v0.5.3 (Phala endorsed)          │
-│  ✅ Running compose: c1a3b7… (entry #7 on Basescan)     │
-│  ✅ compose_hash authorized on-chain                     │
-│     AppAuth contract: 0xFeedling…Auth                   │
-│     tx: 0xabc… · block 12345678 · 2026-05-01            │
-│     [ View on Basescan ]                                │
+│  ✅ Running compose: c1a3b7…                             │
 │  ✅ Published compose matches attested compose_hash      │
 │  ✅ No operator-controllable URLs in compose             │
 │  ✅ All image digests pinned (no mutable tags)          │
 │  ✅ TLS cert bound to hardware attestation               │
 │  ✅ Reproducible build recipe published                  │
 │                                                          │
-│  Report generated on-device from on-chain data.         │
+│  On-chain audit (public transparency, not security):     │
+│  ✅ compose_hash on-chain at entry #7                   │
+│     tx 0xabc… · block 12345678 · 2026-05-01             │
+│     [ View on Basescan ]                                │
+│                                                          │
 │  [ Share report ]   [ View enclave source ]             │
 └──────────────────────────────────────────────────────────┘
 ```
+
+When the on-chain audit is unreachable (RPC outage, airplane mode):
+
+```
+  On-chain audit (public transparency, not security):
+  ⚠ Unable to reach Base — audit history shown last 3 days ago.
+     [ Retry ]   [ View cached history ]
+```
+
+App still functions. The "Security" block has already passed all local
+checks; the on-chain row is explicitly labeled as separate.
 
 If any check fails, the app refuses to use the endpoint and surfaces the
 specific failure with a link to the relevant reference doc in
@@ -863,13 +900,19 @@ Cost per release: one `addComposeHash` transaction, ~$0.05 on Base L2.
 ### 8.1 iOS dependencies (new)
 
 - `swift-sodium` (libsodium bindings) — content encryption + AEAD.
-- `SwiftDCAP` or a custom Swift wrapper around Intel's DCAP verify library —
-  attestation verification. (Need to evaluate available libraries; may need
-  to port a small one.)
-- Ethereum light-client or plain-JSON-RPC client for reading AppAuth events
-  on Base. Options: `web3.swift`, `Web3Core`, or a thin `URLSession`
-  wrapper calling `eth_getLogs` on a pinned set of public RPC endpoints.
-  No wallet / signing needed — read-only.
+- Native Swift DCAP verifier — local quote verification (§12.13). Options:
+  - Port Intel's DCAP attestation library (C/C++) via a Swift bridging
+    header. Most code-reusable path.
+  - Port a subset of `dcap-rs` (Rust) and expose via a Swift FFI. Smaller
+    TCB, better memory safety.
+  - Write a minimal Swift-native implementation from the DCAP spec.
+    Highest ongoing maintenance cost.
+  Decision deferred to Phase 1 implementation (evaluate effort of each).
+- Thin `URLSession`-based JSON-RPC client for reading AppAuth events on
+  Base. Talks to a pinned set of public RPC endpoints (quorum-checked
+  for enrichment-only data). No wallet, no signing, read-only. This
+  path is non-load-bearing for security — used for audit-card
+  enrichment only.
 
 ---
 
@@ -1020,6 +1063,8 @@ Total calendar time to Phase 5 cutover: **~6–7 weeks** of engineering.
 | Compromised Agent | Agent-side exfil | Out of scope — any data the Agent is authorized to read can be exfiltrated by a compromised Agent. Limit blast radius with per-item local-only. |
 | Lost / stolen iOS device | Attacker has phone | Keychain requires device passcode / biometrics post-first-unlock; api_key remotely revocable via a different device |
 | Compromised Feedling release key | Operator signs a malicious `addComposeHash()` tx | The malicious hash is still visible on Basescan. Revocation: call `revoke()` from the owner key (if not compromised) or rotate owner via a fresh deploy + user-notified migration. iOS surfaces a revoked status in the audit card. |
+| Malicious Base RPC provider | Lies about AppAuth event log to the iOS auditor | Audit card enrichment is degraded (wrong timestamp, missing Basescan link) but security is unaffected — DstackKms already gated key release on AppAuth, so the enclave is only serving us if the real chain state said yes. Mitigation: iOS queries multiple public RPC endpoints and requires agreement before treating enrichment data as trusted. |
+| Base sequencer outage / Coinbase censorship | Feedling cannot publish a new `addComposeHash` for some period | Existing releases keep working. New deploys are delayed until sequencer recovers or we force-include via L1. No user-facing impact unless we were mid-deploy. |
 
 ### 10.2 Adversaries we do NOT defend against
 
@@ -1224,6 +1269,59 @@ Prevents cross-user ciphertext substitution by a malicious server (§3.4).
 No effect on storage layout, cryptographic cost is zero, security gain is
 closing a real operator rug vector.
 
+### 12.13 DCAP quote verification: **local on iOS**, not RPC-delegated
+
+iOS ships a native DCAP-verifier (Swift wrapper around a ported or
+FFI'd implementation). Quote verification happens on-device; no network
+round-trip is in the security-critical path. The chain read remains in
+the audit flow but only for populating Basescan links / timestamps in
+the audit card — it's explicitly an enrichment, not a gate.
+
+**Rationale:**
+- "Verify via Automata's on-chain DCAP verifier" was considered and
+  rejected. It would reintroduce RPC trust into the security path
+  (a malicious RPC could claim the verifier returned "invalid" and
+  block users).
+- Native DCAP verification runs infrequently in practice — first launch,
+  compose_hash changes, daily cache refresh — so battery cost is
+  negligible. Implementation cost is a one-time port (~1–2 weeks).
+- This cleanly separates "security anchored in hardware + iOS local
+  code" from "transparency anchored on-chain" — neither depends on
+  the other's liveness.
+
+**Implication for §5.2:** the `IntelDCAP.verify(...)` call is a local
+library call, not an `eth_call`. The `BaseRPC.findComposeHashAddedEvent`
+call is wrapped in try/catch and failure degrades the audit card
+gracefully.
+
+### 12.14 Transparency chain: **Base L2**
+
+Chosen over Ethereum L1, other L2s (Optimism, Arbitrum, zkSync), and
+off-chain alternatives (Rekor, IPFS).
+
+**Rationale:**
+- Cost: ~$7/year at 4 releases/month, vs ~$1200/year on Ethereum L1.
+  Ethereum L1 costs buy no additional security for our use case because
+  Base inherits its security from Ethereum and we only need append-only
+  public logging, not settlement.
+- Canonical pattern: dstack-tutorial/05 demonstrates AppAuth on Base. By
+  following the example, our deployment matches what auditors (e.g.
+  `is-this-real-tea`) expect to see.
+- Sequencer trust: Coinbase sequencer is centralized, which is a real
+  but bounded concern. Worst case is "our next release is delayed 24h
+  while sequencer recovers"; security of prior releases is unaffected.
+  Force-include via L1 is a known escape hatch.
+
+**Upgrade paths we leave open (not MVP):**
+- **Ethereum-anchored checkpoints.** Post a Merkle root of our Base
+  AppAuth state to Ethereum L1 quarterly. Preserves cost savings, adds
+  an L1-rooted truth anchor. Estimated cost: ~$200/year.
+- **Migrate to a zk-rollup** (zkSync, Scroll) if the narrative calls for
+  it. The contract deploys identically; iOS verifier adds one more RPC
+  endpoint set.
+- **Multi-chain publication** — mirror to multiple chains for
+  redundancy. Overengineering for now.
+
 ---
 
 ## 13. What we will tell users
@@ -1375,6 +1473,18 @@ not promise.
 
 ## 16. Change log
 
+- v0.4 (2026-04-19): Security/enrichment separation. DCAP quote
+  verification runs locally on iOS (§12.13) — no RPC in the
+  security-critical path. The AppAuth on-chain read is explicitly
+  demoted to audit-card enrichment (§5.2, §5.3) — fails soft, not
+  fatal, doesn't affect security. Chain target decided: **Base L2**
+  (§12.14), canonical per dstack-tutorial/05, ~$7/year operational
+  cost; Ethereum L1 considered and rejected for cost/value reasons.
+  §10 threat model gains rows for malicious RPC and sequencer outage
+  (both downgrade UX, not security). §8.1 iOS deps updated: no
+  on-chain DCAP dependency; native Swift library in Phase 1. Marketing
+  copy in §13 and §14 de-name-dropped (removed ERC-733 label, kept
+  the properties).
 - v0.3 (2026-04-19): Stage 1 DevProof alignment. Adopted the
   dstack-tutorial/05 `AppAuth` pattern on Base L2 as the authorization +
   transparency mechanism (enforcement at key-release time, not just
