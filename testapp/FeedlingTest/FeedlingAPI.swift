@@ -225,6 +225,128 @@ final class FeedlingAPI: ObservableObject {
         FEEDLING_API_KEY=\(apiKey.isEmpty ? "<registering…>" : apiKey)
         """
     }
+
+    // MARK: - Content keypair + enclave pubkey
+
+    /// The user's X25519 public key used to wrap content-item symmetric
+    /// keys on the client side. Maintained here so ChatViewModel /
+    /// MemoryViewModel etc. can pull it once.
+    @Published private(set) var userContentPublicKey: Curve25519.KeyAgreement.PublicKey?
+
+    /// The enclave's content X25519 public key, fetched from
+    /// GET /attestation on mcp.feedling.app. Refreshed whenever
+    /// audit verification runs. nil until first sync.
+    @Published private(set) var enclaveContentPublicKey: Curve25519.KeyAgreement.PublicKey?
+
+    /// Compose hash from the live enclave's attestation. nil before first sync.
+    @Published private(set) var enclaveComposeHash: String?
+
+    /// MRTD from the live enclave's attestation.
+    @Published private(set) var enclaveMRTD: String?
+
+    /// URL for the /attestation endpoint. Defaults to the cloud MCP host;
+    /// in self-hosted mode it swaps to the user's own.
+    private var attestationURL: URL? {
+        if storageMode == .selfHosted {
+            // Self-hosted users point baseURL at api.<their-domain>; the
+            // enclave sits on mcp.<their-domain> by convention.
+            let mcp = baseURL.replacingOccurrences(of: "api.", with: "mcp.")
+            return URL(string: "\(mcp)/attestation")
+        }
+        return URL(string: "https://mcp.feedling.app/attestation")
+    }
+
+    /// Load (or lazily generate) the user's long-lived content keypair.
+    /// Backed by Keychain entries distinct from the identity keypair.
+    func ensureContentKeypair() {
+        if userContentPublicKey != nil { return }
+        do {
+            let sk = try ContentKeyStore.shared.ensureContentKeypair()
+            userContentPublicKey = sk.publicKey
+        } catch {
+            print("[content-keypair] failed to load/generate: \(error)")
+        }
+    }
+
+    /// Hit the enclave's /attestation endpoint, pull out the content pubkey,
+    /// compose_hash, MRTD. Does NOT (yet) run the full DCAP verification —
+    /// that's the audit card's job. This method is fire-and-forget from
+    /// the app-startup hook.
+    func refreshEnclaveAttestation() async {
+        guard let url = attestationURL else { return }
+        do {
+            let (data, resp) = try await URLSession.shared.data(from: url)
+            guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else { return }
+            struct Bundle: Decodable {
+                let enclave_content_pk_hex: String
+                let compose_hash: String?
+                let measurements: Measurements?
+                struct Measurements: Decodable { let mrtd: String? }
+            }
+            let b = try JSONDecoder().decode(Bundle.self, from: data)
+            guard let pkBytes = Data(hexString: b.enclave_content_pk_hex) else { return }
+            let pk = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: pkBytes)
+            self.enclaveContentPublicKey = pk
+            self.enclaveComposeHash = b.compose_hash
+            self.enclaveMRTD = b.measurements?.mrtd
+            print("[attestation] refreshed: compose_hash=\(b.compose_hash?.prefix(16) ?? "nil")…")
+        } catch {
+            print("[attestation] refresh failed: \(error)")
+        }
+    }
+}
+
+// MARK: - Content keypair storage
+// (Data(hexString:) is already defined on Data by FeedlingDCAP's Parser.swift.)
+
+
+/// Keychain-backed X25519 keypair dedicated to content encryption
+/// (distinct from the identity keypair held by KeyStore).
+final class ContentKeyStore {
+    static let shared = ContentKeyStore()
+
+    private static let service = "com.feedling.mcp"
+    private static let account = "content_private_key"
+
+    private init() {}
+
+    func ensureContentKeypair() throws -> Curve25519.KeyAgreement.PrivateKey {
+        if let existing = try loadPrivateKey() { return existing }
+        let pk = Curve25519.KeyAgreement.PrivateKey()
+        try save(privateKey: pk)
+        return pk
+    }
+
+    func loadPrivateKey() throws -> Curve25519.KeyAgreement.PrivateKey? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service,
+            kSecAttrAccount as String: Self.account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let data = result as? Data else { return nil }
+        return try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: data)
+    }
+
+    private func save(privateKey: Curve25519.KeyAgreement.PrivateKey) throws {
+        let data = privateKey.rawRepresentation
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service,
+            kSecAttrAccount as String: Self.account,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecValueData as String: data,
+        ]
+        SecItemDelete(query as CFDictionary)
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            throw NSError(domain: "ContentKeyStore", code: Int(status),
+                          userInfo: [NSLocalizedDescriptionKey: "Keychain write failed"])
+        }
+    }
 }
 
 // MARK: - Keypair storage (Keychain)

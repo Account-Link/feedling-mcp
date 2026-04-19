@@ -109,6 +109,13 @@ struct SettingsView: View {
                 .background(Color(UIColor.systemGroupedBackground))
 
                 List {
+                    // Privacy audit — always first so users see trust state immediately
+                    Section("Privacy") {
+                        AuditCardView()
+                            .listRowInsets(EdgeInsets())
+                            .listRowBackground(Color.clear)
+                    }
+
                     // Storage toggle
                     Section("Storage") {
                         Picker("Backend", selection: $api.storageMode) {

@@ -107,7 +107,33 @@ class ChatViewModel: ObservableObject {
             if !Task.isCancelled { isWaitingForReply = false }
         }
 
-        let body = try? JSONEncoder().encode(["content": text])
+        // Prefer v1 ciphertext envelope when we have user + enclave content keys.
+        // Falls back to legacy plaintext if crypto material isn't set up yet
+        // (fresh install before first attestation sync, or self-hosted mode).
+        let api = FeedlingAPI.shared
+        let body: Data?
+        if let userPK = api.userContentPublicKey,
+           let enclavePK = api.enclaveContentPublicKey,
+           !api.userId.isEmpty {
+            do {
+                let env = try ContentEncryption.envelope(
+                    plaintext: Data(text.utf8),
+                    ownerUserID: api.userId,
+                    userContentPK: userPK,
+                    enclaveContentPK: enclavePK,
+                    visibility: .shared
+                )
+                body = try JSONSerialization.data(withJSONObject: env.jsonBody())
+                print("[chat] sending v1 envelope id=\(env.id)")
+            } catch {
+                print("[chat] envelope build failed, falling back to plaintext: \(error)")
+                body = try? JSONEncoder().encode(["content": text])
+            }
+        } else {
+            // Legacy path — still supported by the server.
+            body = try? JSONEncoder().encode(["content": text])
+        }
+
         guard let req = FeedlingAPI.shared.authorizedRequest(
             path: "/v1/chat/message",
             method: "POST",

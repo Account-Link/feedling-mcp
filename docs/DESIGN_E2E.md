@@ -92,8 +92,8 @@ a privacy model that matches the claim *"Feedling cannot read your data."*
 
 ## 3. Cryptographic construction
 
-All symmetric operations use **XChaCha20-Poly1305** via libsodium's
-`crypto_secretbox_xchacha20poly1305`. All public-key operations use
+All symmetric operations use **ChaCha20-Poly1305 (IETF)** via libsodium's
+`crypto_aead_chacha20poly1305_ietf_*`. All public-key operations use
 **X25519 + XSalsa20-Poly1305** via libsodium's `crypto_box_seal` (anonymous
 sealed box — sender is ephemeral, recipient is the known pubkey).
 
@@ -123,7 +123,7 @@ sealed box — sender is ephemeral, recipient is the known pubkey).
 **Per-content-item, generated on iOS at write time:**
 
 - `K` — 32 random bytes. A fresh symmetric key for each content item.
-- `nonce` — 24 random bytes. Used for the XChaCha20 encryption.
+- `nonce` — 12 random bytes. Used for IETF ChaCha20-Poly1305 (12 bytes random).
 
 ### 3.2 Content format
 
@@ -141,7 +141,7 @@ clarify what the server does and does not see.
   "visibility": "shared",              // "shared" (both user+enclave can decrypt) or "local_only" (user only)
   "owner_user_id": "usr_abc…",         // plaintext — bound into AEAD additional-data (see §3.4)
 
-  "body_ct": "base64(XChaCha20Poly1305(K, nonce, plaintext_body, aad=owner_user_id||v||id))",
+  "body_ct": "base64(ChaCha20Poly1305-IETF(K, nonce, plaintext_body, aad=owner_user_id||v||id))",
   "nonce":   "base64(24 bytes)",
   "K_user":     "base64(crypto_box_seal(K, user_content_pk))",
   "K_enclave":  "base64(crypto_box_seal(K, enclave_content_pk))", // null when visibility=local_only
@@ -160,9 +160,9 @@ For frames (screen captures via WebSocket ingest):
   "app": "com.apple.Safari",               // PLAINTEXT in v1. See "Open Decision #4" in §11.
 
   "owner_user_id": "usr_abc…",
-  "image_ct": "base64(XChaCha20Poly1305(K, image_nonce, jpeg_bytes, aad=owner_user_id||v||filename))",
+  "image_ct": "base64(ChaCha20Poly1305-IETF(K, image_nonce, jpeg_bytes, aad=owner_user_id||v||filename))",
   "image_nonce": "base64(24 bytes)",
-  "ocr_ct":    "base64(XChaCha20Poly1305(K, ocr_nonce, ocr_text, aad=owner_user_id||v||filename))",
+  "ocr_ct":    "base64(ChaCha20Poly1305-IETF(K, ocr_nonce, ocr_text, aad=owner_user_id||v||filename))",
   "ocr_nonce": "base64(24 bytes)",
   "K_user":    "base64(crypto_box_seal(K, user_content_pk))",
   "K_enclave": "base64(crypto_box_seal(K, enclave_content_pk))",
@@ -582,7 +582,7 @@ iOS                                     Flask
  │  plaintext = "hello agent"             │
  │  K = random(32)                        │
  │  nonce = random(24)                    │
- │  body_ct = XChaCha20Poly1305(K, nonce, │
+ │  body_ct = ChaCha20Poly1305-IETF(K, nonce, │
  │             plaintext)                 │
  │  K_user = box_seal(K, user_content_pk) │
  │  K_enclave = box_seal(K,               │
@@ -634,7 +634,7 @@ Claude.ai                 Caddy          Enclave CVM                      Flask
   │                         │                │      K = box_seal_open(      │
   │                         │                │         K_enclave,           │
   │                         │                │         enclave_content_sk)  │
-  │                         │                │      body = XChaCha20Poly…   │
+  │                         │                │      body = ChaChaPoly-IETF   │
   │                         │                │             open(K, nonce,   │
   │                         │                │                  body_ct)    │
   │                         │                │                              │
@@ -1466,7 +1466,7 @@ not promise.
   - §08 extending-appauth — timelocks + multi-vendor (future upgrade path)
 - Intel TDX attestation spec: <https://cdrdv2-public.intel.com/726790>
 - libsodium sealed boxes: <https://doc.libsodium.org/public-key_cryptography/sealed_boxes>
-- libsodium AEAD (XChaCha20-Poly1305): <https://doc.libsodium.org/secret-key_cryptography/aead>
+- libsodium AEAD (ChaCha20-Poly1305 (IETF)): <https://doc.libsodium.org/secret-key_cryptography/aead>
 - Apple CryptoKit Curve25519: <https://developer.apple.com/documentation/cryptokit/curve25519>
 
 ---

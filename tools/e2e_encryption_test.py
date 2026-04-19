@@ -30,12 +30,42 @@ import sys
 import time
 from pathlib import Path
 
+import hashlib
+
 import nacl.bindings
 import nacl.public
 import requests
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.hashes import SHA256
+from cryptography.hazmat.primitives import serialization
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+# ---------------------------------------------------------------------------
+# iOS-compatible sealed box — see testapp/FeedlingTest/ContentEncryption.swift
+# Wire format: ek_pub (32 bytes) || ciphertext || tag (16 bytes)
+# ---------------------------------------------------------------------------
+
+_BOX_SEAL_INFO = b"feedling-box-seal-v1"
+
+
+def box_seal_hkdf(plaintext: bytes, recipient_pk_bytes: bytes) -> bytes:
+    ek = X25519PrivateKey.generate()
+    recipient = X25519PublicKey.from_public_bytes(recipient_pk_bytes)
+    shared = ek.exchange(recipient)
+    k_wrap = HKDF(algorithm=SHA256(), length=32, salt=None,
+                  info=_BOX_SEAL_INFO).derive(shared)
+
+    ek_pub = ek.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw)
+    nonce = hashlib.sha256(ek_pub + recipient_pk_bytes).digest()[:12]
+    ct = ChaCha20Poly1305(k_wrap).encrypt(nonce, plaintext, None)
+    return ek_pub + ct
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -92,18 +122,18 @@ def encrypt_chat_message(
     mismatched AAD to prove the enclave rejects them.
     """
     K = secrets.token_bytes(32)
-    nonce = secrets.token_bytes(24)
+    nonce = secrets.token_bytes(12)  # ChaCha20-Poly1305 IETF nonce
     item_id = secrets.token_hex(16)
 
     aad_owner = override_aad_owner if override_aad_owner is not None else owner_user_id
     aad_item_id = override_item_id_for_aad if override_item_id_for_aad is not None else item_id
     aad = build_aead_aad(aad_owner, 1, aad_item_id)
 
-    body_ct = nacl.bindings.crypto_aead_xchacha20poly1305_ietf_encrypt(
+    body_ct = nacl.bindings.crypto_aead_chacha20poly1305_ietf_encrypt(
         plaintext.encode("utf-8"), aad, nonce, K
     )
 
-    user_sealed = nacl.public.SealedBox(user_pk).encrypt(K)
+    user_sealed = box_seal_hkdf(K, bytes(user_pk))
     env: dict = {
         "v": 1,
         "id": item_id,                  # server stores as-is so enclave re-derives same AAD
@@ -115,7 +145,7 @@ def encrypt_chat_message(
         "enclave_pk_fpr": enclave_pk.encode()[:16].hex(),
     }
     if visibility == "shared":
-        enclave_sealed = nacl.public.SealedBox(enclave_pk).encrypt(K)
+        enclave_sealed = box_seal_hkdf(K, bytes(enclave_pk))
         env["K_enclave"] = b64(enclave_sealed)
     return env, item_id
 
@@ -330,17 +360,17 @@ def main():
                      "description": "她说起奶奶做的包子，停顿了很久。",
                      "type": "温柔时刻"}
         mem_body = json.dumps(mem_plain, ensure_ascii=False).encode("utf-8")
-        K_m = secrets.token_bytes(32); nonce_m = secrets.token_bytes(24)
+        K_m = secrets.token_bytes(32); nonce_m = secrets.token_bytes(12)  # ChaCha20-Poly1305 IETF nonce
         mem_id = f"mom_{secrets.token_hex(6)}"
         aad_m = build_aead_aad(user_id, 1, mem_id)
-        mem_ct = nacl.bindings.crypto_aead_xchacha20poly1305_ietf_encrypt(
+        mem_ct = nacl.bindings.crypto_aead_chacha20poly1305_ietf_encrypt(
             mem_body, aad_m, nonce_m, K_m)
         mem_env = {
             "id": mem_id,
             "body_ct": b64(mem_ct),
             "nonce": b64(nonce_m),
-            "K_user": b64(nacl.public.SealedBox(user_pk).encrypt(K_m)),
-            "K_enclave": b64(nacl.public.SealedBox(enclave_pk).encrypt(K_m)),
+            "K_user": b64(box_seal_hkdf(K_m, bytes(user_pk))),
+            "K_enclave": b64(box_seal_hkdf(K_m, bytes(enclave_pk))),
             "enclave_pk_fpr": enclave_pk.encode()[:16].hex(),
             "visibility": "shared",
             "owner_user_id": user_id,
@@ -378,17 +408,17 @@ def main():
                     "dimensions": [{"name": n, "value": 50, "description": "…"}
                                    for n in ["好奇", "温柔", "锐利", "稳定", "幽默"]]}
         id_body = json.dumps(id_plain, ensure_ascii=False).encode("utf-8")
-        K_i = secrets.token_bytes(32); nonce_i = secrets.token_bytes(24)
+        K_i = secrets.token_bytes(32); nonce_i = secrets.token_bytes(12)  # ChaCha20-Poly1305 IETF nonce
         id_id = f"id_{secrets.token_hex(8)}"
         aad_i = build_aead_aad(user3_id, 1, id_id)
-        id_ct = nacl.bindings.crypto_aead_xchacha20poly1305_ietf_encrypt(
+        id_ct = nacl.bindings.crypto_aead_chacha20poly1305_ietf_encrypt(
             id_body, aad_i, nonce_i, K_i)
         id_env = {
             "id": id_id,
             "body_ct": b64(id_ct),
             "nonce": b64(nonce_i),
-            "K_user": b64(nacl.public.SealedBox(user3_pk).encrypt(K_i)),
-            "K_enclave": b64(nacl.public.SealedBox(enclave_pk).encrypt(K_i)),
+            "K_user": b64(box_seal_hkdf(K_i, bytes(user3_pk))),
+            "K_enclave": b64(box_seal_hkdf(K_i, bytes(enclave_pk))),
             "enclave_pk_fpr": enclave_pk.encode()[:16].hex(),
             "visibility": "shared",
             "owner_user_id": user3_id,

@@ -18,10 +18,16 @@ struct FeedlingTestApp: App {
                 .environmentObject(identityViewModel)
                 .environmentObject(memoryViewModel)
                 .task {
-                    // First-launch registration: if we're in cloud mode and lack
-                    // credentials, generate a keypair and register to Feedling.
-                    // Idempotent — no-ops if we already have creds.
+                    // First-launch setup, all idempotent:
+                    // 1. identity keypair generation + Feedling Cloud
+                    //    registration (no-ops if we already have creds)
+                    // 2. content keypair generation for v1 envelope
+                    //    encryption (Keychain-backed, lives forever)
+                    // 3. pull the enclave's attestation + content pubkey so
+                    //    outgoing chat/memory writes can be encrypted to it
                     await FeedlingAPI.shared.ensureRegisteredIfCloud()
+                    FeedlingAPI.shared.ensureContentKeypair()
+                    await FeedlingAPI.shared.refreshEnclaveAttestation()
                 }
                 .onOpenURL { url in
                     guard url.scheme == "feedlingtest" else { return }

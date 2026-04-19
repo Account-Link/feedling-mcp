@@ -43,6 +43,12 @@ import nacl.encoding
 import nacl.exceptions
 import nacl.public
 import nacl.signing
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.hashes import SHA256
+from cryptography.hazmat.primitives import serialization
+from cryptography.exceptions import InvalidTag
 from flask import Flask, jsonify, Response, request
 from dstack_sdk import DstackClient
 
@@ -331,6 +337,50 @@ class DecryptFailure(Exception):
         self.reason = reason
 
 
+_BOX_SEAL_INFO = b"feedling-box-seal-v1"
+
+
+def _box_seal_open_hkdf(blob: bytes, recipient_sk_bytes: bytes) -> bytes:
+    """iOS-compatible sealed-box open.
+
+    Matches testapp/FeedlingTest/ContentEncryption.swift's BoxSeal:
+      blob = ek_pub (32 bytes) || ciphertext || tag (16 bytes)
+      shared = ECDH(recipient_sk, ek_pub)
+      K_wrap = HKDF-SHA256(shared, info=BOX_SEAL_INFO, len=32)
+      nonce  = sha256(ek_pub || recipient_pub)[:12]
+      plaintext = ChaCha20-Poly1305-decrypt(ct||tag, K_wrap, nonce)
+
+    This is NOT wire-compatible with libsodium's crypto_box_seal (which
+    uses XSalsa20 + Blake2b) — we reimplement both sides to use only
+    primitives CryptoKit supports natively, so iOS doesn't need a
+    separate libsodium SPM dep.
+    """
+    if len(blob) < 32 + 16:
+        raise DecryptFailure(f"box_seal blob too short: {len(blob)}")
+    ek_pub = blob[:32]
+    ct_plus_tag = blob[32:]
+
+    try:
+        sk = X25519PrivateKey.from_private_bytes(recipient_sk_bytes)
+        ephemeral = X25519PublicKey.from_public_bytes(ek_pub)
+        shared = sk.exchange(ephemeral)
+    except Exception as e:
+        raise DecryptFailure(f"ECDH failed: {e}")
+
+    k_wrap = HKDF(algorithm=SHA256(), length=32, salt=None,
+                  info=_BOX_SEAL_INFO).derive(shared)
+
+    recipient_pub = sk.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw)
+    nonce = hashlib.sha256(ek_pub + recipient_pub).digest()[:12]
+
+    try:
+        return ChaCha20Poly1305(k_wrap).decrypt(nonce, ct_plus_tag, None)
+    except InvalidTag as e:
+        raise DecryptFailure(f"box_seal tag invalid: {e}")
+
+
 def _decrypt_envelope(env: dict, authorized_user_id: str, content_sk: nacl.public.PrivateKey) -> bytes:
     """Given a v1 envelope dict (from Flask chat history), return the
     plaintext body. Raises DecryptFailure on any integrity problem —
@@ -357,21 +407,23 @@ def _decrypt_envelope(env: dict, authorized_user_id: str, content_sk: nacl.publi
         raise DecryptFailure(f"base64 decode: {e}")
 
     # 1. Unseal K_enclave → K
-    try:
-        sealed_box = nacl.public.SealedBox(content_sk)
-        K = sealed_box.decrypt(k_enclave_sealed)
-    except nacl.exceptions.CryptoError as e:
-        raise DecryptFailure(f"SealedBox.decrypt failed: {e}")
+    # Use the iOS-compatible HKDF+ChaCha scheme (see _box_seal_open_hkdf).
+    K = _box_seal_open_hkdf(k_enclave_sealed, bytes(content_sk))
 
     if len(K) != 32:
         raise DecryptFailure(f"unexpected K length: {len(K)}")
 
     # 2. AEAD-decrypt body_ct with K + nonce, aad = owner||v||id
+    # We use IETF ChaCha20-Poly1305 (12-byte nonce) because it's the AEAD
+    # Apple's CryptoKit supports natively on iOS — no extra SPM dep needed.
+    # See docs/DESIGN_E2E.md §3.1.
     v = int(env.get("v", 1))
     item_id = env.get("id", "")
     aad = _build_aead_aad(env["owner_user_id"], v, item_id)
+    if len(nonce) != 12:
+        raise DecryptFailure(f"expected 12-byte nonce, got {len(nonce)}")
     try:
-        plaintext = nacl.bindings.crypto_aead_xchacha20poly1305_ietf_decrypt(
+        plaintext = nacl.bindings.crypto_aead_chacha20poly1305_ietf_decrypt(
             body_ct, aad, nonce, K
         )
     except nacl.exceptions.CryptoError as e:
