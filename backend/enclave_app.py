@@ -72,9 +72,24 @@ RELEASE = {
     ),
 }
 
+# Phase 1 testnet deployment (Ethereum Sepolia, chain 11155111). Will be
+# redeployed to Base Sepolia (chain 84532) before Phase 2, then to Base
+# mainnet (chain 8453) before Phase 5. The default is the live Phase 1
+# testnet contract; env vars override when we bring up new chains.
 APP_AUTH = {
-    "contract": os.environ.get("FEEDLING_APP_AUTH_CONTRACT", "0x0000000000000000000000000000000000000000"),
-    "chain_id": int(os.environ.get("FEEDLING_APP_AUTH_CHAIN_ID", 84532)),  # Base Sepolia default
+    "contract": os.environ.get(
+        "FEEDLING_APP_AUTH_CONTRACT",
+        "0x6c8A6f1e3eD4180B2048B808f7C4b2874649b88F",
+    ),
+    "chain_id": int(os.environ.get("FEEDLING_APP_AUTH_CHAIN_ID", 11155111)),
+    "deploy_tx": os.environ.get(
+        "FEEDLING_APP_AUTH_DEPLOY_TX",
+        "0x752f213ae95f6759a86750dab9545c79c6841ad7838082ddf6ad5271d117915f",
+    ),
+    "explorer_base_url": os.environ.get(
+        "FEEDLING_APP_AUTH_EXPLORER",
+        "https://sepolia.etherscan.io",
+    ),
 }
 
 # ---------------------------------------------------------------------------
