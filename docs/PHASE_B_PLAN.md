@@ -248,6 +248,72 @@ paste to their Agent.
   with `visibility: "local_only"`; K_enclave dropped.
 - Flipping to shared: client-side rewrap with K_enclave re-added.
 
+### Privacy audit card — promoted to first-class, expanded
+
+The existing `AuditCardView.swift` is, by the team's own measure, the
+best-designed surface in the product today. Phase B keeps its shape
+entirely; nothing is removed. What it adds:
+
+**Content already there** (preserved exactly):
+- 6 rows of security checks with pass/fail + per-row note:
+  - Hardware attestation valid (Intel TDX)
+  - Base image matches endorsed dstack runtime
+  - PCK cert chain → Intel SGX Root CA
+  - Body ECDSA signature valid
+  - compose_hash bound via `mr_config_id` (dstack-kms)
+  - TLS cert bound to attestation
+- "On-chain audit (public transparency, not security)" divider.
+- Etherscan link to AppAuth deploy.
+- Copy-rows for `compose_hash`, `enclave_content_pk`, `git_commit`.
+- "Verified N seconds ago" timestamp + refresh button.
+
+**New in Phase B — educational expansion + mechanism surfacing:**
+
+Each row is tap-to-expand. Tapping a row reveals a "how we got this"
+panel that explains the mechanism in ~40 words, uses plain language
+but names the primitives honestly. Examples:
+
+| Row | "How we got this" reveal |
+|---|---|
+| Hardware attestation valid (Intel TDX) | "Intel's own hardware signs a quote every time the enclave runs. We fetched this quote from the live server, verified Intel's signature against a CA baked into this app. If you trust Intel's silicon, you can trust this check." |
+| PCK cert chain → Intel SGX Root CA | "Intel ships a chain of certificates with every TDX quote — the hardware key's identity, signed by a platform key, signed by Intel's root. We walked the full chain offline. This runs entirely on your phone; no server call." |
+| compose_hash bound via mr_config_id | "The enclave's boot sequence hashes its own exact container recipe into a register called `mr_config_id`. The quote carries this register; the hash IS the recipe. If we control the app, we control the recipe, and the hash on-chain proves which recipe you're talking to." |
+| TLS cert bound to attestation | "The certificate your phone just saw during the TLS handshake was generated inside the enclave. Its fingerprint is baked into the signed quote we fetched. Match = this really is the enclave we think it is; no middleman could swap the cert without faking Intel's signature." |
+| Etherscan "View AppAuth deploy" | "The recipe hash above has to be pre-authorized on Ethereum before the enclave gets its release key. This link goes to the public transaction that did that — anyone on the internet can verify it." |
+
+Each expansion uses `feedlingInkMuted` for body, `Spacing.sm` vertical
+padding, and a single `chevron.down.circle` rotation animation (per
+DESIGN.md motion spec) on tap.
+
+**"Raw attestation JSON" affordance** (new, at the very bottom):
+
+A discreet footer link: "Show raw /attestation (for auditors)." Tap
+expands a code panel (SF Mono, `feedlingInk` on `feedlingSurface`,
+horizontally scrollable) that shows the full JSON returned by the
+enclave's `/attestation` endpoint — every field the verification
+logic reads, in its raw form. This is the "prove it all the way
+down" moment for the technically curious beta audience.
+
+**Onboarding linkage** (new):
+
+Slide 2's `checkmark.seal` micro-copy ("Verified from a signed
+Intel-TDX quote. Tap 'privacy audit' in Settings to re-run the
+proof on-device.") becomes a real tappable affordance during
+onboarding. Tapping it opens a read-only preview of the audit card
+as a sheet, pre-populated with the most recent verification result.
+Users can see the proof before they commit to using the app. Dismissing
+the sheet returns them to Slide 2.
+
+**Hero row ↔ audit card relationship** (from Pass 1 IA):
+
+The new "Privacy status" hero row in Settings → Privacy summarizes
+the audit card's state into one of three visual variants. Tapping
+the hero expands into the audit card — but now the audit card is
+structured as a dedicated `NavigationLink` destination, not an
+inline widget. This lets each row's tap-to-expand panel breathe,
+the raw-JSON panel have room to scroll, and the Etherscan link
+feel deliberate.
+
 ### Migration progress
 
 - Shown only while the first-launch-post-update rewrap is in flight
@@ -317,8 +383,24 @@ Every string above is placeholder. Before ship:
 - Ideally: a second pass by someone not in the project, reading
   cold, to flag anything a beta user wouldn't understand.
 
-Existing audit-card copy also flagged by prior HANDOFF as needing
-a review — fold that into the same round.
+**High-priority copy needing review in this same pass:**
+
+- Existing audit-card row captions (flagged by prior HANDOFF —
+  drafted in-session, technically accurate but may not read right
+  for beta users who aren't security engineers).
+- The NEW "how we got this" reveal panels on each audit row —
+  see §2 "Privacy audit card — promoted to first-class." These
+  are the honest-but-plain-language mechanism explanations. The
+  register is load-bearing: name the primitives correctly (TDX,
+  PCK, `mr_config_id`) but explain them with analogies. If these
+  read as jargon or as condescending simplification, the whole
+  trust story weakens.
+- Onboarding Slide 2's "Verified from a signed Intel-TDX quote.
+  Tap 'privacy audit' in Settings to re-run the proof on-device"
+  micro-copy — it's the first line in the app that cashes the
+  "you can audit us" check.
+- Exact wording of the three Privacy hero row states
+  (all-green / partial / re-verify).
 
 ---
 
@@ -450,6 +532,9 @@ and has a chosen default. Anything that was a genuine product call
 | Onboarding can be skipped or must be completed? | **Must complete sequentially** (swipe or Next); can revisit from Settings. | The privacy story is load-bearing. If users can skip, many will, and we lose the whole reason Phase B exists. If deferred: users skip, don't understand the model, churn at first sign of confusion. |
 | Pagination dots tappable for jumping? | **No, dots indicate position only.** | Keeps motion state predictable. Users who want to re-read go back via Settings → "Show the intro again." If deferred: engineer ships dots-as-buttons by default, users accidentally jump. |
 | Onboarding dismissal after first view | **Hard-dismissed** on completion; re-shown only via Settings. | Second-showing reduces perceived value. If deferred: user sees onboarding every cold-launch, resents it. |
+| Audit card expand-per-row panels default state | **Collapsed by default**, tap-to-expand. | Users who just want a green-check view aren't buried in explanations; users who want the mechanism get it one tap away. If deferred: defaulting to expanded turns the audit card into a wall of text on first view. |
+| Raw `/attestation` JSON panel default | **Collapsed**, reached via small text link "Show raw /attestation (for auditors)". | The audience that wants this finds it. Everyone else isn't distracted. If deferred: showing the JSON by default makes the audit card look like a developer console, not a trust artifact. |
+| Audit card NavigationLink vs sheet | **NavigationLink** (push on to Settings stack). | Each expanded row has room; back button works naturally; iOS-native. If deferred: engineer picks sheet, users lose state when backgrounding. |
 | Export file format | **.tar.gz with JSON per type + manifest.json containing attestation fingerprint at export time**. | Standard archive; future Agent can verify origin via manifest. If deferred: engineer picks .zip, loses the verify-origin property. |
 | Export file naming | **`feedling-export-{userId}-{yyyy-MM-dd-HHmm}.tar.gz`** | Includes user-visible identity + date; avoids collisions. If deferred: name collides, user confused. |
 | Per-item visibility UI — list or grid? | **List** grouped by date. Same as existing Memory Garden pattern. | Reuses existing visual vocabulary; no new component. If deferred: grid invented, inconsistent with rest of app. |
@@ -489,9 +574,14 @@ Considered and explicitly deferred:
 
 ## 6.95 What already exists (reuse, don't reinvent)
 
-- **`AuditCardView.swift`**: the existing 6/6 audit card.
-  Phase B uses this as the expand-content of the new Privacy
-  status hero row. Do NOT redesign it.
+- **`AuditCardView.swift`**: the existing 6/6 audit card — the
+  best-designed surface in the product today. Phase B promotes it
+  to a dedicated `NavigationLink` destination from the Privacy
+  status hero row, preserves every existing row + copy-row + the
+  Etherscan link, and *adds* tap-to-expand "how we got this"
+  panels per row + a raw `/attestation` JSON viewer at the bottom.
+  Do NOT redesign the core layout; only extend it. See §2
+  "Privacy audit card — promoted to first-class."
 - **`ContentEncryption.swift`** (iOS) +
   **`backend/content_encryption.py`**: shared envelope primitives.
   Phase B's export + visibility-flip features reuse these, never
