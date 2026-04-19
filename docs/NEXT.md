@@ -376,22 +376,33 @@ All 30 tests should pass before merging anything.
 
 ## After Steps 1–5: the E2E + TEE phase
 
-`docs/DESIGN_E2E.md` (v0.2, decisions locked) specifies how we get from
-"multi-tenant plaintext backend" to "Feedling cannot read your data."
-Summary:
+`docs/DESIGN_E2E.md` (v0.3, decisions locked, targets ERC-733 Stage 1
+DevProof) specifies how we get from "multi-tenant plaintext backend" to
+"Feedling operationally cannot read your data and silent code updates are
+impossible."  Summary:
 
 - User-generated content keypair on iOS + enclave-generated content keypair.
 - Every content item is wrapped under a random symmetric key; that key is
   sealed independently to (user pubkey, enclave pubkey) — the "double-wrap."
+  AEAD additional-data binds ciphertext to `owner_user_id` to defeat
+  cross-user ciphertext substitution by a malicious server.
 - MCP server runs inside a **Phala-deployed dstack TDX CVM** and terminates
   TLS there. Caddy downgrades to SNI pass-through for `mcp.feedling.app`.
-- iOS verifies the enclave's TDX attestation on every session, pins MRTD,
-  surfaces a review card when the enclave image changes out-of-band.
+- **Authorization is enforced on-chain via an `AppAuth` contract on Base
+  L2** (per `amiller/dstack-tutorial/05`). DstackKms refuses to release
+  the enclave's content-privkey unless the running `compose_hash` is in
+  the on-chain whitelist — so silent updates are architecturally
+  impossible, not merely detectable.
+- **iOS is the active auditor.** On every session, the phone runs the
+  full `sxysun/is-this-real-tea` checklist against the live deployment
+  (compose_hash match, AppAuth event log, compose reproduces, no
+  operator-controllable env vars, TLS cert bound) and surfaces a card.
 - **Indexing / aggregation compute runs on iOS by default.** Server-side
   compute is opt-in via user-placed enclave-cron jobs (Phase 6 and beyond).
 - Migration is iOS-driven: the phone re-wraps old data after each enclave
-  update, so enclave image changes require user approval.
+  update; `compose_hash` changes are already published on-chain before
+  rollout so the audit card just reflects the new authorized version.
 
-Phase 1 (TEE infra) is the blocker for everything else. Don't start it until
-prod is running stably on multi-tenant mode from this doc. Six phases total,
-~6–7 weeks of engineering to Phase 5 cutover.
+Phase 1 (TEE infra + AppAuth deploy) is the blocker for everything else.
+Don't start it until prod is running stably on multi-tenant mode from
+this doc. Six phases total, ~6–7 weeks of engineering to Phase 5 cutover.
