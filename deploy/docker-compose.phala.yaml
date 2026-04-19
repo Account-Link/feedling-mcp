@@ -32,18 +32,25 @@ services:
       # --- BAKED: security-relevant ---
       FEEDLING_ENCLAVE_PORT: "5003"
       FEEDLING_DATA_DIR: "/data"
-      # dstack inside the CVM exposes its socket here
+      # Empty = real dstack via /var/run/dstack.sock (mounted below).
+      # Non-empty would point dstack-sdk at a simulator socket — only
+      # appropriate on a dev laptop, never inside a real CVM because it
+      # would bypass real attestation.
       DSTACK_SIMULATOR_ENDPOINT: ""
     ports:
       - "5003:5003"
     volumes:
       - feedling_enclave_data:/data
+      # dstack-sdk talks to the host's dstack daemon via this socket.
+      # Phala CVM auto-creates /var/run/dstack.sock on the host; mounting
+      # it into the container lets us call get_quote/get_key/etc.
+      - /var/run/dstack.sock:/var/run/dstack.sock
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://127.0.0.1:5003/healthz"]
       interval: 15s
-      timeout: 3s
-      retries: 5
-      start_period: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
 
   backend:
     image: ghcr.io/account-link/feedling:d8737a3
