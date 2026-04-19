@@ -66,7 +66,18 @@ Flip-to-multi-tenant plan (when iOS app with registration client ships):
 | Purpose | First real-TDX deployment. iOS audit card replays the event log, verifies RTMR3 binding to compose_hash, checks compose_hash is authorized on-chain. |
 | Retired by | Phase 3 TLS-in-enclave deploy on the same CVM (see below). |
 
-### Phase 3 TDX CVM with in-enclave TLS (running, 2026-04-20)
+### Phase 3 TDX CVM with in-enclave TLS (superseded by Phase A, 2026-04-20)
+
+| | |
+|---|---|
+| Compose | `deploy/docker-compose.phala.yaml` @ commit `8e1280b` — first with `FEEDLING_ENCLAVE_TLS=true` |
+| Image | `ghcr.io/account-link/feedling:451b5b0` |
+| Compose hash | `0xb0fb1f848151ec8fb39c4814f138b1d1b143d4d729dc800302d5123c1c0f2163` |
+| On-chain | Sepolia tx `0x8de67abaf677e221ba4ee34b5a004753d0f4981bdc3c952cbcb4112a652a169c` (block 10692341) |
+| Purpose | First Feedling deployment where TLS for the audit port is generated *inside* the CVM and pinned by clients against a fingerprint in the signed TDX quote. |
+| Retired by | Phase A deploys below. |
+
+### Phase A TDX CVM with content-encryption (running, 2026-04-20)
 
 | | |
 |---|---|
@@ -75,19 +86,20 @@ Flip-to-multi-tenant plan (when iOS app with registration client ships):
 | App ID | `051a174f2457a6c474680a5d745372398f97b6ad` |
 | Instance ID | `7a4c69589d441e84e9397c0c8a387e8c9e6adcae` |
 | VM UUID | `4386636e-1325-4b92-99d8-f2ca00befdb4` |
-| Compose | `deploy/docker-compose.phala.yaml` @ commit `8e1280b` (diff from 2: `FEEDLING_ENCLAVE_TLS=true` + https healthcheck + image bumped to `:451b5b0`) |
-| Image | `ghcr.io/account-link/feedling:451b5b0` (first image with in-enclave TLS serving) |
-| Compose hash | `0xb0fb1f848151ec8fb39c4814f138b1d1b143d4d729dc800302d5123c1c0f2163` (attested by `mr_config_id[1:33]` + `compose-hash` event in RTMR3) |
-| TLS cert fingerprint | `5698f0ade4bb412d6b0847a62d695138f3bbd287dc7d1dbdeb67b15dc445e5ef` = `sha256(cert.DER)`, baked into `report_data[0:32]` |
+| Compose | `deploy/docker-compose.phala.yaml` @ commit `6269ad5` |
+| Image | `ghcr.io/account-link/feedling:8b53404` — first image with MCP-side envelope wrapping for `memory.add_moment` + `identity.init`, and MCP reads proxied through enclave decrypt |
+| Compose hash | `0x593cb8aaa1fd5ed964fdb3a1718200114ab36537f1cf551fd5162fc02512eb80` (attested by `mr_config_id[1:33]` + `compose-hash` event in RTMR3) |
+| TLS cert fingerprint | `5698f0ade4bb412d6b0847a62d695138f3bbd287dc7d1dbdeb67b15dc445e5ef` — unchanged from Phase 3 because the TLS key derivation path (`feedling-tls-v1`) is stable for this app_id. Phala dstack-KMS derives keys from `(kms_root, app_id, path)`, not `compose_hash`, so compose updates do not rotate keys. |
+| Enclave content pk | `f50c90f711e8484c7178a69657cad99944cba7c0cdeaa3cccb0388021e7d2744` — also stable across compose updates, same reason. Implication: v1 envelopes wrapped for this enclave survive compose rotations without a rewrap dance. |
 | MRTD | `f06dfda6dce1cf904d4e2bab1dc37063…` (unchanged — same base image) |
-| Endpoints (app-id-bound) | `https://051a174f…-{5001,5002,9998}.dstack-pha-prod5.phala.network` (gateway TLS) + `https://051a174f…-5003s.dstack-pha-prod5.phala.network` (**TLS passthrough to enclave**) |
+| Endpoints | unchanged from Phase 3 — app-id-bound URLs at dstack-pha-prod5, with `-5003s.` passthrough for /attestation |
 | Enclave /attestation | https://051a174f2457a6c474680a5d745372398f97b6ad-5003s.dstack-pha-prod5.phala.network/attestation |
 | Backend /healthz | https://051a174f2457a6c474680a5d745372398f97b6ad-5001.dstack-pha-prod5.phala.network/healthz |
 | MCP SSE | https://051a174f2457a6c474680a5d745372398f97b6ad-5002.dstack-pha-prod5.phala.network/sse |
-| On-chain entry | compose_hash `0xb0fb1f84…`: Sepolia tx `0x8de67abaf677e221ba4ee34b5a004753d0f4981bdc3c952cbcb4112a652a169c` (block 10692341). |
+| On-chain entries | Intermediate compose_hash `0xb0fb1f84…` (Phase 3): tx `0x8de67abaf677e221ba4ee34b5a004753d0f4981bdc3c952cbcb4112a652a169c`. Intermediate `0x2f0b80b6…` (Phase A :8b53404 compose before `FEEDLING_FLASK_URL` fix, superseded): tx `0xc9b5c89c25bd7541ec87bdbc0a4b4e74336821fb91b016a8087dab689b91f1d2`. Current `0x593cb8aa…`: tx `0x5b5a933dfc6e1f6376a32029d7a31632723dcc75447104b12ebd5da5e2f3e825`. All three remain `isAppAllowed()=true`; each represents a real compose state the CVM ran at some point, so older audit card captures still pass. |
 | Dashboard | https://cloud.phala.com/dashboard/cvms/4386636e-1325-4b92-99d8-f2ca00befdb4 |
-| Audit evidence | `docs/screenshots/audit_card_phase3_tls_pinned.png` — 6/6 green on iOS including real TLS-binding row. |
-| Purpose | First Feedling deployment where TLS for the audit port is generated *inside* the CVM and pinned by clients against a fingerprint in the signed TDX quote. An operator with dstack-gateway access can no longer MITM `/attestation` without producing a quote they can't sign. |
+| Audit evidence | CLI 7/7 green (`tools/audit_live_cvm.py`). Live E2E: register → whoami returns user + enclave pubkeys → MCP wraps memory.add → backend stores ciphertext (no plaintext title/description/type) → enclave `/v1/memory/list` returns plaintext via `K_enclave` decrypt. |
+| Purpose | First Feedling deployment where content written through MCP is stored as ciphertext end-to-end. Server operators with full backend-disk access cannot read users' memory/identity content. Chat already encrypted via iOS write path (shipped earlier). Remaining plaintext surface: `identity.nudge` (mutate-in-place, needs Phase C for decrypt-mutate-rewrap), `chat.post_message` (agent-authored chat replies). |
 
 ## Planned
 

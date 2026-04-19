@@ -6,23 +6,34 @@ Whoever picks this up next — start here.
 
 ## TL;DR
 
-- **What's live**: iOS app with end-to-end encrypted chat / memory / identity /
-  frames, talking to a Flask+MCP backend on `api.feedling.app`/`mcp.feedling.app`
-  over HTTPS, plus a real Intel-TDX enclave on Phala Cloud that attests itself
-  **and terminates its own TLS** (Phase 3 shipped 2026-04-20).
-- **What's verifiable (CLI)**: anyone can hit the enclave's `/attestation`
-  endpoint, run `tools/audit_live_cvm.py`, and get **7/7 green** proving that
-  the exact `docker-compose.phala.yaml` in this repo is what's running, that
-  Intel's DCAP chain signs the quote, that the `compose_hash` is authorized
-  on FeedlingAppAuth (Eth Sepolia), **and** that the live TLS handshake
-  reached the attested enclave (sha256(cert.DER) bound into REPORT_DATA).
-- **What's verifiable (iOS audit card)**: **6/6 green**. The TLS row now
-  performs a real comparison: a custom URLSessionDelegate captures the
-  server cert's DER-SHA256 during the handshake and matches it against
-  `enclave_tls_cert_fingerprint_hex` in the bundle. Proof image:
+- **What's live (through Phase A, 2026-04-20)**: iOS app with end-to-end
+  encrypted chat (iOS writes) + **agent-authored memory and identity cards
+  now encrypted too via MCP-side envelope wrap**, talking to a Flask+MCP
+  backend on `api.feedling.app`/`mcp.feedling.app`, plus a real Intel-TDX
+  enclave on Phala Cloud that attests itself, terminates its own TLS on
+  the attestation port, and hosts a decrypt proxy for agent reads.
+- **CLI audit**: `tools/audit_live_cvm.py` → **7/7 green** against the live
+  CVM. Checks `/attestation` parses, DCAP chain to Intel SGX Root CA,
+  measurements non-zero + `mr_config_id[0]=0x01`, `compose_hash` authorized
+  on FeedlingAppAuth (Eth Sepolia), RTMR3 event log + mr_config_id binding,
+  and live TLS-cert-DER pinned to the attested fingerprint.
+- **iOS audit card**: **6/6 green**. Screenshot:
   `docs/screenshots/audit_card_phase3_tls_pinned.png`.
-- **What's still deferred**: content-encryption migration for the full
-  user base (Phase 4–5 of `docs/DESIGN_E2E.md`).
+- **Content-plaintext status**:
+  - *Encrypted on server*: chat (iOS writer), memory add, identity init.
+  - *Still plaintext*: `feedling.identity.nudge` (mutate-in-place),
+    `feedling.chat.post_message` (agent→user reply). Both pending Phase C
+    (MCP-in-TEE) because they need decrypt→mutate→rewrap semantics.
+  - *Not yet re-wrapped*: any pre-Phase-A v0 data on disk. Migration to
+    v1 is the open A.6 work (iOS-driven, silent on first post-update launch,
+    per `docs/NEXT.md`).
+- **Key rotation observation worth knowing**: Phala dstack-KMS derives
+  per-app keys from `(kms_root, app_id, path)`, not from `compose_hash`.
+  That means `enclave_content_pk` and the enclave-TLS cert stay stable
+  across compose updates for this app_id. Good: no operational rewrap
+  dance needed after every deploy. Caveat: tying app trust to `app_id` +
+  on-chain `isAppAllowed(compose_hash)` still gives you cryptographic
+  per-compose authorization, so the security story is intact.
 
 ## ⚠ Before next agent picks this up
 

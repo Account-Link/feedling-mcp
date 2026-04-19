@@ -51,6 +51,62 @@
 
 ## 2026-04-20
 
+### [DONE] Phase A — Content encryption rollout for agent-authored writes
+
+**Backend**
+- `/v1/users/whoami` now returns `public_key` (user's X25519 content pubkey from users.json)
+  and `enclave_content_public_key_hex` (cached from enclave `/attestation`, 60s TTL).
+  One round trip gives MCP everything it needs to wrap an envelope.
+- New `backend/content_encryption.py` — Python counterpart to iOS `ContentEncryption.swift`.
+  `box_seal` uses HKDF-SHA256(salt=None, info="feedling-box-seal-v1"), nonce=SHA256(ek||rcp)[:12],
+  ChaChaPoly. `build_envelope` produces the `{"envelope": …}` shape POSTed to
+  `/v1/{chat/message,memory/add,identity/init}`.
+
+**MCP (backend/mcp_server.py)**
+- `feedling.memory.add_moment` wraps `{title, description, type}` into a v1 envelope
+  before POSTing. Plaintext metadata (`occurred_at`, `source`) rides alongside inside
+  the envelope dict for server-side sorting.
+- `feedling.identity.init` applies the same wrap to `{agent_name, self_introduction, dimensions}`.
+- `feedling.identity.nudge` intentionally left on the plaintext path — in-place mutation of an
+  encrypted card requires decrypt→mutate→rewrap, cleanly solved by Phase C (MCP-in-TEE).
+- New `_get_decrypted()` — when `FEEDLING_ENCLAVE_URL` is set, MCP routes `memory.list`,
+  `identity.get`, `chat.get_history` through the enclave's decrypt proxy so agents see
+  plaintext. Unset → fall back to Flask.
+- Fallback: pre-v1 users (no uploaded pubkey) or unreachable enclave → v0 plaintext POST,
+  so agents never lose write capability mid-session.
+
+**Compose (deploy/docker-compose.phala.yaml)**
+- `backend.FEEDLING_ENCLAVE_URL = https://enclave:5003` (Phase 3 missed this — backend calls
+  enclave `/attestation` to cache content pubkey for whoami).
+- `mcp.FEEDLING_ENCLAVE_URL = https://enclave:5003` (routes MCP reads through decrypt proxy).
+- `enclave.FEEDLING_FLASK_URL = http://backend:5001` (fixes a latent bug: enclave's decrypt
+  handlers call `/v1/users/whoami` on Flask, but the 127.0.0.1 default doesn't resolve
+  across distinct compose containers — returned 500 on the first test deploy).
+
+**Live verification (Phala CVM)**
+- Running: git_commit `8b53404`, compose_hash `0x593cb8aaa1fd5ed964fdb3a1718200114ab36537f1cf551fd5162fc02512eb80`,
+  Sepolia tx `0x5b5a933dfc6e1f6376a32029d7a31632723dcc75447104b12ebd5da5e2f3e825`.
+- CLI auditor 7/7 green. End-to-end: register a fresh user → MCP-side wrap via
+  `backend/content_encryption.build_envelope` → server stores ciphertext only (no plaintext
+  `title`/`description`/`type`) → enclave `/v1/memory/list` returns plaintext via `K_enclave`.
+- Observation worth recording: Phala dstack-KMS derives per-app keypairs from
+  `(kms_root, app_id, path)`, NOT from `compose_hash`. So `enclave_content_pk` and the
+  TLS cert are stable across compose rotations for this app_id. This is stronger than
+  `docs/DESIGN_E2E.md` §5.3 assumed — no re-wrap dance is needed after a compose update,
+  which simplifies operational rollouts.
+
+**Still pending for Phase A**
+- A.6 silent migration of pre-existing v0 plaintext rows (chat/memory/identity) into v1
+  envelopes on first iOS launch post-update. Design in NEXT.md; needs a
+  `POST /v1/content/rewrap` endpoint.
+- Chat replies from agent (`feedling.chat.post_message`) still POST plaintext — paired
+  with `identity.nudge` as the "Phase C dependencies" bucket, for the same
+  decrypt-mutate-or-write-through-TEE reason.
+
+---
+
+## 2026-04-20
+
 ### [DONE] Phase 3 — TLS-in-enclave + iOS cert pinning
 
 **Enclave (backend/enclave_app.py)**
