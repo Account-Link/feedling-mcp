@@ -28,7 +28,7 @@ final class FeedlingAPI: ObservableObject {
     }
 
     private static let appGroup = "group.com.feedling.mcp"
-    private static let defaultCloudURL = "http://54.209.126.4:5001"     // TODO: flip to https://api.feedling.app when HTTPS is live
+    private static let defaultCloudURL = "https://api.feedling.app"
 
     // MARK: - Published credentials (drives UI)
 

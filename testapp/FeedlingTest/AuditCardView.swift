@@ -133,17 +133,17 @@ final class AuditViewModel: ObservableObject {
     }
 
     private func makeAttestationURL(api: FeedlingAPI) -> URL? {
+        if let override = ProcessInfo.processInfo.environment["FEEDLING_ATTESTATION_URL"] {
+            return URL(string: override)
+        }
         if api.storageMode == .selfHosted {
             let mcp = api.baseURL.replacingOccurrences(of: "api.", with: "mcp.")
             return URL(string: "\(mcp)/attestation")
         }
-        // Phase 1: enclave lives at :5003 on the same host as Flask until
-        // we land mcp.feedling.app HTTPS. For dev, we allow overriding to
-        // localhost via env.
-        if let override = ProcessInfo.processInfo.environment["FEEDLING_ATTESTATION_URL"] {
-            return URL(string: override)
-        }
-        return URL(string: "https://mcp.feedling.app/attestation")
+        // Phase 2: live Phala dstack-pha-prod5 CVM feedling-enclave.
+        // Same URL as FeedlingAPI.attestationURL; kept here so the audit
+        // card's fetcher doesn't need to depend on the private attestationURL.
+        return URL(string: "https://051a174f2457a6c474680a5d745372398f97b6ad-5003.dstack-pha-prod5.phala.network/attestation")
     }
 
     // MARK: - Wire type for the /attestation response
