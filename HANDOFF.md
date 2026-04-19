@@ -8,12 +8,36 @@ closed NEXT.md Phase 2. Whoever picks this up next — start here.
 - **What's live**: iOS app with end-to-end encrypted chat / memory / identity /
   frames, talking to a Flask+MCP backend on `api.feedling.app`/`mcp.feedling.app`
   over HTTPS, plus a real Intel-TDX enclave on Phala Cloud that attests itself.
-- **What's verifiable**: anyone can hit the enclave's `/attestation` endpoint,
-  run `tools/audit_live_cvm.py`, and get a 6/6 green audit card proving that
+- **What's verifiable (CLI)**: anyone can hit the enclave's `/attestation`
+  endpoint, run `tools/audit_live_cvm.py`, and get **6/6 green** proving that
   the exact `docker-compose.phala.yaml` in this repo is what's running, that
   Intel's DCAP chain signs the quote, and that the `compose_hash` is
   authorized on FeedlingAppAuth (Eth Sepolia).
+- **What's verifiable (iOS audit card)**: **5 green + 1 amber**. The amber
+  row is "TLS cert bound to attestation" — Phase 3 work. The CLI tool
+  checks different things (quote parse, measurements, on-chain, event log)
+  and doesn't include TLS pinning; that's why the numbers differ.
 - **What's deferred**: Phase 3 TLS-in-enclave (see last section).
+
+## ⚠ Before next agent picks this up
+
+**All user-facing copy on the iOS audit card — row labels, captions,
+inline explanations, the TLS warning text, the "On-chain audit (public
+transparency, not security)" wording, everything — needs a review pass
+by @sxysun before it goes in front of real users.** The current copy was
+drafted in-session and is technically accurate but may not read right
+for the intended audience (beta users who aren't security engineers).
+
+Source files for that copy:
+- `testapp/FeedlingTest/AuditCardView.swift` — row titles, captions,
+  amber explanation, Etherscan footer text
+- `testapp/FeedlingTest/EventLogReplay.swift` — any reason strings that
+  bubble up into row captions
+- `testapp/FeedlingTest/DCAP/Verifier.swift` — error descriptions shown
+  when a row fails
+
+Also review `docs/screenshots/audit_card_phase2_live_tdx.png` to confirm
+the finished shape matches the product voice.
 
 ## Key endpoints
 
@@ -151,6 +175,12 @@ SIMCTL_CHILD_FEEDLING_ATTESTATION_URL=http://127.0.0.1:5003/attestation \
 ```
 
 ## Phase 3: what's left and why it isn't done
+
+**This is the row that makes the iOS audit card 5 green + 1 amber
+instead of 6/6.** Fixing it is the single biggest remaining item
+before the product can claim "fully end-to-end attested." The CLI
+auditor (`tools/audit_live_cvm.py`) doesn't check this, which is why
+its output shows 6/6 — different set of checks.
 
 The iOS audit card has one amber row: **"TLS cert bound to attestation"**.
 
