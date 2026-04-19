@@ -1,0 +1,28 @@
+.git
+.gitignore
+.DS_Store
+
+# iOS app is not part of the server container
+testapp/
+
+# Docs
+docs/
+*.md
+
+# Python local
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Local env files must never ship inside the image
+deploy/.env
+deploy/*.local

@@ -371,3 +371,22 @@ All 30 tests should pass before merging anything.
 - iOS UI tab structure (Chat / Identity / Garden / Settings)
 - ScreenActivityAttributes.ContentState fields (title/subtitle/body/data)
 - All existing endpoint URLs and response shapes (backward compat)
+
+---
+
+## After Steps 1–5: the E2E + TEE phase
+
+`docs/DESIGN_E2E.md` specifies how we get from "multi-tenant plaintext
+backend" to "Feedling cannot read your data." Summary:
+
+- User-generated content keypair on iOS + enclave-generated content keypair.
+- Every content item is wrapped under a random symmetric key, with that key
+  sealed to both recipients independently (double-wrap).
+- MCP server moves inside a dstack TDX CVM and terminates TLS there.
+- iOS verifies the enclave's TDX attestation on every session and pins the
+  MRTD.
+- Migration is iOS-driven: the phone re-wraps old data after each enclave
+  update, so enclave image changes require user approval.
+
+Phase 1 (TEE infra) is the blocker for everything else. Don't start it until
+prod is running stably on multi-tenant mode from this doc.

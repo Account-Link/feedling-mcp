@@ -1798,6 +1798,12 @@ def bootstrap():
 # ---------------------------------------------------------------------------
 
 
+@app.route("/healthz", methods=["GET"])
+def healthz():
+    """Liveness + readiness probe. Public, no auth — used by Docker/compose."""
+    return jsonify({"ok": True, "mode": "single_user" if SINGLE_USER else "multi_tenant"})
+
+
 @app.errorhandler(401)
 def _unauthorized(e):
     return jsonify({"error": "unauthorized"}), 401

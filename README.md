@@ -53,7 +53,7 @@ feedling-mcp-v1/
 
 **Pending**
 - [ ] HTTPS + DNS for `api.feedling.app` + `mcp.feedling.app`
-- [ ] End-to-end encryption of stored user content (public key is on file; encryption not wired yet)
+- [ ] End-to-end encryption of stored user content — designed in `docs/DESIGN_E2E.md` (dstack TDX + per-user-keypair-on-iOS + double-wrap); implementation is ~6 weeks
 - [ ] Claude.ai connector submission
 
 ---
@@ -97,6 +97,22 @@ Claude.ai / Claude Desktop       OpenClaw / Hermes
 
 ### Run (quick start)
 
+**Docker / docker-compose (recommended, dstack-ready):**
+
+```bash
+cp deploy/feedling.env.example deploy/.env   # edit SINGLE_USER, FEEDLING_API_KEY, etc.
+docker compose -f deploy/docker-compose.yaml --env-file deploy/.env up -d --build
+```
+
+This brings up `backend` (Flask, port 5001) + `mcp` (FastMCP SSE, port 5002).
+Data persists in the named volume `feedling_data` (mounted at `/data`).
+Drop the APNs `.p8` into that volume to enable push.
+
+The same `docker-compose.yaml` is the deployment unit for the future dstack
+TDX deployment — see `docs/DESIGN_E2E.md`.
+
+**Bare-metal / systemd:**
+
 ```bash
 cd backend
 pip install -r requirements.txt
@@ -104,7 +120,8 @@ nohup python app.py > ~/app.log 2>&1 &
 nohup python mcp_server.py > ~/mcp.log 2>&1 &
 ```
 
-For production, use the systemd services in `deploy/`.
+Or use the systemd services + `deploy/setup.sh` — generates a fresh API key
+and writes `~/feedling.env` automatically.
 
 ### HTTP Endpoints
 

@@ -1,0 +1,80 @@
+# Feedling docker-compose — Flask backend + FastMCP SSE server.
+#
+# Quick start:
+#   cp deploy/feedling.env.example deploy/.env     # edit the important bits
+#   docker compose -f deploy/docker-compose.yaml --env-file deploy/.env up -d --build
+#
+# Ports published:
+#   5001  — Flask HTTP API (iOS app + HTTP-skill agents)
+#   5002  — FastMCP SSE (Claude.ai / MCP clients)
+#   9998  — WebSocket frame ingest (iOS broadcast extension)
+#
+# Data persists under the named volume `feedling_data` (maps to /data in the
+# containers). Drop the APNs .p8 key into that volume to enable push; without
+# it, push endpoints log-only.
+#
+# TLS is intentionally NOT handled here. Run Caddy on the host (see
+# deploy/Caddyfile) so TLS config stays independent of container restarts.
+#
+# dstack readiness (see docs/DESIGN_E2E.md):
+#   When the E2E phase ships, the `mcp` service here gets replaced by a
+#   dstack-deployed CVM. This compose file will continue to run the `backend`
+#   service on the non-TEE host. No rewrite; the mcp block just moves out.
+
+name: feedling
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: feedling-backend:dev
+    command: ["python", "-u", "backend/app.py"]
+    restart: unless-stopped
+    environment:
+      # Deployment mode — see backend/app.py
+      SINGLE_USER: "${SINGLE_USER:-true}"
+      FEEDLING_API_KEY: "${FEEDLING_API_KEY:-}"
+      # Storage + networking
+      FEEDLING_DATA_DIR: "/data"
+      FEEDLING_WS_PORT: "9998"
+      FEEDLING_PUBLIC_BASE_URL: "${FEEDLING_PUBLIC_BASE_URL:-}"
+      FEEDLING_PUSH_COOLDOWN_SEC: "${FEEDLING_PUSH_COOLDOWN_SEC:-300}"
+      FEEDLING_LIVE_ACTIVITY_DEDUPE_SEC: "${FEEDLING_LIVE_ACTIVITY_DEDUPE_SEC:-900}"
+    ports:
+      - "5001:5001"
+      - "9998:9998"
+    volumes:
+      - feedling_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:5001/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  mcp:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: feedling-mcp:dev
+    command: ["python", "-u", "backend/mcp_server.py"]
+    restart: unless-stopped
+    environment:
+      # Same mode flag as backend so the MCP server knows which auth model
+      # it's routing keys under.
+      SINGLE_USER: "${SINGLE_USER:-true}"
+      FEEDLING_API_KEY: "${FEEDLING_API_KEY:-}"
+      # Internal hostname — docker-compose gives each service a DNS entry.
+      FEEDLING_FLASK_URL: "http://backend:5001"
+      FEEDLING_MCP_PORT: "5002"
+      FEEDLING_MCP_TRANSPORT: "${FEEDLING_MCP_TRANSPORT:-sse}"
+    ports:
+      - "5002:5002"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  feedling_data:
+    name: feedling_data
