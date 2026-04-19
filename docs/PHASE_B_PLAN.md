@@ -337,7 +337,7 @@ Delete my data              | spinner + "Revoking access on server"| n/a        
 Reset & re-import           | step indicator 1/3 → 2/3 → 3/3     | n/a                                     | roll back what was done, show where it failed, offer Retry     | share sheet with MCP install string   | step 2/3 succeeded but step 3 failed: user is registered but data not imported yet — show "Finish import" button
 Per-item visibility flip    | row row shows inline activity dot  | "No items yet" with "Add your first memory" CTA (memory) / "Say hi to your agent" (chat) | row reverts + toast "Couldn't save"     | row animates to new state, no toast   | n/a
 Migration progress          | inline progress bar in Privacy hero row, not modal | n/a (hidden when nothing to migrate)    | amber row + "Some items couldn't upgrade. Retry?" + count  | progress bar slides out, hero flips to ALL-GREEN | "12 of 47 upgraded" live count
-MRTD-changed consent        | full-screen modal (blocks app)     | n/a (only shown when MRTD differs)      | n/a (server isn't involved; local check) | modal dismisses, last-accepted MRTD saved | n/a — either accept or sign out
+Compose-hash-changed consent        | full-screen modal (blocks app)     | n/a (only shown when compose_hash differs from last-accepted) | n/a (server isn't involved; local comparison) | modal dismisses, last-accepted compose_hash saved | n/a — either accept or sign out
 Audit card data fetch (initial) | skeleton card (shape of final card, animated shimmer) | n/a (attestation always returns)        | card with "Couldn't reach the enclave. Try again?" + retry btn | full card with 6/6 rows               | partial rows shown; failed rows surfaced with reason
 "Run your own server" deep-link | n/a (pure navigation)              | n/a                                     | n/a                                      | full-screen runbook view              | n/a
 ```
@@ -346,15 +346,54 @@ Every empty state has warmth, a primary action, and context — not
 "No items found." Every error state tells the user what happened,
 what they can do, and (where relevant) what they haven't lost.
 
-### MRTD-changed consent card
+### Compose-hash-changed consent card
 
-- Triggered on app startup when `enclaveMRTD` in the current
-  attestation differs from the last-accepted value in UserDefaults.
-- Modal: "The enclave running Feedling just updated. Here's what
-  changed: old MRTD `abc…` → new MRTD `xyz…`. The new compose_hash
-  is authorized on-chain (tx link). Review & continue, or sign out."
-- Signing out without accepting leaves user_sk intact but stops
-  network calls to the new enclave until they return and accept.
+**Trigger:** on app startup, if the `compose_hash` returned by the
+current `/attestation` differs from the last-accepted value in
+UserDefaults (key: `feedling.lastAcceptedComposeHash`). This is the
+user-meaningful signal — it means "the Feedling team pushed a new
+app version." MRTD and RTMR0-2 are dstack-OS platform measurements
+that can change for unrelated reasons (dstack updates its own OS
+image); those are shown in the audit card for transparency but do
+NOT trigger this modal, per
+`/Users/sxysun/Desktop/suapp/dstack-tutorial/01-attestation-and-reference-values/`
+§"Reference Values: Where They Come From."
+
+**Modal content (full-screen, blocks app until resolved):**
+- Headline: "Feedling has a new version."
+- Body: "The app on your phone just saw a newer version of the
+  Feedling server. Here's what changed:"
+- Old compose_hash (first 12 chars, `feedlingInkMuted`,
+  SF Mono 13pt): `abc1234deadb…`
+- Arrow (`arrow.down`, `feedlingSage`).
+- New compose_hash (first 12 chars, `feedlingInk`,
+  SF Mono 13pt): `def5678beef0…`
+- Sub-line: "This new version is authorized on-chain.
+  [View the transaction →]" (Etherscan link, `feedlingSage` text).
+- Sub-line: "What you can still read: all your existing memories
+  and chat. They were encrypted to a key that's bound to your Apple
+  account, not to any specific server version." (Reassures that data
+  continuity is preserved — the enclave content_pk derivation is
+  stable per app_id, confirmed in the Phase A deploys.)
+- Primary CTA: "Got it, continue" (fills `feedlingSage`).
+- Secondary CTA: "Sign out for now" (text-only, `feedlingInkMuted`).
+
+**On "Got it":** write new compose_hash to UserDefaults, dismiss
+modal, launch flow proceeds. App re-runs audit on next Privacy
+visit so hero row reflects the new state.
+
+**On "Sign out for now":** leaves `user_sk` + content key in Keychain
+(so the user can come back and accept later), but all network calls
+to the new server are blocked. Only the "Sign in again" path in
+Settings is reachable. Explicitly NOT a destructive action.
+
+**Additional behavior — platform-layer changes (MRTD / RTMR0-2)**:
+not user-facing. If dstack updates its OS image, MRTD changes. The
+audit card surfaces that change in its raw JSON view for auditors,
+but no modal fires. The reasoning, per dstack-tutorial §1: MRTD is
+bound to a reproducible build of [meta-dstack](https://github.com/Dstack-TEE/meta-dstack);
+verifying it is an auditor task, not a per-user consent moment.
+Beta users don't need to know dstack updated its kernel.
 
 ---
 
@@ -539,7 +578,7 @@ and has a chosen default. Anything that was a genuine product call
 | Export file naming | **`feedling-export-{userId}-{yyyy-MM-dd-HHmm}.tar.gz`** | Includes user-visible identity + date; avoids collisions. If deferred: name collides, user confused. |
 | Per-item visibility UI — list or grid? | **List** grouped by date. Same as existing Memory Garden pattern. | Reuses existing visual vocabulary; no new component. If deferred: grid invented, inconsistent with rest of app. |
 | Settings — reorder or extend in place? | **Reorder**: Privacy moves to top-of-list, Dynamic Island / APNs controls pushed into a "Notifications" subsection below. | Privacy-first framing is the Phase B thesis. If deferred: Privacy lost among existing rows. |
-| MRTD-changed consent — modal or in-line banner? | **Full-screen modal** on app launch, blocks app until reviewed. | A changed enclave is a security event, not a notification. If deferred: banner dismissed without review, whole security story weakened. |
+| Compose-hash-changed consent — modal or in-line banner? | **Full-screen modal** on app launch, blocks app until reviewed. | A changed enclave is a security event, not a notification. If deferred: banner dismissed without review, whole security story weakened. |
 | Reset & re-import step indicator — numeric or labeled? | **Both: "Step 2 of 3 · Re-registering your account"**. | Numeric progress + semantic label so users know both how far and what's happening. If deferred: spinner with no context, user anxious during a 30s operation. |
 | "Host it yourself" tone — neutral or invitational? | **Invitational**: "Your data, your server, your rules. Here's how." | Phase B thesis includes "walk away whenever." Self-hosted isn't the weird case; it's the other equal option. If deferred: reads as "escape hatch for power users," which contradicts the product voice. |
 
