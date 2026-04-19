@@ -486,6 +486,26 @@ def _frame_url(store: UserStore, filename: str) -> str:
 
 
 def _save_frame(store: UserStore, payload: dict):
+    """Save a frame. Two wire formats:
+
+      v0 (legacy plaintext):
+        {"type":"frame","image":<b64 jpeg>,"ocr_text":...,"app":...,"ts":...}
+
+      v1 (end-to-end envelope — see docs/DESIGN_E2E.md §3.2):
+        {"type":"frame","ts":..., "envelope":{
+            "v":1,"id":...,"body_ct":...,"nonce":...,
+            "K_user":...,"K_enclave":...,
+            "visibility":"shared","owner_user_id":...}}
+
+    For v1 the JPEG + OCR are inside `body_ct` (ChaCha20-Poly1305 AEAD
+    bound to owner|v|id). Server never decrypts — it writes the envelope
+    to <frames_dir>/<id>.env.json and appends the item to frames_meta
+    with `encrypted=True` so the UI+enclave path can distinguish.
+    """
+    env = payload.get("envelope")
+    if isinstance(env, dict) and env.get("v") and env.get("body_ct"):
+        _save_frame_envelope(store, payload, env)
+        return
     ts = payload.get("ts", time.time())
     img_b64 = payload.get("image", "")
     if not img_b64:
@@ -517,6 +537,46 @@ def _save_frame(store: UserStore, payload: dict):
                 old.unlink()
 
     print(f"[ingest:{store.user_id}] saved {filename} app={meta['app']} ocr={len(meta['ocr_text'])}chars")
+
+
+def _save_frame_envelope(store: UserStore, payload: dict, env: dict):
+    """Persist a v1 frame envelope. The ciphertext blob is big (>150KB for
+    typical screen frames) so we keep it on disk as a separate .env.json
+    instead of inlining into frames_meta. frames_meta gets a lightweight
+    index entry with `encrypted=True`.
+    """
+    item_id = env.get("id") or uuid.uuid4().hex
+    ts = payload.get("ts") or time.time()
+    env_path = store.frames_dir / f"{item_id}.env.json"
+    try:
+        env_path.write_text(json.dumps(env))
+    except Exception as e:
+        print(f"[ingest:{store.user_id}] envelope write failed id={item_id}: {e}")
+        return
+
+    meta = {
+        "filename": f"{item_id}.env.json",
+        "ts": ts,
+        "app": None,         # unknown — inside ciphertext
+        "ocr_text": "",      # unknown — inside ciphertext
+        "w": payload.get("w", 0),
+        "h": payload.get("h", 0),
+        "encrypted": True,
+        "id": item_id,
+        "v": env.get("v", 1),
+        "owner_user_id": env.get("owner_user_id"),
+    }
+
+    with store.frames_lock:
+        store.frames_meta.append(meta)
+        if len(store.frames_meta) > MAX_FRAMES:
+            removed = store.frames_meta.pop(0)
+            old = store.frames_dir / removed["filename"]
+            if old.exists():
+                old.unlink()
+
+    body_len = len(env.get("body_ct") or "")
+    print(f"[ingest:{store.user_id}] saved v1 frame id={item_id} body_ct_len={body_len}")
 
 
 # ---------------------------------------------------------------------------
