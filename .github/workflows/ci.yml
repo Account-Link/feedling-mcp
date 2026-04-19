@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs on the same ref — latest push wins.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Solidity — FeedlingAppAuth contract tests
+  # -------------------------------------------------------------------------
+  forge-test:
+    name: forge test (contracts)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: forge build
+        run: forge build --sizes
+
+      - name: forge test
+        run: forge test -vvv
+
+      - name: forge coverage (report only, no gate yet)
+        run: forge coverage --report summary
+        continue-on-error: true
+
+  # -------------------------------------------------------------------------
+  # Python — backend API tests in both deployment modes
+  # -------------------------------------------------------------------------
+  python-tests:
+    name: test_api.py (${{ matrix.mode }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [single-user, multi-tenant]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend deps (hash-verified)
+        run: |
+          python -m pip install --upgrade pip
+          pip install --require-hashes -r backend/requirements.lock
+          pip install requests  # test-only
+
+      - name: Start backend (${{ matrix.mode }})
+        env:
+          FEEDLING_DATA_DIR: /tmp/feedling-data-ci
+          FEEDLING_WS_PORT: "19998"
+          SINGLE_USER: ${{ matrix.mode == 'single-user' && 'true' || 'false' }}
+        run: |
+          mkdir -p "$FEEDLING_DATA_DIR"
+          python backend/app.py > /tmp/backend.log 2>&1 &
+          echo $! > /tmp/backend.pid
+          # wait for /healthz
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:5001/healthz >/dev/null; then
+              echo "backend up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "backend never came up"
+          cat /tmp/backend.log
+          exit 1
+
+      - name: Run test suite
+        run: |
+          FLAG=""
+          if [ "${{ matrix.mode }}" = "multi-tenant" ]; then FLAG="--multi-tenant"; fi
+          python backend/test_api.py http://127.0.0.1:5001 $FLAG
+
+      - name: Stop backend
+        if: always()
+        run: |
+          [ -f /tmp/backend.pid ] && kill $(cat /tmp/backend.pid) || true
+          echo "=== backend log (last 50 lines) ==="
+          tail -50 /tmp/backend.log || true
+
+  # -------------------------------------------------------------------------
+  # Docker — confirm the hash-pinned build stays reproducible
+  # -------------------------------------------------------------------------
+  docker-build:
+    name: docker compose build (hash-verified)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build images (no cache, --require-hashes enforced)
+        run: docker compose -f deploy/docker-compose.yaml build --no-cache
+
+      - name: Compose up + healthcheck
+        env:
+          SINGLE_USER: "true"
+        run: |
+          docker compose -f deploy/docker-compose.yaml up -d
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:5001/healthz >/dev/null; then
+              echo "stack healthy"; exit 0
+            fi
+            sleep 2
+          done
+          echo "stack never went healthy"
+          docker compose -f deploy/docker-compose.yaml logs
+          exit 1
+
+      - name: Compose down
+        if: always()
+        run: docker compose -f deploy/docker-compose.yaml down -v
+
+  # -------------------------------------------------------------------------
+  # Syntax + quick static checks
+  # -------------------------------------------------------------------------
+  lint:
+    name: syntax + static
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile all Python
+        run: python -m compileall -q backend tools 2>/dev/null || python -m compileall -q backend
