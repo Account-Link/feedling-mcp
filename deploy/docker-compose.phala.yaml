@@ -100,6 +100,10 @@ services:
       SINGLE_USER: "false"
       FEEDLING_API_KEY: ""
       FEEDLING_FLASK_URL: "http://backend:5001"
+      # When set, MCP routes content reads (chat/memory/identity) through
+      # the enclave's decrypt proxy so agents see plaintext. Writes still
+      # go to Flask (which stores the ciphertext MCP wrapped for them).
+      FEEDLING_ENCLAVE_URL: "https://enclave:5003"
       FEEDLING_MCP_PORT: "5002"
       FEEDLING_MCP_TRANSPORT: "sse"
     ports:

@@ -35,6 +35,15 @@ from starlette.types import ASGIApp
 from content_encryption import build_envelope
 
 FLASK_BASE = os.environ.get("FEEDLING_FLASK_URL", "http://127.0.0.1:5001")
+# When set, MCP routes content reads (chat history, memory list,
+# identity get) through the enclave's decrypt endpoints so agents see
+# plaintext rather than ciphertext. When unset (dev / self-hosted
+# without an enclave), MCP calls Flask directly — v0 items come back
+# plaintext, v1 items come back as opaque envelopes.
+# verify=False on these calls because the enclave's TLS cert is
+# self-signed; trust is REPORT_DATA-pinned from outside, not a PKI
+# property of the in-cluster hop.
+ENCLAVE_BASE = os.environ.get("FEEDLING_ENCLAVE_URL", "").rstrip("/")
 FALLBACK_API_KEY = os.environ.get("FEEDLING_API_KEY", "").strip()
 SINGLE_USER = os.environ.get("SINGLE_USER", "true").lower() == "true"
 
@@ -177,6 +186,23 @@ def _headers(ctx: Context | None = None) -> dict:
 def _get(path: str, params: dict | None = None, ctx: Context | None = None) -> dict:
     with httpx.Client(timeout=60) as client:
         r = client.get(f"{FLASK_BASE}{path}", params=params, headers=_headers(ctx))
+        r.raise_for_status()
+        return r.json()
+
+
+def _get_decrypted(path: str, params: dict | None = None, ctx: Context | None = None) -> dict:
+    """Read a content endpoint through the enclave's decrypt proxy when
+    one is configured, otherwise fall back to Flask.
+
+    The enclave hosts mirrors of /v1/chat/history, /v1/memory/list, and
+    /v1/identity/get that unseal K_enclave and AEAD-decrypt the body
+    before responding. Agents — which don't hold user_sk — need this
+    path to read v1 envelopes at all.
+    """
+    if not ENCLAVE_BASE:
+        return _get(path, params=params, ctx=ctx)
+    with httpx.Client(timeout=60, verify=False) as client:
+        r = client.get(f"{ENCLAVE_BASE}{path}", params=params, headers=_headers(ctx))
         r.raise_for_status()
         return r.json()
 
@@ -333,7 +359,7 @@ def chat_post_message(content: str, ctx: Context = None) -> dict:
     description="Retrieve recent chat history between the user and the Agent.",
 )
 def chat_get_history(limit: int = 50, ctx: Context = None) -> dict:
-    return _get("/v1/chat/history", {"limit": min(limit, 200)}, ctx=ctx)
+    return _get_decrypted("/v1/chat/history", {"limit": min(limit, 200)}, ctx=ctx)
 
 
 # ---------------------------------------------------------------------------
@@ -394,7 +420,7 @@ def identity_init(
     description="Retrieve the current identity card.",
 )
 def identity_get(ctx: Context = None) -> dict:
-    return _get("/v1/identity/get", ctx=ctx)
+    return _get_decrypted("/v1/identity/get", ctx=ctx)
 
 
 @mcp.tool(
@@ -486,7 +512,7 @@ def memory_add_moment(
     description="List moments in the memory garden, ordered by occurred_at descending.",
 )
 def memory_list(limit: int = 20, ctx: Context = None) -> dict:
-    return _get("/v1/memory/list", {"limit": limit}, ctx=ctx)
+    return _get_decrypted("/v1/memory/list", {"limit": limit}, ctx=ctx)
 
 
 @mcp.tool(
