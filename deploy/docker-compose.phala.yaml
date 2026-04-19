@@ -46,11 +46,17 @@ services:
       # it into the container lets us call get_quote/get_key/etc.
       - /var/run/dstack.sock:/var/run/dstack.sock
     healthcheck:
-      test: ["CMD", "curl", "-fs", "http://127.0.0.1:5003/healthz"]
+      # Liveness (not readiness): any HTTP response from Flask — including
+      # 503 while dstack-sdk boot is in flight — counts as healthy. If we
+      # required /healthz=200, a slow first-quote generation would fail
+      # the healthcheck window and take the whole compose down with it.
+      # Real readiness is confirmed externally by /attestation returning
+      # 200 (iOS audit card does this).
+      test: ["CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5003/healthz | grep -qE '^(200|503)$'"]
       interval: 15s
       timeout: 5s
-      retries: 10
-      start_period: 45s
+      retries: 20
+      start_period: 120s
 
   backend:
     image: ghcr.io/account-link/feedling:d8737a3
