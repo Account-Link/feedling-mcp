@@ -30,6 +30,21 @@ Whoever picks this up next — start here.
     batched). Exactly one production user to verify against (noted in
     task #23); once her migration completes, v0 accept paths + the
     rewrap endpoint itself get stripped.
+- *Phase B UX*: shipped 2026-04-20. Onboarding (3-slide),
+    Settings → Privacy (hero + export / delete / reset / runbook),
+    audit card promoted with tap-to-expand mechanism reveals + raw
+    `/attestation` JSON viewer. Backend endpoints
+    `GET /v1/content/export` + `POST /v1/account/reset` live on the
+    CVM. Compose-hash-changed consent modal fires when the app
+    version rotates (trigger is `compose_hash`, NOT MRTD — per
+    dstack-tutorial §1 MRTD is a platform-layer signal, not an app
+    signal). Two items deferred to a Phase B wave-2 commit:
+    per-item visibility toggles (endpoint already supports them via
+    existing rewrap, just needs the list+toggle UI) and the inline
+    migration-progress row in the Privacy hero.
+- *Pending copy review by @sxysun*: onboarding microcopy, audit-card
+    mechanism reveals, compose-hash consent modal copy. Flagged in
+    `docs/PHASE_B_PLAN.md` §4.
 - **Key rotation observation worth knowing**: Phala dstack-KMS derives
   per-app keys from `(kms_root, app_id, path)`, not from `compose_hash`.
   That means `enclave_content_pk` and the enclave-TLS cert stay stable

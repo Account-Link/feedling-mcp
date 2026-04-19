@@ -51,6 +51,104 @@
 
 ## 2026-04-20
 
+### [DONE] Phase B — Privacy UX + onboarding + audit card expansion
+
+After `/plan-design-review` (9/10 overall) and `/plan-eng-review`
+(scope accepted, 3 architectural fixes applied in-line), shipped the
+full Phase B user-visible surface. The audit card explicitly promoted
+to a first-class treatment per @sxysun's request to preserve the
+attestation-details page and its "how we get them" affordance.
+
+**Backend (backend/app.py)**
+- `GET /v1/content/export` — caller's chat + memory + identity as
+  one JSON blob, 50 MiB cap, ciphertext returned verbatim (iOS
+  decrypts client-side). Attestation snapshot (compose_hash +
+  enclave_content_pk at export time) bundled so future agents can
+  verify origin. Frames excluded in Phase B (too large, low
+  continuity).
+- `POST /v1/account/reset` — destructive, requires
+  `{"confirm": "delete-all-data"}` body token as a second signal of
+  intent. Wipes user dir, removes user from users.json, revokes
+  api_key cache. Idempotent in the safe-to-retry sense (second call
+  401s because the user no longer exists).
+- `Response` added to Flask imports.
+
+**iOS (testapp/FeedlingTest/)**
+- Design tokens (DESIGN.md mirror) inlined in `FeedlingAPI.swift`:
+  `Color.feedlingSage / feedlingPaper / feedlingSurface / feedlingInk
+  / feedlingInkMuted / feedlingDivider`; serif display font via
+  `.system(design: .serif)` (iOS New York — zero asset loading);
+  `Spacing.*` + `Radius.*` + `FeedlingMotion.*`;
+  `FeedlingPrimaryButtonStyle` + `FeedlingSecondaryButtonStyle`.
+  Kept inline in FeedlingAPI.swift because Xcode's `project.pbxproj`
+  requires coordinated edits for new source files — documented.
+- `ContentView` now wraps the tab bar in an onboarding gate.
+  Gate flips on user action.
+- `ComposeHashChangeConsentView` (full-screen modal): triggered when
+  `/attestation` returns a `compose_hash` that differs from
+  `UserDefaults "feedling.lastAcceptedComposeHash"`. Per the dstack
+  tutorial §1 catch, trigger is **compose_hash**, NOT MRTD —
+  MRTD/RTMR0-2 are dstack-OS platform signals that change for
+  reasons unrelated to our app.
+- `OnboardingView` (3 slides, SwiftUI `TabView.page`):
+  lock.shield / arrow.triangle.branch / hand.raised.square.on.square
+  as the single glyph anchor per slide. No custom illustrations
+  (AI-slop-free). Decision tokenized in `docs/PHASE_B_PLAN.md`.
+- `PrivacyPageView` — NavigationLink destination from Settings.
+  Hero row + Your data + Where your data lives + Advanced sections.
+- `ExportSheet` — export → iOS share sheet, with an explicit iCloud
+  Drive caveat in the copy.
+- `DeleteSheet` — "download my data first" checkbox defaults to ON
+  (decision `2A` from `/plan-design-review`). If checked,
+  pipeline exports through iOS share sheet, then deletes after
+  dismissal; if unchecked, delete is immediate.
+- `ResetAndReimportSheet` — 3-step pipeline (export / delete /
+  re-register) with visible step indicator.
+- `RunbookView` — fetches `skill/SKILL.md` from GitHub raw so users
+  can pass a live copy to their agent. Offline fallback included.
+- `StorageBackendView` — thin wrapper around the existing storage
+  toggle so Privacy's "Where your data lives" row has a destination.
+- `AuditCardView` extended: `AuditRowView` per-row tap-to-expand
+  mechanism panel (plain-language explanations naming primitives
+  honestly — TDX, PCK, `mr_config_id` — but with analogies); new
+  collapsed "Show raw /attestation (for auditors)" footer panel
+  with SF Mono horizontally-scrollable pretty-printed JSON;
+  existing PinningCaptureDelegate + DCAP + SPKI-pin flow unchanged
+  (security primitives preserved per eng review).
+- `FeedlingAPI.exportMyData` / `deleteMyDataAndResetLocalState` /
+  `acceptComposeHashChange` / `signOutForComposeChange` /
+  `hasCompletedOnboardingV1` + `evaluateComposeHashChange` wired
+  into `refreshEnclaveAttestation`.
+- `ContentKeyStore.wipeKeypair` + `KeyStore.wipeKeypair` for the
+  delete path.
+
+**Live verification (Phala CVM)**
+- Running: git_commit `123a45b`, new compose_hash published on
+  Sepolia (see DEPLOYMENTS.md §Phase B for the tx hash).
+- CLI auditor 7/7 green against the new image.
+- Export + reset endpoints verified locally end-to-end:
+  register → seed → export → `Content-Disposition` filename valid;
+  reset w/o confirm → 400; reset with confirm → 200; post-reset
+  call → 401. Same behavior on the live CVM.
+- iOS build: `xcodebuild BUILD SUCCEEDED` on iPhone 16 Pro sim.
+  First-launch screenshot captured at
+  `docs/screenshots/onboarding_slide1_phase_b.png`.
+
+**Deferred to Phase B wave-2**
+- Per-item visibility toggles (endpoint exists via rewrap; UI is
+  a list + switch per row — ~2h of iOS).
+- Inline migration-progress row in the Privacy hero (wire in
+  `runSilentV1MigrationIfNeeded` progress stream).
+- `docs/screenshots/` captures of Slides 2-3, Privacy page, Delete
+  sheet, audit-card expanded state — need UI automation to drive
+  the sim without controlling the user's mouse.
+- Copy review by @sxysun — the audit-card mechanism reveals, the
+  compose-hash consent copy, the onboarding headlines. The register
+  is load-bearing ("name primitives honestly + analogies") and
+  needs the product-voice pass flagged in `PHASE_B_PLAN.md §4`.
+
+---
+
 ### [DONE] Phase A.6 — Silent v0→v1 migration on first launch
 
 **Backend (backend/app.py)**
