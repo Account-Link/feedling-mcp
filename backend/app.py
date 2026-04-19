@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import jwt
 import websockets
-from flask import Flask, abort, g, jsonify, request, send_file
+from flask import Flask, abort, g, jsonify, request, Response, send_file
 
 # ---------------------------------------------------------------------------
 # Root directory + deployment mode
@@ -2196,6 +2196,144 @@ def _rewrap_memory_inplace(moments: list, mom_id: str, env: dict) -> str:
         m["owner_user_id"] = env["owner_user_id"]
         return "ok"
     return "not_found"
+
+
+# ---------------------------------------------------------------------------
+# Phase B — user-initiated data export + account reset.
+#
+# These power the "Export my data" + "Delete my data" + "Reset & re-import"
+# rows in the new Settings → Privacy page. Both are user-initiated, both
+# are auth-gated, and the reset path requires an explicit confirmation
+# token in the body to prevent accidental wipes from a buggy client that
+# holds the api_key but misbehaves.
+# ---------------------------------------------------------------------------
+
+
+# Cap single-shot export response size. Heavy users with many frames would
+# blow past this; Phase B excludes frames from export on purpose (they're
+# large and low-continuity). If this limit is ever hit in production,
+# stream the export per-type as a multi-part response (TODO).
+_EXPORT_MAX_BYTES = 50 * 1024 * 1024  # 50 MiB
+
+
+@app.route("/v1/content/export", methods=["GET"])
+def content_export():
+    """Return the caller's chat, memory, and identity as one JSON blob.
+
+    Ciphertext is returned verbatim — iOS decrypts client-side using
+    the user's content_sk from Keychain. No decryption happens server-
+    side, so there is no additional trust boundary crossed by this
+    endpoint beyond the existing auth check.
+
+    Frames are intentionally excluded: the JPEG payloads alone can
+    exceed the export budget for one active user. Add a separate
+    streaming frame-export endpoint later if demand surfaces.
+    """
+    store = require_user()
+    hist = store.chat_messages
+    moments = _load_moments(store)
+    identity = _load_identity(store)
+
+    exported_at = datetime.now().isoformat()
+    enclave_info = _get_enclave_info() or {}
+
+    export = {
+        "schema_version": 1,
+        "user_id": store.user_id,
+        "exported_at": exported_at,
+        "attestation_snapshot": {
+            "enclave_content_public_key_hex": enclave_info.get("content_pk_hex", ""),
+            "compose_hash": enclave_info.get("compose_hash", ""),
+        },
+        "chat": hist,
+        "memory": moments,
+        "identity": identity,
+        "notes": (
+            "Ciphertext included verbatim; decrypt client-side using your"
+            " content private key (iCloud Keychain). The attestation_snapshot"
+            " records which enclave version was live at export time so you"
+            " can verify origin later."
+        ),
+    }
+
+    body = json.dumps(export, ensure_ascii=False, indent=2)
+    if len(body.encode("utf-8")) > _EXPORT_MAX_BYTES:
+        return jsonify({
+            "error": "export_too_large",
+            "detail": "One-shot export exceeds the 50 MiB budget. Streaming"
+                      " export is planned (TODO). Contact support / open an issue."
+        }), 413
+
+    resp = Response(body, mimetype="application/json")
+    # Suggest a filename when clients save to disk.
+    safe_name = f"feedling-export-{store.user_id}-{exported_at.replace(':', '').split('.')[0]}.json"
+    resp.headers["Content-Disposition"] = f'attachment; filename="{safe_name}"'
+    return resp
+
+
+@app.route("/v1/account/reset", methods=["POST"])
+def account_reset():
+    """Hard-delete the caller's account: wipe the user dir, revoke the
+    api_key, remove the user record.
+
+    Requires an explicit confirmation token in the body to prevent
+    accidental wipes from a buggy client that holds the api_key but
+    sends the wrong request. Two steps of intent (correct key + correct
+    confirmation body) are needed.
+
+    Idempotent in the safe-to-retry sense: a second call with the same
+    api_key fails auth (user no longer exists) and returns 401. So
+    retries are harmless; spurious wipes require a fresh registration.
+    """
+    store = require_user()
+    payload = request.get_json(silent=True) or {}
+    confirm = (payload.get("confirm") or "").strip()
+    if confirm != "delete-all-data":
+        return jsonify({
+            "error": "confirmation_required",
+            "detail": "POST body must include {\"confirm\": \"delete-all-data\"}."
+                      " This prevents accidental resets from misbehaving clients."
+        }), 400
+
+    user_id = store.user_id
+
+    # Remove the user from users.json FIRST so any in-flight requests
+    # carrying the old api_key fail auth immediately.
+    with _users_lock:
+        before = len(_users)
+        _users[:] = [u for u in _users if u.get("user_id") != user_id]
+        removed = before - len(_users)
+        # Evict all cached (hash → user_id) entries pointing at this user.
+        to_evict = [h for h, uid in _key_to_user.items() if uid == user_id]
+        for h in to_evict:
+            _key_to_user.pop(h, None)
+        _save_users()
+
+    # Then remove the user's data directory.
+    deleted_dir = False
+    try:
+        import shutil
+        if store.dir.exists() and store.dir != FEEDLING_DIR:
+            # Extra guard: never recursively delete the flat single-user
+            # data root. SINGLE_USER=true's "default" user lives at
+            # FEEDLING_DIR itself; resetting that would wipe other state.
+            # For that case we wipe individual files, not the whole dir.
+            shutil.rmtree(store.dir)
+            deleted_dir = True
+        elif store.dir == FEEDLING_DIR:
+            # Single-user flat layout: remove specific content files,
+            # leave frames + config alone.
+            for fname in ("chat.json", "memory.json", "identity.json",
+                          "bootstrap.json", "bootstrap_events.jsonl"):
+                fp = FEEDLING_DIR / fname
+                if fp.exists():
+                    fp.unlink()
+            deleted_dir = True
+    except Exception as e:
+        print(f"[reset:{user_id}] rmtree failed: {e}")
+
+    print(f"[reset:{user_id}] deleted (user_record={removed} dir={deleted_dir})")
+    return jsonify({"deleted": True, "user_id": user_id})
 
 
 @app.route("/healthz", methods=["GET"])

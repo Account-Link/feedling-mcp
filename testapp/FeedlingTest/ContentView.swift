@@ -18,8 +18,32 @@ struct ContentView: View {
     @EnvironmentObject var chatViewModel: ChatViewModel
     @EnvironmentObject var identityViewModel: IdentityViewModel
     @EnvironmentObject var memoryViewModel: MemoryViewModel
+    @ObservedObject private var api = FeedlingAPI.shared
+
+    // Phase B: before the chat tab loads on first ever launch, show
+    // the three-slide onboarding. Re-shown only from Settings.
+    @State private var onboardingShown: Bool = FeedlingAPI.shared.hasCompletedOnboardingV1
 
     var body: some View {
+        ZStack {
+            if !onboardingShown {
+                OnboardingView(onDone: {
+                    FeedlingAPI.shared.hasCompletedOnboardingV1 = true
+                    withAnimation(FeedlingMotion.enter) { onboardingShown = true }
+                })
+                .transition(.opacity)
+            } else {
+                rootTabs
+            }
+        }
+        // Phase B: compose-hash-changed consent modal blocks the app
+        // until the user reviews or signs out.
+        .fullScreenCover(isPresented: $api.composeHashChangedRequiresConsent) {
+            ComposeHashChangeConsentView()
+        }
+    }
+
+    private var rootTabs: some View {
         TabView(selection: $router.selectedTab) {
             ChatView()
                 .environmentObject(chatViewModel)
@@ -40,7 +64,7 @@ struct ContentView: View {
                 .tabItem { Label("Settings", systemImage: "gearshape.fill") }
                 .tag(AppTab.settings)
         }
-        .tint(.cyan)
+        .tint(Color.feedlingSage)
         .preferredColorScheme(.dark)
         // T2.5: Auto-navigate to Identity on first bootstrap
         .onChange(of: identityViewModel.didJustBootstrap) { didBootstrap in
@@ -109,11 +133,28 @@ struct SettingsView: View {
                 .background(Color(UIColor.systemGroupedBackground))
 
                 List {
-                    // Privacy audit — always first so users see trust state immediately
-                    Section("Privacy") {
-                        AuditCardView()
-                            .listRowInsets(EdgeInsets())
-                            .listRowBackground(Color.clear)
+                    // Phase B: Privacy is its own top-level destination.
+                    // The Settings → Privacy page contains the hero row,
+                    // audit card, export / delete / reset, visibility,
+                    // and the "run your own" branch.
+                    Section {
+                        NavigationLink {
+                            PrivacyPageView()
+                        } label: {
+                            Label {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Privacy")
+                                        .font(.headline)
+                                        .foregroundStyle(Color.feedlingInk)
+                                    Text("Encrypted data, export, delete, audit")
+                                        .font(.footnote)
+                                        .foregroundStyle(Color.feedlingInkMuted)
+                                }
+                            } icon: {
+                                Image(systemName: "lock.shield")
+                                    .foregroundStyle(Color.feedlingSage)
+                            }
+                        }
                     }
 
                     // Storage toggle
@@ -338,5 +379,726 @@ struct BroadcastPickerView: UIViewRepresentable {
     }
     func updateUIView(_ uiView: RPSystemBroadcastPickerView, context: Context) {
         uiView.frame = CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width - 32, height: 52)
+    }
+}
+
+
+// ============================================================================
+// Phase B — Onboarding, Privacy page, Export / Delete / Reset, Runbook viewer.
+//
+// All these views live here because the Xcode project references source files
+// explicitly; adding new .swift files requires project.pbxproj edits that
+// aren't safe from the filesystem. Keeping them consolidated in one compiled
+// file is the pragmatic tradeoff. DESIGN.md tokens apply throughout.
+// ============================================================================
+
+// MARK: - Onboarding (three slides, first-run only, dismissable via Settings)
+
+struct OnboardingView: View {
+    let onDone: () -> Void
+    @State private var page: Int = 0
+
+    var body: some View {
+        ZStack {
+            Color.feedlingPaper.ignoresSafeArea()
+            TabView(selection: $page) {
+                OnboardingSlide(
+                    glyph: "lock.shield",
+                    headline: "Your conversations live here,\nnot with us.",
+                    bodyText: "Every message, memory, and note about your agent is encrypted with a key that only your iPhone holds. Feedling's servers store the ciphertext — we literally don't have the secret that unlocks it.",
+                    primaryLabel: "Next",
+                    primaryAction: { withAnimation(FeedlingMotion.enter) { page = 1 } }
+                ).tag(0)
+
+                OnboardingSlide(
+                    glyph: "arrow.triangle.branch",
+                    headline: "We host the vault,\nyou hold the key.",
+                    bodyText: "You don't have to trust us — you can audit the proof from Settings any time.",
+                    secondaryContent: AnyView(OnboardingTwoColumn()),
+                    primaryLabel: "Next",
+                    primaryAction: { withAnimation(FeedlingMotion.enter) { page = 2 } }
+                ).tag(1)
+
+                OnboardingSlide(
+                    glyph: "hand.raised.square.on.square",
+                    headline: "Walk away\nwhenever you want.",
+                    bodyText: "Nothing is irreversible.",
+                    secondaryContent: AnyView(OnboardingControlRows()),
+                    primaryLabel: "Get started",
+                    primaryAction: onDone
+                ).tag(2)
+            }
+            .tabViewStyle(.page(indexDisplayMode: .always))
+            .indexViewStyle(.page(backgroundDisplayMode: .always))
+        }
+    }
+}
+
+private struct OnboardingSlide: View {
+    let glyph: String
+    let headline: String
+    let bodyText: String
+    var secondaryContent: AnyView? = nil
+    let primaryLabel: String
+    let primaryAction: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: Spacing.xl)
+
+            Image(systemName: glyph)
+                .font(.system(size: 96, weight: .light))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(Color.feedlingSage)
+                .accessibilityHidden(true)
+                .padding(.top, Spacing.xl)
+
+            Spacer(minLength: Spacing.xl2)
+
+            VStack(spacing: Spacing.lg) {
+                Text(headline)
+                    .multilineTextAlignment(.center)
+                    .feedlingDisplay(.medium)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(bodyText)
+                    .multilineTextAlignment(.center)
+                    .feedlingBody()
+                    .frame(maxWidth: 320)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let sc = secondaryContent {
+                    sc.padding(.top, Spacing.md)
+                }
+            }
+            .padding(.horizontal, Spacing.xl)
+
+            Spacer()
+
+            Button(action: primaryAction) {
+                Text(primaryLabel)
+            }
+            .buttonStyle(FeedlingPrimaryButtonStyle())
+            .padding(.horizontal, Spacing.xl)
+            .padding(.bottom, Spacing.xl3)
+        }
+    }
+}
+
+private struct OnboardingTwoColumn: View {
+    var body: some View {
+        HStack(alignment: .top, spacing: Spacing.md) {
+            VStack(alignment: .leading, spacing: Spacing.sm) {
+                Text("We handle:")
+                    .feedlingCaption()
+                OBRow("lock.doc", "Ciphertext of your chat, memory, identity")
+                OBRow("clock", "Timestamps so things sort")
+                OBRow("bell.badge", "Push tokens for the Dynamic Island")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: Spacing.sm) {
+                Text("Only your phone can read:")
+                    .feedlingCaption()
+                OBRow("bubble.left.and.bubble.right", "The message text itself")
+                OBRow("leaf", "Every memory in your garden")
+                OBRow("person.text.rectangle", "Your agent's identity card")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.top, Spacing.sm)
+    }
+}
+
+private struct OBRow: View {
+    let symbol: String
+    let text: String
+    init(_ symbol: String, _ text: String) { self.symbol = symbol; self.text = text }
+    var body: some View {
+        HStack(alignment: .top, spacing: Spacing.sm) {
+            Image(systemName: symbol)
+                .foregroundStyle(Color.feedlingSage)
+                .font(.footnote)
+                .frame(width: 16, alignment: .center)
+                .accessibilityHidden(true)
+            Text(text)
+                .font(.footnote)
+                .foregroundStyle(Color.feedlingInk)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+private struct OnboardingControlRows: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            OBRow("square.and.arrow.up", "Take your data out — a decrypted archive, yours to keep.")
+            OBRow("trash", "Delete everything — no trace on any of our servers.")
+            OBRow("server.rack", "Host it yourself — the runbook walks your agent through it.")
+        }
+    }
+}
+
+// MARK: - Privacy page (NavigationLink destination from Settings)
+
+struct PrivacyPageView: View {
+    @ObservedObject private var api = FeedlingAPI.shared
+    @State private var showExportSheet = false
+    @State private var showDeleteSheet = false
+    @State private var showResetSheet = false
+    @State private var toast: String? = nil
+
+    var body: some View {
+        List {
+            Section {
+                PrivacyHeroRow()
+                    .listRowInsets(EdgeInsets(top: Spacing.sm, leading: Spacing.md,
+                                              bottom: Spacing.sm, trailing: Spacing.md))
+            }
+            Section("Your data") {
+                Button {
+                    showExportSheet = true
+                } label: {
+                    Label("Export my data", systemImage: "square.and.arrow.up")
+                        .foregroundStyle(Color.feedlingInk)
+                }
+                Button {
+                    showDeleteSheet = true
+                } label: {
+                    Label("Delete my data", systemImage: "trash")
+                        .foregroundStyle(.red)
+                }
+                Button {
+                    showResetSheet = true
+                } label: {
+                    Label("Reset & re-import (advanced)",
+                          systemImage: "arrow.triangle.2.circlepath")
+                        .foregroundStyle(Color.feedlingInk)
+                }
+            }
+            Section("Where your data lives") {
+                NavigationLink {
+                    StorageBackendView()
+                } label: {
+                    Label("Backend: \(api.storageMode == .cloud ? "Feedling Cloud" : "Self-hosted")",
+                          systemImage: "server.rack")
+                }
+                NavigationLink {
+                    RunbookView()
+                } label: {
+                    Label("Help me run my own server", systemImage: "doc.text.magnifyingglass")
+                }
+            }
+            Section("Advanced") {
+                NavigationLink {
+                    AuditCardPage()
+                } label: {
+                    Label("Re-run privacy audit", systemImage: "checkmark.shield")
+                }
+                Button {
+                    FeedlingAPI.shared.hasCompletedOnboardingV1 = false
+                    toast = "Intro will show on next launch"
+                } label: {
+                    Label("Show the intro again", systemImage: "sparkles")
+                        .foregroundStyle(Color.feedlingInk)
+                }
+            }
+        }
+        .navigationTitle("Privacy")
+        .navigationBarTitleDisplayMode(.large)
+        .sheet(isPresented: $showExportSheet) { ExportSheet() }
+        .sheet(isPresented: $showDeleteSheet) { DeleteSheet() }
+        .sheet(isPresented: $showResetSheet) { ResetAndReimportSheet() }
+        .overlay(alignment: .bottom) {
+            if let msg = toast {
+                Text(msg).feedlingCaption()
+                    .padding(.horizontal, Spacing.md).padding(.vertical, Spacing.sm)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .padding(.bottom, Spacing.xl)
+                    .transition(.opacity)
+            }
+        }
+        .onChange(of: toast) { newValue in
+            if newValue != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    withAnimation { toast = nil }
+                }
+            }
+        }
+    }
+}
+
+private struct PrivacyHeroRow: View {
+    @ObservedObject private var api = FeedlingAPI.shared
+    @State private var lastVerifiedAt: Date? = nil
+
+    var body: some View {
+        HStack(spacing: Spacing.md) {
+            Image(systemName: heroIcon)
+                .font(.system(size: 28))
+                .foregroundStyle(heroColor)
+                .frame(width: 40)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(heroTitle)
+                    .font(.headline)
+                    .foregroundStyle(Color.feedlingInk)
+                Text(heroSubtitle)
+                    .font(.footnote)
+                    .foregroundStyle(Color.feedlingInkMuted)
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Color.feedlingInkMuted)
+        }
+        .padding(.vertical, Spacing.sm)
+        .contentShape(Rectangle())
+    }
+
+    private var heroIcon: String {
+        api.enclaveComposeHash != nil ? "checkmark.shield.fill" : "shield"
+    }
+    private var heroColor: Color {
+        api.enclaveComposeHash != nil ? Color.feedlingSage : Color.feedlingInkMuted
+    }
+    private var heroTitle: String {
+        if api.enclaveComposeHash == nil { return "Privacy audit not yet run" }
+        return "Everything you've written is encrypted"
+    }
+    private var heroSubtitle: String {
+        if let h = api.enclaveComposeHash {
+            return "Compose \(h.prefix(8))… · tap for full audit"
+        }
+        return "Tap to run the audit"
+    }
+}
+
+struct AuditCardPage: View {
+    var body: some View {
+        ScrollView {
+            AuditCardView()
+                .padding(Spacing.md)
+        }
+        .background(Color.feedlingPaper.ignoresSafeArea())
+        .navigationTitle("Privacy audit")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// Thin wrapper around the existing Storage configuration rows so
+// Privacy's "Where your data lives" can dive into them directly.
+struct StorageBackendView: View {
+    @ObservedObject private var api = FeedlingAPI.shared
+    @State private var url: String = ""
+    @State private var key: String = ""
+
+    var body: some View {
+        List {
+            Section("Backend") {
+                Picker("Backend", selection: $api.storageMode) {
+                    Text("Feedling Cloud").tag(FeedlingAPI.StorageMode.cloud)
+                    Text("Self-hosted").tag(FeedlingAPI.StorageMode.selfHosted)
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: api.storageMode) { newMode in
+                    if newMode == .cloud {
+                        api.configureCloud()
+                        Task { await api.ensureRegisteredIfCloud() }
+                    }
+                }
+
+                if api.storageMode == .selfHosted {
+                    TextField("https://my-vps.example:5001", text: $url)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .font(.caption.monospaced())
+                        .onAppear { url = api.baseURL }
+                    TextField("API key", text: $key)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .font(.caption.monospaced())
+                        .onAppear { key = api.apiKey }
+                    Button("Save self-hosted config") {
+                        api.configureSelfHosted(url: url, apiKey: key)
+                    }
+                    .disabled(url.isEmpty)
+                }
+            }
+            Section("Reference") {
+                LabeledContent("API URL", value: api.baseURL)
+                    .font(.caption)
+                LabeledContent("User ID", value: api.userId.isEmpty ? "—" : api.userId)
+                    .font(.caption)
+            }
+        }
+        .navigationTitle("Backend")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// MARK: - Export sheet
+
+struct ExportSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var running = false
+    @State private var error: String? = nil
+    @State private var exportData: FeedlingAPI.ExportResult? = nil
+    @State private var showShareSheet = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.lg) {
+            Label("Export my data", systemImage: "square.and.arrow.up")
+                .font(.headline)
+            Text("This assembles every item on your account into a single JSON file and hands it to the iOS share sheet.")
+                .font(.callout)
+                .foregroundStyle(Color.feedlingInk)
+            Text("Note: if you save the file to iCloud Drive, the unencrypted copy leaves your phone. Save to Files (On My iPhone) to keep it local.")
+                .font(.footnote)
+                .foregroundStyle(Color.feedlingInkMuted)
+            if let err = error {
+                Text(err).font(.footnote).foregroundStyle(.red)
+            }
+            Spacer()
+            if running {
+                ProgressView("Packaging…")
+                    .frame(maxWidth: .infinity)
+            } else {
+                Button {
+                    Task { await runExport() }
+                } label: {
+                    Text("Export")
+                }
+                .buttonStyle(FeedlingPrimaryButtonStyle())
+            }
+            Button("Cancel", action: { dismiss() })
+                .buttonStyle(FeedlingSecondaryButtonStyle())
+        }
+        .padding(Spacing.xl)
+        .sheet(isPresented: $showShareSheet) {
+            if let result = exportData,
+               let tmp = writeTempFile(result) {
+                ShareSheet(activityItems: [tmp])
+            }
+        }
+    }
+
+    private func runExport() async {
+        running = true; defer { running = false }
+        do {
+            let result = try await FeedlingAPI.shared.exportMyData()
+            exportData = result
+            showShareSheet = true
+        } catch {
+            self.error = "\(error)"
+        }
+    }
+
+    private func writeTempFile(_ result: FeedlingAPI.ExportResult) -> URL? {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(result.suggestedFilename)
+        do {
+            try result.data.write(to: url)
+            return url
+        } catch {
+            self.error = "write failed: \(error)"
+            return nil
+        }
+    }
+}
+
+struct ShareSheet: UIViewControllerRepresentable {
+    let activityItems: [Any]
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+    }
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+// MARK: - Delete sheet (with "download first" default-on checkbox)
+
+struct DeleteSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var downloadFirst = true
+    @State private var running = false
+    @State private var error: String? = nil
+    @State private var exportedToShare: FeedlingAPI.ExportResult? = nil
+    @State private var didExport = false
+    @State private var showShareSheet = false
+    @State private var pendingDelete = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.lg) {
+            Label("Delete everything?", systemImage: "trash")
+                .font(.headline)
+                .foregroundStyle(.red)
+            Text("This revokes your account, deletes every ciphertext blob on our servers, and wipes the keys on this device. It cannot be undone.")
+                .font(.callout)
+                .foregroundStyle(Color.feedlingInk)
+
+            Toggle(isOn: $downloadFirst) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Download my data first")
+                        .font(.callout.weight(.semibold))
+                    Text("Keeps a decrypted archive via the iOS share sheet before your account is deleted.")
+                        .font(.footnote)
+                        .foregroundStyle(Color.feedlingInkMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .tint(Color.feedlingSage)
+
+            if let err = error {
+                Text(err).font(.footnote).foregroundStyle(.red)
+            }
+
+            Spacer()
+
+            if running {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+            } else {
+                Button {
+                    Task { await runDelete() }
+                } label: {
+                    Text("Delete")
+                }
+                .buttonStyle(FeedlingPrimaryButtonStyle(destructive: true))
+            }
+            Button("Cancel", action: { dismiss() })
+                .buttonStyle(FeedlingSecondaryButtonStyle())
+        }
+        .padding(Spacing.xl)
+        .sheet(isPresented: $showShareSheet, onDismiss: {
+            // After the user finishes the share sheet (or cancels),
+            // proceed with the actual delete.
+            if pendingDelete {
+                Task { await performFinalDelete() }
+            }
+        }) {
+            if let r = exportedToShare,
+               let tmp = writeTempFile(r) {
+                ShareSheet(activityItems: [tmp])
+            }
+        }
+    }
+
+    private func runDelete() async {
+        running = true
+        defer { running = false }
+        if downloadFirst {
+            do {
+                let r = try await FeedlingAPI.shared.exportMyData()
+                exportedToShare = r
+                pendingDelete = true
+                showShareSheet = true
+            } catch {
+                self.error = "Export failed: \(error). Aborting delete to protect your data."
+            }
+        } else {
+            await performFinalDelete()
+        }
+    }
+
+    private func performFinalDelete() async {
+        do {
+            try await FeedlingAPI.shared.deleteMyDataAndResetLocalState()
+            dismiss()
+        } catch {
+            self.error = "Delete failed: \(error)"
+        }
+    }
+
+    private func writeTempFile(_ r: FeedlingAPI.ExportResult) -> URL? {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(r.suggestedFilename)
+        try? r.data.write(to: url)
+        return url
+    }
+}
+
+// MARK: - Reset & re-import sheet (3-step pipeline)
+
+struct ResetAndReimportSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var step: Int = 0
+    @State private var error: String? = nil
+    @State private var exportData: FeedlingAPI.ExportResult? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.lg) {
+            Label("Reset & re-import", systemImage: "arrow.triangle.2.circlepath")
+                .font(.headline)
+            Text("Three steps: download your data, delete your old account, register a new one. The new account gets fresh keys — use the MCP connection string to walk your agent through importing everything back.")
+                .font(.callout)
+                .foregroundStyle(Color.feedlingInk)
+            if let err = error {
+                Text(err).font(.footnote).foregroundStyle(.red)
+            }
+            HStack(spacing: Spacing.md) {
+                stepDot(1, active: step >= 1)
+                Text("Export")
+                    .feedlingCaption()
+                Spacer(minLength: 0)
+                stepDot(2, active: step >= 2)
+                Text("Delete")
+                    .feedlingCaption()
+                Spacer(minLength: 0)
+                stepDot(3, active: step >= 3)
+                Text("Re-register")
+                    .feedlingCaption()
+            }
+            Spacer()
+            Button {
+                Task { await runPipeline() }
+            } label: {
+                Text(step >= 3 ? "Done" : "Start")
+            }
+            .buttonStyle(FeedlingPrimaryButtonStyle())
+            Button("Cancel", action: { dismiss() })
+                .buttonStyle(FeedlingSecondaryButtonStyle())
+        }
+        .padding(Spacing.xl)
+    }
+
+    private func stepDot(_ n: Int, active: Bool) -> some View {
+        ZStack {
+            Circle()
+                .fill(active ? Color.feedlingSage : Color.feedlingDivider)
+                .frame(width: 22, height: 22)
+            Text("\(n)").font(.caption2.bold()).foregroundStyle(.white)
+        }
+    }
+
+    private func runPipeline() async {
+        do {
+            if step == 0 {
+                step = 1
+                exportData = try await FeedlingAPI.shared.exportMyData()
+            }
+            if step == 1 {
+                step = 2
+                try await FeedlingAPI.shared.deleteMyDataAndResetLocalState()
+            }
+            if step == 2 {
+                step = 3
+                await FeedlingAPI.shared.ensureRegisteredIfCloud()
+                await FeedlingAPI.shared.ensureUserIdIfNeeded()
+            }
+            if step == 3 {
+                dismiss()
+            }
+        } catch {
+            self.error = "Pipeline failed at step \(step): \(error)"
+        }
+    }
+}
+
+// MARK: - Runbook viewer ("Help me run my own server")
+
+struct RunbookView: View {
+    @State private var runbookText: String = "Loading…"
+
+    var body: some View {
+        ScrollView {
+            Text(runbookText)
+                .font(.footnote.monospaced())
+                .foregroundStyle(Color.feedlingInk)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(Spacing.md)
+        }
+        .background(Color.feedlingPaper.ignoresSafeArea())
+        .navigationTitle("Self-hosted runbook")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    UIPasteboard.general.string = runbookText
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+            }
+        }
+        .task { await load() }
+    }
+
+    private func load() async {
+        // Best-effort: fetch the authoritative SKILL.md from GitHub raw.
+        // Falls back to a baked pointer if network is unavailable.
+        let url = URL(string: "https://raw.githubusercontent.com/Account-Link/feedling-mcp/main/skill/SKILL.md")!
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            if let s = String(data: data, encoding: .utf8) {
+                runbookText = s
+                return
+            }
+        } catch {}
+        runbookText = """
+Couldn't fetch the latest runbook from GitHub.
+
+Point your agent at:
+  https://github.com/Account-Link/feedling-mcp/blob/main/skill/SKILL.md
+
+The runbook walks through: clone, deps, env, systemd units,
+Caddy + Let's Encrypt, DNS, iOS → your URL + key.
+
+Your data stays on your VPS. We stop being in the loop.
+"""
+    }
+}
+
+// MARK: - Compose-hash-changed consent (full-screen)
+
+struct ComposeHashChangeConsentView: View {
+    @ObservedObject private var api = FeedlingAPI.shared
+
+    var body: some View {
+        ZStack {
+            Color.feedlingPaper.ignoresSafeArea()
+            VStack(spacing: Spacing.lg) {
+                Spacer()
+                Image(systemName: "sparkles")
+                    .font(.system(size: 56))
+                    .foregroundStyle(Color.feedlingSage)
+                    .accessibilityHidden(true)
+                Text("Feedling has a new version.")
+                    .multilineTextAlignment(.center)
+                    .feedlingDisplay(.medium)
+                Text("The app on your phone just saw a newer version of the Feedling server.")
+                    .multilineTextAlignment(.center)
+                    .feedlingBody()
+                    .frame(maxWidth: 320)
+                if let change = api.pendingComposeHashChange {
+                    VStack(spacing: Spacing.sm) {
+                        Text(change.oldHash.prefix(16) + "…")
+                            .font(.feedlingMono())
+                            .foregroundStyle(Color.feedlingInkMuted)
+                        Image(systemName: "arrow.down")
+                            .foregroundStyle(Color.feedlingSage)
+                            .accessibilityLabel("changed to")
+                        Text(change.newHash.prefix(16) + "…")
+                            .font(.feedlingMono())
+                            .foregroundStyle(Color.feedlingInk)
+                    }
+                    .padding(.top, Spacing.sm)
+                }
+                Text("Your existing encrypted memories and chat are still readable — they were encrypted to a key that's bound to your account, not to any specific server version.")
+                    .multilineTextAlignment(.center)
+                    .feedlingCaption()
+                    .frame(maxWidth: 340)
+                    .padding(.top, Spacing.sm)
+                Spacer()
+                VStack(spacing: Spacing.md) {
+                    Button {
+                        api.acceptComposeHashChange()
+                    } label: { Text("Got it, continue") }
+                        .buttonStyle(FeedlingPrimaryButtonStyle())
+                    Button {
+                        api.signOutForComposeChange()
+                    } label: { Text("Sign out for now") }
+                        .buttonStyle(FeedlingSecondaryButtonStyle())
+                }
+                .padding(.bottom, Spacing.xl2)
+            }
+            .padding(.horizontal, Spacing.xl)
+        }
     }
 }

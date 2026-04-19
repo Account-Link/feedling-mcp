@@ -1,6 +1,8 @@
 import CryptoKit
 import Foundation
 import Security
+import SwiftUI
+import UIKit
 
 /// Central HTTP client + credentials store for the Feedling iOS app.
 ///
@@ -196,6 +198,130 @@ final class FeedlingAPI: ObservableObject {
         } catch {
             print("[whoami] failed: \(error)")
         }
+    }
+
+    // MARK: - Phase B: compose-hash-change detection
+
+    private enum PhaseBKeys {
+        static let lastAcceptedComposeHash = "feedling.lastAcceptedComposeHash"
+        static let onboardingCompletedV1 = "feedling.onboardingCompleted.v1"
+        static let signedOutForComposeChange = "feedling.signedOutForComposeChange"
+    }
+
+    @Published var composeHashChangedRequiresConsent: Bool = false
+    @Published var pendingComposeHashChange: (oldHash: String, newHash: String)? = nil
+
+    /// Compare the latest fetched compose_hash against the last value the
+    /// user explicitly accepted. If different (and we had a prior value),
+    /// flag the app to show the consent modal.
+    func evaluateComposeHashChange() {
+        guard let current = enclaveComposeHash, !current.isEmpty else { return }
+        let lastAccepted = UserDefaults.standard.string(forKey: PhaseBKeys.lastAcceptedComposeHash) ?? ""
+        if lastAccepted.isEmpty {
+            // First time we've seen one. Accept silently.
+            UserDefaults.standard.set(current, forKey: PhaseBKeys.lastAcceptedComposeHash)
+            return
+        }
+        if lastAccepted != current {
+            pendingComposeHashChange = (oldHash: lastAccepted, newHash: current)
+            composeHashChangedRequiresConsent = true
+        }
+    }
+
+    func acceptComposeHashChange() {
+        guard let pending = pendingComposeHashChange else { return }
+        UserDefaults.standard.set(pending.newHash, forKey: PhaseBKeys.lastAcceptedComposeHash)
+        UserDefaults.standard.set(false, forKey: PhaseBKeys.signedOutForComposeChange)
+        pendingComposeHashChange = nil
+        composeHashChangedRequiresConsent = false
+    }
+
+    func signOutForComposeChange() {
+        UserDefaults.standard.set(true, forKey: PhaseBKeys.signedOutForComposeChange)
+        composeHashChangedRequiresConsent = false
+    }
+
+    var isSignedOutForComposeChange: Bool {
+        UserDefaults.standard.bool(forKey: PhaseBKeys.signedOutForComposeChange)
+    }
+
+    var hasCompletedOnboardingV1: Bool {
+        get { UserDefaults.standard.bool(forKey: PhaseBKeys.onboardingCompletedV1) }
+        set { UserDefaults.standard.set(newValue, forKey: PhaseBKeys.onboardingCompletedV1) }
+    }
+
+    // MARK: - Phase B: export + delete
+
+    struct ExportResult {
+        let data: Data
+        let suggestedFilename: String
+    }
+
+    /// Fetch the user's full content export as a JSON blob. iOS saves it
+    /// locally; the server doesn't decrypt anything — ciphertext is in
+    /// the blob and the user's content_sk (Keychain) decrypts it if they
+    /// ever need to import.
+    func exportMyData() async throws -> ExportResult {
+        guard let req = authorizedRequest(path: "/v1/content/export") else {
+            throw NSError(domain: "Export", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "could not build request"])
+        }
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse else {
+            throw NSError(domain: "Export", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "no response"])
+        }
+        if http.statusCode == 413 {
+            throw NSError(domain: "Export", code: 413,
+                          userInfo: [NSLocalizedDescriptionKey:
+                                     "Export too large; streaming is a Phase B follow-up."])
+        }
+        guard http.statusCode == 200 else {
+            throw NSError(domain: "Export", code: http.statusCode,
+                          userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode)"])
+        }
+        // Parse Content-Disposition for suggested filename, else derive one.
+        let disposition = http.value(forHTTPHeaderField: "Content-Disposition") ?? ""
+        let filename: String
+        if let range = disposition.range(of: "filename=\""),
+           let end = disposition[range.upperBound...].firstIndex(of: "\"") {
+            filename = String(disposition[range.upperBound..<end])
+        } else {
+            let ts = ISO8601DateFormatter().string(from: Date())
+                .replacingOccurrences(of: ":", with: "")
+            filename = "feedling-export-\(userId)-\(ts).json"
+        }
+        return ExportResult(data: data, suggestedFilename: filename)
+    }
+
+    /// Hard-delete the account on the server + wipe local credentials +
+    /// Keychain content key. Resets onboarding so first-launch runs again.
+    func deleteMyDataAndResetLocalState() async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["confirm": "delete-all-data"])
+        guard let req = authorizedRequest(path: "/v1/account/reset", method: "POST", body: body) else {
+            throw NSError(domain: "Reset", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "could not build request"])
+        }
+        let (_, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            throw NSError(domain: "Reset", code: (resp as? HTTPURLResponse)?.statusCode ?? 0,
+                          userInfo: [NSLocalizedDescriptionKey: "reset failed"])
+        }
+
+        // Wipe local state — credentials, Keychain entries, UserDefaults flags.
+        self.userId = ""
+        self.apiKey = ""
+        persist()
+        UserDefaults.standard.removeObject(forKey: Keys.userId)
+        UserDefaults.standard.removeObject(forKey: Keys.apiKey)
+        UserDefaults.standard.removeObject(forKey: PhaseBKeys.lastAcceptedComposeHash)
+        UserDefaults.standard.removeObject(forKey: PhaseBKeys.onboardingCompletedV1)
+        UserDefaults.standard.removeObject(forKey: PhaseBKeys.signedOutForComposeChange)
+        UserDefaults.standard.removeObject(forKey: Keys.hasRegistered)
+
+        // Wipe Keychain content + identity key so a fresh register starts clean.
+        _ = ContentKeyStore.shared.wipeKeypair()
+        _ = KeyStore.shared.wipeKeypair()
     }
 
     /// Discard current credentials and regenerate. Asks server to register fresh.
@@ -529,6 +655,11 @@ final class FeedlingAPI: ObservableObject {
             self.enclaveComposeHash = b.compose_hash
             self.enclaveMRTD = b.measurements?.mrtd
             publishContentKeysToAppGroup()
+            // Phase B: check whether the Feedling app version changed
+            // between sessions. The meaningful signal is compose_hash —
+            // platform-layer measurements (MRTD, RTMR0-2) change for
+            // reasons unrelated to our app, per dstack-tutorial §1.
+            evaluateComposeHashChange()
             print("[attestation] refreshed: compose_hash=\(b.compose_hash?.prefix(16) ?? "nil")…")
         } catch {
             print("[attestation] refresh failed: \(error)")
@@ -556,6 +687,19 @@ final class ContentKeyStore {
     private static let account = "content_private_key"
 
     private init() {}
+
+    /// Delete the content private key from Keychain (both synced +
+    /// device-local variants). Used by Phase B's reset flow.
+    func wipeKeypair() -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service,
+            kSecAttrAccount as String: Self.account,
+            kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
+    }
 
     func ensureContentKeypair() throws -> Curve25519.KeyAgreement.PrivateKey {
         if let existing = try loadPrivateKey() { return existing }
@@ -637,6 +781,19 @@ final class KeyStore {
 
     private init() {}
 
+    /// Delete the identity private key from Keychain. Used by Phase B's
+    /// reset flow.
+    func wipeKeypair() -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service,
+            kSecAttrAccount as String: Self.account,
+            kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
+    }
+
     func ensureKeypairAndReturnPublicKeyBase64() throws -> String {
         if let existing = try loadPrivateKey() {
             return existing.publicKey.rawRepresentation.base64EncodedString()
@@ -714,5 +871,158 @@ final class AttestationTrustShim: NSObject, URLSessionDelegate {
         } else {
             completionHandler(.performDefaultHandling, nil)
         }
+    }
+}
+
+
+// ============================================================================
+// Design tokens — inlined from the planned Design.swift.
+//
+// Xcode's project.pbxproj needs four coordinated entries to pick up a new
+// Swift file; editing that from the filesystem is risky. These tokens live
+// here instead so they compile reliably. When DESIGN.md / these tokens
+// change, update both the design doc and this block in the same commit.
+//
+// Source of truth for semantics: DESIGN.md at the repo root.
+// ============================================================================
+
+// MARK: - Color palette
+
+extension Color {
+
+    /// Create a Color from a hex literal like "#5E7F6E".
+    init(hex: String) {
+        let s = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        var v: UInt64 = 0
+        Scanner(string: s).scanHexInt64(&v)
+        let r = Double((v >> 16) & 0xFF) / 255
+        let g = Double((v >> 8) & 0xFF) / 255
+        let b = Double(v & 0xFF) / 255
+        self.init(.sRGB, red: r, green: g, blue: b, opacity: 1)
+    }
+
+    /// Pair a light-mode and dark-mode Color; resolves per trait.
+    static func feedlingAdaptive(light: Color, dark: Color) -> Color {
+        Color(uiColor: UIColor { traits in
+            traits.userInterfaceStyle == .dark ? UIColor(dark) : UIColor(light)
+        })
+    }
+
+    /// Primary accent — muted sage-green. NOT iOS system blue.
+    static let feedlingSage = feedlingAdaptive(
+        light: Color(hex: "#5E7F6E"),
+        dark: Color(hex: "#8FAD9D"))
+
+    static let feedlingPaper = feedlingAdaptive(
+        light: Color(hex: "#FBFAF7"),
+        dark: Color(hex: "#0F0D0A"))
+
+    static let feedlingSurface = feedlingAdaptive(
+        light: Color(hex: "#FFFFFF"),
+        dark: Color(hex: "#1A1814"))
+
+    static let feedlingInk = feedlingAdaptive(
+        light: Color(hex: "#1A1814"),
+        dark: Color(hex: "#F2EEE6"))
+
+    static let feedlingInkMuted = feedlingAdaptive(
+        light: Color(hex: "#6B6762"),
+        dark: Color(hex: "#A69F92"))
+
+    static let feedlingDivider = feedlingAdaptive(
+        light: Color(hex: "#E9E6DF"),
+        dark: Color(hex: "#2A2721"))
+}
+
+// MARK: - Typography
+
+extension Font {
+    static let feedlingDisplayLarge  = Font.system(size: 34, weight: .regular, design: .serif)
+    static let feedlingDisplayMedium = Font.system(size: 28, weight: .regular, design: .serif)
+    static let feedlingDisplaySmall  = Font.system(size: 22, weight: .regular, design: .serif)
+
+    static func feedlingMono(size: CGFloat = 13) -> Font {
+        .system(size: size, weight: .regular, design: .monospaced)
+    }
+}
+
+enum FeedlingDisplaySize { case large, medium, small }
+
+extension View {
+    func feedlingBody() -> some View {
+        self.font(.body).foregroundStyle(Color.feedlingInk)
+    }
+    func feedlingCaption() -> some View {
+        self.font(.footnote).foregroundStyle(Color.feedlingInkMuted)
+    }
+    @ViewBuilder
+    func feedlingDisplay(_ size: FeedlingDisplaySize = .medium) -> some View {
+        switch size {
+        case .large:  self.font(.feedlingDisplayLarge).foregroundStyle(Color.feedlingInk)
+        case .medium: self.font(.feedlingDisplayMedium).foregroundStyle(Color.feedlingInk)
+        case .small:  self.font(.feedlingDisplaySmall).foregroundStyle(Color.feedlingInk)
+        }
+    }
+}
+
+// MARK: - Spacing + Radius
+
+enum Spacing {
+    static let xs:  CGFloat = 4
+    static let sm:  CGFloat = 8
+    static let md:  CGFloat = 16
+    static let lg:  CGFloat = 24
+    static let xl:  CGFloat = 32
+    static let xl2: CGFloat = 48
+    static let xl3: CGFloat = 64
+}
+
+enum Radius {
+    static let sm:   CGFloat = 6
+    static let md:   CGFloat = 12
+    static let lg:   CGFloat = 16
+    static let full: CGFloat = 9999
+}
+
+// MARK: - Motion
+
+enum FeedlingMotion {
+    static let micro:  Double = 0.1
+    static let short:  Double = 0.25
+    static let medium: Double = 0.35
+    static let long:   Double = 0.5
+
+    static let spring: Animation = .spring(response: 0.35, dampingFraction: 0.82)
+    static let enter:  Animation = .easeOut(duration: 0.35)
+    static let exit:   Animation = .easeIn(duration: 0.25)
+}
+
+// MARK: - Primary button style
+
+struct FeedlingPrimaryButtonStyle: ButtonStyle {
+    var destructive: Bool = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.headline)
+            .foregroundStyle(Color.white)
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.md)
+                    .fill(destructive ? Color.red : Color.feedlingSage)
+                    .opacity(configuration.isPressed ? 0.8 : 1)
+            )
+            .contentShape(Rectangle())
+    }
+}
+
+struct FeedlingSecondaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.callout)
+            .foregroundStyle(Color.feedlingInkMuted)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .opacity(configuration.isPressed ? 0.6 : 1)
+            .contentShape(Rectangle())
     }
 }

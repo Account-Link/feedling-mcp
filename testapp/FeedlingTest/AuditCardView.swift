@@ -247,9 +247,76 @@ final class AuditViewModel: ObservableObject {
 }
 
 
+// Plain-language explanations of each audit row's mechanism. Shown in
+// a tap-to-expand panel under each row. Copy was drafted in-session;
+// flagged for @sxysun review before beta.
+fileprivate enum AuditMechanismCopy {
+    static let hardwareAttestation = "Intel's hardware signs a quote every time the enclave runs. We fetched this quote from the live server and verified Intel's signature against a CA baked into this app. If you trust Intel's silicon, you can trust this check."
+    static let baseImage = "The enclave boots from a measured OS image. Its measurements (MRTD, RTMR0-2) are published by the dstack project and can be reproduced from source. This check confirms the runtime matches a version we've seen before."
+    static let pckChain = "Intel ships a chain of certificates with every TDX quote — the hardware key's identity, signed by a platform key, signed by Intel's root. We walked the full chain offline. This runs entirely on your phone; no server call."
+    static let bodySignature = "The attestation payload itself is signed by the enclave's own key, which is in turn signed by Intel's hardware. Verifying this signature proves the report came from this exact enclave at this exact moment."
+    static let composeBinding = "The enclave's boot sequence hashes its own exact container recipe into a register called mr_config_id. The quote carries this register; the hash IS the recipe. If we control the app, we control the recipe, and the hash on-chain proves which recipe you're talking to."
+    static let tlsBinding = "The certificate your phone just saw during the TLS handshake was generated inside the enclave. Its fingerprint is baked into the signed quote we fetched. Match = this really is the enclave we think it is; no middleman could swap the cert without faking Intel's signature."
+    static let onChainAudit = "The recipe hash above has to be pre-authorized on Ethereum before the enclave gets its release key. This link goes to the public transaction that did that — anyone on the internet can verify it."
+}
+
+// Row-level expand/collapse state — local so tapping one row doesn't
+// re-run the audit or disturb the pinned attestation fetch.
+struct AuditRowView: View {
+    let title: String
+    let ok: Bool
+    let note: String?
+    let mechanism: String?
+
+    @State private var expanded: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Button {
+                if mechanism != nil {
+                    withAnimation(.easeOut(duration: 0.25)) { expanded.toggle() }
+                }
+            } label: {
+                HStack(alignment: .top) {
+                    Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .foregroundStyle(ok ? .green : .orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title).font(.caption).foregroundStyle(.primary)
+                        if let n = note {
+                            Text(n).font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    if mechanism != nil {
+                        Image(systemName: expanded ? "chevron.up.circle" : "chevron.down.circle")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(title), \(ok ? "passed" : "failed")\(mechanism != nil ? ", tap for how we got this" : "")")
+
+            if expanded, let m = mechanism {
+                Text(m)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 26)
+                    .padding(.top, 4)
+                    .padding(.bottom, 2)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+}
+
 struct AuditCardView: View {
 
     @StateObject private var vm = AuditViewModel()
+    @State private var showRawJSON: Bool = false
+    @State private var rawJSONText: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -299,25 +366,42 @@ struct AuditCardView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Security (checked locally on this device)")
                 .font(.caption).foregroundStyle(.secondary)
-            row("Hardware attestation valid (Intel TDX)", ok: r.hardwareAttestationValid)
-            row("Base image matches endorsed dstack runtime", ok: r.baseImageEndorsed)
-            row("PCK cert chain → Intel SGX Root CA", ok: r.chainValid)
-            row("Body ECDSA signature valid", ok: r.bodySignatureValid,
-                note: r.bodySignatureValid ? nil : "expected in Phase 2 on real TDX; simulator skips")
+            AuditRowView(title: "Hardware attestation valid (Intel TDX)",
+                         ok: r.hardwareAttestationValid, note: nil,
+                         mechanism: AuditMechanismCopy.hardwareAttestation)
+            AuditRowView(title: "Base image matches endorsed dstack runtime",
+                         ok: r.baseImageEndorsed, note: nil,
+                         mechanism: AuditMechanismCopy.baseImage)
+            AuditRowView(title: "PCK cert chain → Intel SGX Root CA",
+                         ok: r.chainValid, note: nil,
+                         mechanism: AuditMechanismCopy.pckChain)
+            AuditRowView(title: "Body ECDSA signature valid",
+                         ok: r.bodySignatureValid,
+                         note: r.bodySignatureValid ? nil : "expected in Phase 2 on real TDX; simulator skips",
+                         mechanism: AuditMechanismCopy.bodySignature)
             composeBindingRow(r.composeBinding)
-            row("TLS cert bound to attestation", ok: r.tlsCertBindingChecked,
-                note: r.tlsTerminationDisclosure)
+            AuditRowView(title: "TLS cert bound to attestation",
+                         ok: r.tlsCertBindingChecked,
+                         note: r.tlsTerminationDisclosure,
+                         mechanism: AuditMechanismCopy.tlsBinding)
 
             Divider().padding(.vertical, 4)
             Text("On-chain audit (public transparency, not security)")
                 .font(.caption).foregroundStyle(.secondary)
             if let tx = r.onChainTxURL {
-                Link(destination: tx) {
-                    HStack {
-                        Image(systemName: "link")
-                        Text("View AppAuth deploy on Etherscan")
-                            .font(.caption)
+                VStack(alignment: .leading, spacing: 2) {
+                    Link(destination: tx) {
+                        HStack {
+                            Image(systemName: "link")
+                            Text("View AppAuth deploy on Etherscan")
+                                .font(.caption)
+                        }
                     }
+                    Text(AuditMechanismCopy.onChainAudit)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 26)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             } else {
                 Text("on-chain info not available")
@@ -337,6 +421,75 @@ struct AuditCardView: View {
             Text("Verified \(r.verifiedAt, style: .relative) ago")
                 .font(.caption2).foregroundStyle(.secondary)
                 .padding(.top, 4)
+
+            Divider().padding(.vertical, 4)
+            rawJSONPanel()
+        }
+    }
+
+    // "Show raw /attestation" footer affordance. Collapsed by default
+    // so non-technical users aren't buried; one tap away for auditors.
+    @ViewBuilder
+    private func rawJSONPanel() -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                if !showRawJSON && rawJSONText.isEmpty {
+                    Task { await fetchRawJSON() }
+                }
+                withAnimation(.easeOut(duration: 0.25)) { showRawJSON.toggle() }
+            } label: {
+                HStack {
+                    Image(systemName: showRawJSON ? "chevron.up.circle" : "chevron.down.circle")
+                        .foregroundStyle(.tertiary)
+                    Text(showRawJSON ? "Hide raw /attestation" : "Show raw /attestation (for auditors)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if showRawJSON {
+                if rawJSONText.isEmpty {
+                    ProgressView().controlSize(.small)
+                } else {
+                    ScrollView(.horizontal, showsIndicators: true) {
+                        Text(rawJSONText)
+                            .font(.system(size: 10, weight: .regular, design: .monospaced))
+                            .textSelection(.enabled)
+                            .padding(8)
+                            .background(Color(UIColor.tertiarySystemGroupedBackground))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .frame(maxHeight: 240)
+                }
+            }
+        }
+    }
+
+    private func fetchRawJSON() async {
+        // Re-fetch the attestation (same URL the audit used) so the
+        // viewer shows the exact bytes. Uses the non-pinning TLS shim
+        // since the security-relevant pin already ran in vm.run().
+        // Falls back silently on error.
+        guard let url = URL(string: "https://051a174f2457a6c474680a5d745372398f97b6ad-5003s.dstack-pha-prod5.phala.network/attestation")
+        else { return }
+        let session = URLSession(configuration: .ephemeral,
+                                 delegate: PinningCaptureDelegate(),
+                                 delegateQueue: nil)
+        do {
+            let (data, _) = try await session.data(from: url)
+            if let obj = try? JSONSerialization.jsonObject(with: data),
+               let pretty = try? JSONSerialization.data(withJSONObject: obj,
+                                                        options: [.prettyPrinted, .sortedKeys]),
+               let s = String(data: pretty, encoding: .utf8) {
+                rawJSONText = s
+            } else {
+                rawJSONText = String(data: data, encoding: .utf8) ?? "(non-UTF8 body)"
+            }
+        } catch {
+            rawJSONText = "Fetch failed: \(error)"
         }
     }
 
@@ -344,24 +497,30 @@ struct AuditCardView: View {
     private func composeBindingRow(_ result: EventLogReplay.Result?) -> some View {
         switch result {
         case .some(.mrConfigIdConfirmed):
-            row("compose_hash bound via mr_config_id (dstack-kms)", ok: true,
-                note: "Intel TDX attested mr_config_id[1:33] == claimed compose_hash. Strongest binding — requires key release from real dstack KMS.")
+            AuditRowView(title: "compose_hash bound via mr_config_id (dstack-kms)",
+                         ok: true,
+                         note: "Intel TDX attested mr_config_id[1:33] == claimed compose_hash. Strongest binding — requires key release from real dstack KMS.",
+                         mechanism: AuditMechanismCopy.composeBinding)
         case .some(.eventLogConfirmed(let rtmr3Match)):
-            if rtmr3Match {
-                row("compose_hash in RTMR3 event log", ok: true,
-                    note: "compose-hash event present with matching payload; RTMR3 replays correctly from the event chain.")
-            } else {
-                row("compose_hash in RTMR3 event log", ok: false,
-                    note: "compose-hash event payload matches but RTMR3 replay disagreed with the attested value — event log may be truncated or tampered.")
-            }
+            AuditRowView(title: rtmr3Match ? "compose_hash in RTMR3 event log" : "compose_hash in RTMR3 event log",
+                         ok: rtmr3Match,
+                         note: rtmr3Match
+                            ? "compose-hash event present with matching payload; RTMR3 replays correctly from the event chain."
+                            : "compose-hash event payload matches but RTMR3 replay disagreed with the attested value — event log may be truncated or tampered.",
+                         mechanism: AuditMechanismCopy.composeBinding)
         case .some(.inconclusive(let reason)):
-            row("compose_hash binding", ok: false,
-                note: "Inconclusive: \(reason). Neither mr_config_id nor event-log binding confirmed; trust reduced.")
+            AuditRowView(title: "compose_hash binding",
+                         ok: false,
+                         note: "Inconclusive: \(reason). Neither mr_config_id nor event-log binding confirmed; trust reduced.",
+                         mechanism: AuditMechanismCopy.composeBinding)
         case .some(.mismatch(let detail)):
-            row("compose_hash binding — MISMATCH", ok: false,
-                note: detail)
+            AuditRowView(title: "compose_hash binding — MISMATCH",
+                         ok: false, note: detail,
+                         mechanism: AuditMechanismCopy.composeBinding)
         case .none:
-            row("compose_hash binding", ok: false, note: "not checked")
+            AuditRowView(title: "compose_hash binding",
+                         ok: false, note: "not checked",
+                         mechanism: AuditMechanismCopy.composeBinding)
         }
     }
 

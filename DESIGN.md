@@ -50,15 +50,17 @@ Three roles, no more. Two fonts total — SF Pro (shipped with iOS,
 zero network cost) and Instrument Serif (Google Fonts, ~20KB).
 SF Mono is bundled on iOS.
 
-- **Display / Hero (Instrument Serif Regular):** Onboarding
-  headlines + the `Settings → Privacy` section heading. The "warm"
-  signal. Never for body.
+- **Display / Hero (iOS system serif — New York, via `.system(design: .serif)`):**
+  Onboarding headlines + the `Settings → Privacy` section heading.
+  The "warm" signal. Never for body. iOS-native serif is available
+  without bundling any font files — a hard requirement for this app
+  since the Xcode project isn't being modified to add asset catalogs.
+  New York is Apple's own serif and pairs cleanly with SF Pro for body.
   - Sizes: `34pt` for the boldest onboarding headline, `28pt` for
     secondary display, `22pt` for section heads in Settings → Privacy.
-  - Line-height 1.15, slight negative letter-spacing (-0.01em).
-  - Loading: `Instrument-Serif-Regular.ttf` bundled in the app
-    (Resources/) so it's available on first paint; no web font loading
-    for the onboarding hot path.
+  - Line-height 1.15, slight negative letter-spacing.
+  - If/when the project gains a `Resources/` font bundle, swap in
+    Instrument Serif as a one-line change in `Design.swift`.
 - **Body + UI (SF Pro, variable weights):** All chat messages,
   buttons, list rows, form inputs, alerts, errors. System font.
   - Honor Dynamic Type. Use iOS `TextStyle` wrappers
