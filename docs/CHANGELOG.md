@@ -49,6 +49,55 @@
 
 ---
 
+## 2026-04-20
+
+### [DONE] Phase 3 — TLS-in-enclave + iOS cert pinning
+
+**Enclave (backend/enclave_app.py)**
+- 新增 `FEEDLING_ENCLAVE_TLS=true` 开关；启用后从 dstack-KMS 派生 ECDSA-P256 keypair
+  (`feedling-tls-v1` path)，用 RFC-6979 deterministic ECDSA 签发自签 cert —
+  同一 compose_hash 下跨 reboot 的 cert.DER 完全一致（本地 simulator 验证过两次 boot 哈希相同）。
+- `build_report_data()` 现在把 sha256(cert.DER) 真正填入，替换原先的 32-byte 零占位符。
+- Flask `app.run(ssl_context=…)` — SSL 材料先写入临时文件、`load_cert_chain` 后立即 unlink，
+  cert/key 不落盘。
+- `/attestation` bundle 新增 `tls_in_enclave: true` 标志 + 更新 notes；`phase` 字段从 1 跳到 3。
+
+**Compose (deploy/docker-compose.phala.yaml)**
+- enclave service 加 `FEEDLING_ENCLAVE_TLS: "true"`。
+- healthcheck 从 `curl http://127.0.0.1:5003` 改成 `curl -k https://127.0.0.1:5003`。
+
+**iOS (testapp/FeedlingTest/)**
+- attestation URL 从 `-5003.` 切到 `-5003s.`（dstack-gateway TLS passthrough 后缀）。
+- `PinningCaptureDelegate`（AuditCardView.swift）在 TLS 握手时记录 leaf cert sha256(DER)，
+  审计流程把它和 bundle 的 `enclave_tls_cert_fingerprint_hex` 比对 —
+  匹配 = 绿；不匹配 = 硬红 "MITM detected."；全零 = 沿用原 amber 免责声明。
+- `FeedlingAPI.refreshEnclaveAttestation` 的那条启动时 fetch 用 `AttestationTrustShim`
+  接受自签 cert（只是预热 content pubkey，真正的 pin 在审计卡里）。
+- `AuditCardView` 底部的 TLS row 文案更新：不再提 "Phase 1 placeholder"。
+
+**CLI auditor (tools/audit_live_cvm.py)**
+- 新增 Row 7：raw TLS 握手取 peer cert DER，sha256 和 bundle 的 fingerprint 比对。
+  全零 fingerprint 走 pre-Phase-3 disclosure 分支（不算 pass 但也不算 fail）。
+  文件开头的 docstring 从 "6-row audit" 改为 "7-row audit"。
+
+**Live 验证**
+- Phala CVM `feedling-enclave` (UUID `4386636e-1325-4b92-99d8-f2ca00befdb4`) 跑在 git_commit `451b5b0`。
+- 新 compose_hash `0xb0fb1f848151ec8fb39c4814f138b1d1b143d4d729dc800302d5123c1c0f2163` 已在
+  Eth Sepolia FeedlingAppAuth 上 authorize（tx `0x8de67abaf677e221ba4ee34b5a004753d0f4981bdc3c952cbcb4112a652a169c`）。
+- TLS cert fingerprint: `5698f0ade4bb412d6b0847a62d695138f3bbd287dc7d1dbdeb67b15dc445e5ef`。
+- CLI 7/7 green；iOS 6/6 green（见 `docs/screenshots/audit_card_phase3_tls_pinned.png`）。
+
+**Trust model note**: self-signed cert 是有意的；用户信任链不是 CA chain，而是
+"TDX-attested REPORT_DATA 里有这张 cert 的 fingerprint"。伪造 TLS cert 的操作员也
+必须同时伪造 REPORT_DATA，而 REPORT_DATA 由 Intel PCK 签名 — 做不到。
+
+**Deferred**
+- `docs/NEXT.md` 里 "Phase 4-6" 的内容迁移 / 全量加密 / 用户自放 enclave job 未动。
+- iOS 审计卡文案 copy review 仍然待 @sxysun 过一遍。
+- Sepolia → Base 迁移（详见 deploy/DEPLOYMENTS.md §Planned）。
+
+---
+
 ## 2026-04-19
 
 ### [DONE] NEXT.md Steps 1-5：multi-tenant backend + MCP SSE + iOS onboarding + self-hosted runbook

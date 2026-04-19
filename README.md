@@ -23,14 +23,14 @@ feedling-mcp-v1/
 
 ---
 
-## Status (as of 2026-04-19)
+## Status (as of 2026-04-20)
 
 **Infrastructure**
-- [x] Flask backend running on VPS (port 5001) — dual-mode: single-user or multi-tenant
-- [x] FastMCP server (`mcp_server.py`, port 5002) — 14 MCP tools, SSE transport with per-key sessions
+- [x] Flask backend on VPS (port 5001) — dual-mode: single-user or multi-tenant
+- [x] FastMCP server (`mcp_server.py`, port 5002) — 14 MCP tools, SSE with per-key sessions
 - [x] `deploy/` — Caddyfile + systemd service files + `setup.sh` that generates a fresh API key
 - [x] Multi-tenant: per-user directories, `POST /v1/users/register`, bcrypt-hashed API keys
-- [ ] HTTPS deployment (`mcp.feedling.app`, `api.feedling.app`) — infra ready; needs DNS at Namecheap
+- [x] HTTPS — `api.feedling.app` and `mcp.feedling.app` on Let's Encrypt via Caddy
 
 **Core features (working)**
 - [x] APNs push to Dynamic Island + Live Activity
@@ -45,15 +45,21 @@ feedling-mcp-v1/
 - [x] iOS: Settings → Storage toggle (Feedling Cloud vs Self-hosted URL+key)
 - [x] iOS: Settings → Agent Setup → copy-paste MCP connection string + env vars
 
-**New in this version**
-- [x] Curve25519 keypair generated at first launch, private key in Keychain, public key uploaded during registration
-- [x] MCP SSE transport: `claude mcp add feedling --transport sse "https://mcp.feedling.app/sse?key=<api_key>"`
-- [x] Self-hosted runbook in `skill/SKILL.md` — any Agent with SSH can deploy Feedling on a user's VPS end-to-end
-- [x] Test suite expanded to 40 tests; covers multi-tenant isolation + 401 enforcement
+**E2E + TDX (Phase 1–3 shipped)**
+- [x] Phase 1 — dstack TDX CVM deployed on Phala Cloud; /attestation returns
+      a DCAP-signed quote binding the enclave's content-pubkey + release metadata
+- [x] Phase 2 — iOS audit card runs DCAP + event-log replay + `mr_config_id`
+      binding + on-chain `addComposeHash` check; command-line auditor
+      (`tools/audit_live_cvm.py`) mirrors the same checks
+- [x] Phase 3 — **TLS terminates inside the enclave**. Self-signed ECDSA-P256
+      cert is derived deterministically from dstack-KMS (bound to `compose_hash`);
+      `sha256(cert.DER)` is baked into REPORT_DATA. iOS pins the live cert
+      against that fingerprint on every audit — MITM is detectable, not just
+      implicitly-trusted
 
 **Pending**
-- [ ] HTTPS + DNS for `api.feedling.app` + `mcp.feedling.app`
-- [ ] End-to-end encryption of stored user content — designed in `docs/DESIGN_E2E.md` v0.3 (Phala dstack TDX + per-user-keypair-on-iOS + double-wrap + AEAD user_id binding + on-chain AppAuth on Base L2 for authorization & transparency; iOS runs `is-this-real-tea` audit on-device every session); ~6–7 weeks
+- [ ] Full-repo content encryption rollout (content envelopes, key backup,
+      rewrap migration — Phases 4–5 in `docs/DESIGN_E2E.md`)
 - [ ] Claude.ai connector submission
 
 ---

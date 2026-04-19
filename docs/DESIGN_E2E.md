@@ -973,24 +973,42 @@ buildable from the pinned git commit. No content encryption yet.
 Agent reads via enclave decrypt with AEAD-bound user_id; existing users can
 voluntarily upgrade. Compose has no operator-settable security knobs.
 
-### Phase 3 — MCP moves into TEE + TLS termination + key backup (~1–2 weeks)
+### Phase 3 — TLS termination moves into TEE + key backup (partially shipped 2026-04-20)
 
-- [ ] Move FastMCP into the Phala CVM. Terminate TLS for `mcp.feedling.app`
-      inside the CVM using rustls.
-- [ ] Caddy config: `mcp.feedling.app` downgrades from `reverse_proxy` to
-      `layer4 tls passthrough` — Caddy only routes by SNI, never
-      decrypts.
-- [ ] ACME-DNS-01 plumbing so the CVM can auto-renew certs without the
-      TLS privkey ever existing outside TDX memory.
+- [x] **/attestation port (5003) terminates TLS inside the CVM.** Cert is
+      a deterministic self-signed ECDSA-P256, keypair derived from
+      dstack-KMS via `feedling-tls-v1` — privkey is bound to `compose_hash`
+      and cannot be extracted. `sha256(cert.DER)` is baked into
+      `report_data[0:32]` of the TDX quote so iOS pins the live
+      handshake against an Intel-signed attestation, not a CA chain.
+      Deployment record: `deploy/DEPLOYMENTS.md` §Phase 3.
+- [x] **Gateway URL shape**: `-5003s.dstack-pha-prod5.phala.network` —
+      the `-s` suffix tells dstack-gateway to passthrough TLS instead of
+      terminating. No custom DNS needed; no ACME needed (PKI is not the
+      trust model — attested-fingerprint is).
+- [ ] Move FastMCP (5002) into the same passthrough. Today MCP still
+      uses gateway-terminated Let's Encrypt because Claude.ai's MCP
+      client expects a browser-trusted CA and envelope crypto already
+      protects the content-plaintext layer.
 - [ ] iCloud Keychain backup of content `privkey` per decision §12.7: 24-word
       mnemonic shown once at onboarding, primary restore path is iCloud
-      Keychain auto-sync across the user's Apple devices.
+      Keychain auto-sync across the user's Apple devices. (Note: the
+      `ContentKeyStore` already uses `kSecAttrSynchronizable=true` so
+      the key follows the user across their Apple devices — what's
+      still missing is the 24-word mnemonic fallback for the
+      non-Apple-ecosystem case.)
 - [ ] Audit pass: confirm no plaintext can leave the CVM except as
-      already-encrypted TLS bytes.
+      already-encrypted TLS bytes. (Blocked on MCP moving into TEE.)
 
-**Exit criterion:** A Feedling operator with full root on the non-TEE host
-cannot observe active-session plaintext. Losing an iPhone no longer means
-losing local data access.
+**Exit criterion (original):** A Feedling operator with full root on
+the non-TEE host cannot observe active-session plaintext. Losing an
+iPhone no longer means losing local data access.
+
+**Status as of 2026-04-20:** for the `/attestation` endpoint, attested
+in-enclave TLS is live and pinning is enforced by iOS + CLI auditor
+(6/6 and 7/7 respectively). Other ports still rely on the envelope
+layer + gateway TLS; envelope crypto already makes "full root on the
+non-TEE host" insufficient to read content.
 
 ### Phase 4 — Privacy UI + polish (~1 week)
 

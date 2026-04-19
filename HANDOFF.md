@@ -1,43 +1,49 @@
 # Feedling — Handoff
 
 Snapshot of the project at the end of the autonomous build sprint that
-closed NEXT.md Phase 2. Whoever picks this up next — start here.
+closed NEXT.md Phase 2 **and** the Phase 3 TLS-in-enclave follow-up.
+Whoever picks this up next — start here.
 
 ## TL;DR
 
 - **What's live**: iOS app with end-to-end encrypted chat / memory / identity /
   frames, talking to a Flask+MCP backend on `api.feedling.app`/`mcp.feedling.app`
-  over HTTPS, plus a real Intel-TDX enclave on Phala Cloud that attests itself.
+  over HTTPS, plus a real Intel-TDX enclave on Phala Cloud that attests itself
+  **and terminates its own TLS** (Phase 3 shipped 2026-04-20).
 - **What's verifiable (CLI)**: anyone can hit the enclave's `/attestation`
-  endpoint, run `tools/audit_live_cvm.py`, and get **6/6 green** proving that
+  endpoint, run `tools/audit_live_cvm.py`, and get **7/7 green** proving that
   the exact `docker-compose.phala.yaml` in this repo is what's running, that
-  Intel's DCAP chain signs the quote, and that the `compose_hash` is
-  authorized on FeedlingAppAuth (Eth Sepolia).
-- **What's verifiable (iOS audit card)**: **5 green + 1 amber**. The amber
-  row is "TLS cert bound to attestation" — Phase 3 work. The CLI tool
-  checks different things (quote parse, measurements, on-chain, event log)
-  and doesn't include TLS pinning; that's why the numbers differ.
-- **What's deferred**: Phase 3 TLS-in-enclave (see last section).
+  Intel's DCAP chain signs the quote, that the `compose_hash` is authorized
+  on FeedlingAppAuth (Eth Sepolia), **and** that the live TLS handshake
+  reached the attested enclave (sha256(cert.DER) bound into REPORT_DATA).
+- **What's verifiable (iOS audit card)**: **6/6 green**. The TLS row now
+  performs a real comparison: a custom URLSessionDelegate captures the
+  server cert's DER-SHA256 during the handshake and matches it against
+  `enclave_tls_cert_fingerprint_hex` in the bundle. Proof image:
+  `docs/screenshots/audit_card_phase3_tls_pinned.png`.
+- **What's still deferred**: content-encryption migration for the full
+  user base (Phase 4–5 of `docs/DESIGN_E2E.md`).
 
 ## ⚠ Before next agent picks this up
 
 **All user-facing copy on the iOS audit card — row labels, captions,
-inline explanations, the TLS warning text, the "On-chain audit (public
-transparency, not security)" wording, everything — needs a review pass
-by @sxysun before it goes in front of real users.** The current copy was
-drafted in-session and is technically accurate but may not read right
-for the intended audience (beta users who aren't security engineers).
+inline explanations, the TLS row text (new: "sha256(cert.DER)=… matches
+the value bound into the TDX quote's REPORT_DATA."), the "On-chain audit
+(public transparency, not security)" wording, everything — needs a
+review pass by @sxysun before it goes in front of real users.** The copy
+is technically accurate but may not read right for beta users who aren't
+security engineers.
 
 Source files for that copy:
 - `testapp/FeedlingTest/AuditCardView.swift` — row titles, captions,
-  amber explanation, Etherscan footer text
-- `testapp/FeedlingTest/EventLogReplay.swift` — any reason strings that
-  bubble up into row captions
+  TLS match/mismatch text, pre-Phase-3 amber disclosure, Etherscan footer text
+- `testapp/FeedlingTest/EventLogReplay.swift` — reason strings that bubble
+  up into row captions
 - `testapp/FeedlingTest/DCAP/Verifier.swift` — error descriptions shown
   when a row fails
 
-Also review `docs/screenshots/audit_card_phase2_live_tdx.png` to confirm
-the finished shape matches the product voice.
+Also review `docs/screenshots/audit_card_phase3_tls_pinned.png` — if the
+product voice isn't right, that's the canonical reference-shot.
 
 ## Key endpoints
 
@@ -45,7 +51,7 @@ the finished shape matches the product voice.
 |---|---|
 | iOS API (HTTPS) | `https://api.feedling.app` |
 | MCP SSE (HTTPS) | `https://mcp.feedling.app/sse?key=<api_key>` |
-| Phala CVM /attestation | `https://051a174f2457a6c474680a5d745372398f97b6ad-5003.dstack-pha-prod5.phala.network/attestation` |
+| Phala CVM /attestation | `https://051a174f2457a6c474680a5d745372398f97b6ad-5003s.dstack-pha-prod5.phala.network/attestation` (note `-5003s`: TLS passthrough) |
 | Phala CVM MCP | `https://051a174f2457a6c474680a5d745372398f97b6ad-5002.dstack-pha-prod5.phala.network/sse` |
 | FeedlingAppAuth contract | Eth Sepolia `0x6c8A6f1e3eD4180B2048B808f7C4b2874649b88F` |
 | Container image | `ghcr.io/account-link/feedling:<commit>` (public) |
@@ -63,8 +69,13 @@ the finished shape matches the product voice.
 | 6 | iCloud Keychain for content keys | Done | `FeedlingAPI.swift` ContentKeyStore + KeyStore |
 
 Plus on-chain `compose_hash` authorization, reproducible CI builds,
-command-line audit tool, live-TDX audit card screenshot in
-`docs/screenshots/audit_card_phase2_live_tdx.png`.
+command-line audit tool, and **Phase 3 in-enclave TLS** — deterministic
+ECDSA-P256 cert derived from dstack-KMS (bound to compose_hash), served
+via passthrough at the `-5003s.` gateway route, fingerprint baked into
+REPORT_DATA and pinned by iOS on every audit. Live-TDX audit card
+screenshots:
+- `docs/screenshots/audit_card_phase2_live_tdx.png` (5+amber, pre-Phase 3)
+- `docs/screenshots/audit_card_phase3_tls_pinned.png` (6/6, current)
 
 ## How to release a new version
 
@@ -174,66 +185,55 @@ SIMCTL_CHILD_FEEDLING_ATTESTATION_URL=http://127.0.0.1:5003/attestation \
   xcrun simctl launch $UDID com.feedling.mcp
 ```
 
-## Phase 3: what's left and why it isn't done
+## Phase 3: what shipped (2026-04-20)
 
-**This is the row that makes the iOS audit card 5 green + 1 amber
-instead of 6/6.** Fixing it is the single biggest remaining item
-before the product can claim "fully end-to-end attested." The CLI
-auditor (`tools/audit_live_cvm.py`) doesn't check this, which is why
-its output shows 6/6 — different set of checks.
+**TLS for the `/attestation` port (5003) now terminates inside the CVM.**
+The iOS audit card row "TLS cert bound to attestation" went from amber
+placeholder to a real comparison against a fingerprint baked into the
+TDX-signed quote. MCP (5002) and the backend API (5001) still use
+gateway-terminated TLS because their threat model is different — envelope
+crypto protects content-plaintext, gateway TLS only protects metadata.
 
-The iOS audit card has one amber row: **"TLS cert bound to attestation"**.
+**What the shape of the fix is:**
 
-**What the problem is.** Right now the CVM is addressed as
-`<app-id>-<port>.dstack-pha-prod5.phala.network`, and dstack-gateway (a
-separate Phala-operated TEE) is what terminates TLS. A client connecting
-there gets a Let's Encrypt cert that dstack-gateway holds; our enclave
-never sees the TLS keys. So:
+- `backend/enclave_app.py` — on boot, when `FEEDLING_ENCLAVE_TLS=true`,
+  derive an ECDSA-P256 keypair from dstack-KMS via a distinct path
+  (`feedling-tls-v1`). Build a self-signed cert, sign it with RFC-6979
+  deterministic ECDSA so the DER is byte-stable across reboots. Compute
+  `sha256(cert.DER)` and pass it into `build_report_data(...)` instead
+  of the zero placeholder. Serve Flask via an `ssl.SSLContext` loaded
+  from transiently-materialized PEM files (unlinked immediately).
+- `deploy/docker-compose.phala.yaml` — `FEEDLING_ENCLAVE_TLS=true` on the
+  enclave service. Healthcheck switches to `curl -k https://127.0.0.1:5003`.
+  The `-k` is expected: inside the enclave there's no way to do the
+  attestation-based pin for a liveness ping.
+- iOS URL — attestation fetcher moves from `-5003.` to `-5003s.`, which
+  is the dstack-gateway passthrough suffix (gateway forwards TLS bytes
+  instead of terminating).
+- iOS pinning — `PinningCaptureDelegate` in `AuditCardView.swift`
+  records `sha256(leaf cert DER)` during the handshake while accepting
+  the cert (no CA chain in our trust model). After the bundle is parsed,
+  the audit compares the captured hash to `enclave_tls_cert_fingerprint_hex`.
+  Match = green; mismatch = hard red "MITM detected."
+- `FeedlingAPI.swift`'s startup `refreshEnclaveAttestation` gets a
+  companion `AttestationTrustShim` so it can still fetch the bundle over
+  the self-signed TLS. This path doesn't do pinning (just metadata
+  bootstrap) — the pinning check lives in the audit card, downstream.
+- `tools/audit_live_cvm.py` — new Row 7: raw TLS handshake with
+  `CERT_NONE` verification, compare `sha256(peer cert DER)` to the
+  attested fingerprint. All-zeros fingerprint emits the pre-Phase-3
+  disclosure without marking the row green.
 
-- A sophisticated MITM with control of dstack-gateway could intercept
-  traffic.
-- Our `report_data` field has a placeholder for a TLS cert fingerprint
-  (`enclave_tls_cert_fingerprint_hex`), which is what auditors *would*
-  pin against if the cert originated in our enclave. Currently unused.
+**Trust model**: the self-signed chain is expected. An operator cannot
+substitute their own TLS cert without also forging a quote signing
+REPORT_DATA they can't produce — the TDX PCK signs the quote, and our
+cert's DER hash is part of that signed payload.
 
-**Why it's not a security hole** for Phase 2:
-- Content (chat/memory/identity/frames) is already encrypted at the
-  envelope layer before it ever hits TLS. The `body_ct` is sealed to the
-  enclave's content pubkey, which IS bound into the attestation.
-- Gateway TLS only protects metadata (which endpoints you hit, request
-  timing, response sizes).
-- dstack-gateway itself runs in a TEE with its own attestation — not a
-  "plaintext linux VM" operator.
-
-**What fixing it takes** (2–4 hours):
-
-1. **Decide on the URL story.** Two options:
-   - `-s` suffix URL — `<app-id>-<port>s.dstack-pha-prod5.phala.network`
-     tells dstack-gateway to passthrough TLS to the enclave instead of
-     terminating. Easiest. Keeps the Phala-provided hostname.
-   - Custom DNS (`enclave.feedling.app`) pointed at the gateway IP with
-     SNI-based routing. More flexible but more moving parts.
-2. **Generate TLS keypair inside enclave** at boot. ECDSA P-256 (or
-   X25519 for QUIC), derived from dstack-kms-derived key material so
-   the private key is bound to this exact `compose_hash`.
-3. **Populate `report_data`** (the 64-byte quote field) with the
-   SHA256 of the TLS cert's DER-encoded SubjectPublicKeyInfo. Currently
-   enclave_app.py leaves this as a placeholder; wire it up for real.
-4. **Get an ACME cert** — TLS-ALPN-01 challenge works well here because
-   it uses the cert itself to prove control, no separate HTTP server
-   needed. `certbot` or `acme.sh` inside the enclave, triggered at boot.
-5. **Serve HTTPS from Flask** — swap `app.run(port=5003)` for
-   `app.run(ssl_context=(certfile, keyfile), port=443)` or put a
-   Python stdlib-HTTPS (or gunicorn with SSL) in front.
-6. **iOS audit card** — the row already exists in the code
-   (`AuditCardView.swift:239`); just needs to actually pull the cert
-   from the live URL during verification and compare its SPKI-SHA256 to
-   `bundle.enclave_tls_cert_fingerprint_hex`. ~20 lines of Swift.
-
-**Recommendation**: do this in a dedicated PR with its own end-to-end
-test + screenshot, not piled onto another feature. The existing audit
-card UI already explains the caveat, so there's no user-facing
-regression risk from leaving it amber for now.
+**Test evidence**: local simulator run produced a deterministic cert
+across reboots (`7e8782c261d1acd3…` twice in a row); the live CVM on
+Phala runs the same code under a real TDX quote; both the CLI auditor
+and the iOS audit card go 7/7 and 6/6 respectively against the live
+endpoint. See `docs/screenshots/audit_card_phase3_tls_pinned.png`.
 
 ## Other loose ends (not urgent)
 
