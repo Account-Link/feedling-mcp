@@ -144,6 +144,19 @@ PUSH_COOLDOWN_SECONDS = int(os.environ.get("FEEDLING_PUSH_COOLDOWN_SEC", 300))
 LIVE_ACTIVITY_DEDUPE_SEC = int(os.environ.get("FEEDLING_LIVE_ACTIVITY_DEDUPE_SEC", 900))
 
 
+# Used from inside UserStore._load_tokens on boot; must be defined before
+# the class that calls it. Other token helpers (_select_token,
+# _update_token_lifecycle, etc.) stay below since they only run at request
+# time, after the full module has loaded.
+def _normalize_token_entry(entry: dict) -> dict:
+    normalized = dict(entry)
+    normalized.setdefault("status", "active")
+    normalized.setdefault("last_error", "")
+    normalized.setdefault("last_success_at", "")
+    normalized.setdefault("updated_at", normalized.get("registered_at", datetime.now().isoformat()))
+    return normalized
+
+
 class UserStore:
     """All per-user state + file paths + locks. One instance per user_id."""
 
@@ -476,15 +489,6 @@ def _save_frame(store: UserStore, payload: dict):
 # ---------------------------------------------------------------------------
 # Token entry helpers (pure functions over the per-user list)
 # ---------------------------------------------------------------------------
-
-
-def _normalize_token_entry(entry: dict) -> dict:
-    normalized = dict(entry)
-    normalized.setdefault("status", "active")
-    normalized.setdefault("last_error", "")
-    normalized.setdefault("last_success_at", "")
-    normalized.setdefault("updated_at", normalized.get("registered_at", datetime.now().isoformat()))
-    return normalized
 
 
 def _is_live_activity_token(entry: dict) -> bool:
