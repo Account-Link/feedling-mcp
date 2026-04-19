@@ -8,6 +8,54 @@ import CryptoKit
 ///
 /// Runs on first render + whenever the user taps "Re-verify." Security
 /// is re-evaluated on-device each time — no state held server-side.
+
+/// URLSession delegate that records the server certificate's DER-SHA256
+/// during the TLS handshake while accepting whatever the enclave
+/// presents. Trust is not granted on the basis of PKI chain — trust is
+/// decided later by the audit viewmodel, which compares this captured
+/// fingerprint to the `enclave_tls_cert_fingerprint_hex` field of the
+/// TDX-signed attestation bundle. A MITM would need to forge both the
+/// TLS cert AND the quote's REPORT_DATA, which requires compromising
+/// the enclave's sealed key material.
+final class PinningCaptureDelegate: NSObject, URLSessionDelegate {
+
+    /// sha256(DER-encoded leaf cert) as lowercase hex — populated on
+    /// the first challenge. Nil means no TLS handshake happened (HTTP
+    /// URL) or the server presented no cert.
+    private(set) var capturedCertSHA256Hex: String?
+
+    /// Record and accept any server cert. The viewmodel decides whether
+    /// to trust the fetched bytes based on a later comparison.
+    func urlSession(_ session: URLSession,
+                    didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+
+        // Pull the leaf cert's DER out of the trust object. On iOS 15+
+        // use SecTrustCopyCertificateChain; older deprecated path is
+        // SecTrustGetCertificateAtIndex which still exists but warns.
+        var cert: SecCertificate?
+        if #available(iOS 15.0, *) {
+            if let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate], let leaf = chain.first {
+                cert = leaf
+            }
+        } else {
+            cert = SecTrustGetCertificateAtIndex(trust, 0)
+        }
+        if let c = cert {
+            let der = SecCertificateCopyData(c) as Data
+            let hash = SHA256.hash(data: der)
+            capturedCertSHA256Hex = hash.map { String(format: "%02x", $0) }.joined()
+        }
+        // Accept the cert. Validation happens after the bundle is parsed.
+        completionHandler(.useCredential, URLCredential(trust: trust))
+    }
+}
+
 @MainActor
 final class AuditViewModel: ObservableObject {
 
@@ -41,10 +89,17 @@ final class AuditViewModel: ObservableObject {
             return
         }
 
-        // 1. Fetch attestation bundle
+        // 1. Fetch attestation bundle through a pinning-capture session.
+        //    The delegate accepts the enclave's self-signed cert and
+        //    records sha256(cert.DER); we verify that hash against the
+        //    attestation's bound fingerprint below, after we have the
+        //    bundle in hand. If the two disagree, the TLS handshake was
+        //    intercepted — don't trust anything we just read.
+        let pinner = PinningCaptureDelegate()
+        let session = URLSession(configuration: .ephemeral, delegate: pinner, delegateQueue: nil)
         let bundle: AttestationBundle
         do {
-            let (data, resp) = try await URLSession.shared.data(from: attestURL)
+            let (data, resp) = try await session.data(from: attestURL)
             guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
                 lastError = "/attestation returned HTTP \((resp as? HTTPURLResponse)?.statusCode ?? 0)"
                 return
@@ -54,6 +109,7 @@ final class AuditViewModel: ObservableObject {
             lastError = "attestation fetch failed: \(error)"
             return
         }
+        let presentedCertSHA256 = pinner.capturedCertSHA256Hex?.lowercased()
 
         // 2. Run DCAPVerifier.verify against pinned Intel Root CA
         guard let rootCADataURL = Bundle.main.url(forResource: "IntelSGXRootCA", withExtension: "der"),
@@ -96,17 +152,29 @@ final class AuditViewModel: ObservableObject {
             mrConfigIdHex: bundle.measurements?.mr_config_id ?? ""
         )
 
-        // 4. TLS cert binding. Phase 1 sends a placeholder all-zero
-        //    fingerprint. Phase 3 will move TLS termination into the CVM
-        //    and report_data will carry the real fingerprint.
-        //    Orthogonal concern: pre-Phase-3 deployments where Caddy
-        //    (outside the enclave) terminates TLS — per dstack-tutorial
-        //    Step E case (3), the operator is trusted not to MITM
-        //    between the public endpoint and the enclave. Disclose this.
-        let tlsChecked = bundle.enclave_tls_cert_fingerprint_hex != String(repeating: "0", count: 64)
-        let disclosure: String? = tlsChecked
-            ? nil
-            : "TLS is terminated by operator-controlled infrastructure outside the enclave. Until Phase 3 moves TLS into the CVM, you are implicitly trusting the operator not to MITM."
+        // 4. TLS cert binding. Two modes:
+        //    - Phase 3 path: enclave_tls_cert_fingerprint_hex is a real
+        //      sha256(cert.DER). Compare it against the cert the TLS
+        //      handshake actually presented (pinner.capturedCertSHA256Hex).
+        //      Match ⇒ green. Mismatch ⇒ hard red — the handshake was
+        //      intercepted between client and enclave.
+        //    - Pre-Phase-3 path: fingerprint is all zeros. TLS is
+        //      terminated by operator infrastructure (dstack-gateway or
+        //      Caddy), so we can't pin anything; show amber disclosure.
+        let attested = bundle.enclave_tls_cert_fingerprint_hex.lowercased()
+        let zeros = String(repeating: "0", count: 64)
+        let tlsChecked: Bool
+        let disclosure: String?
+        if attested == zeros {
+            tlsChecked = false
+            disclosure = "TLS is terminated by operator-controlled infrastructure outside the enclave. You are implicitly trusting dstack-gateway not to MITM. (This endpoint predates Phase 3; redeploy with FEEDLING_ENCLAVE_TLS=true.)"
+        } else if let live = presentedCertSHA256, live == attested {
+            tlsChecked = true
+            disclosure = "sha256(cert.DER)=\(String(live.prefix(16)))… matches the value bound into the TDX quote's REPORT_DATA."
+        } else {
+            tlsChecked = false
+            disclosure = "MITM detected. attested sha256(cert.DER)=\(String(attested.prefix(16)))… but live handshake presented \(String((presentedCertSHA256 ?? "missing").prefix(16)))…"
+        }
 
         // 5. Build on-chain tx URL from AppAuth info in the bundle
         var txURL: URL?
@@ -140,10 +208,11 @@ final class AuditViewModel: ObservableObject {
             let mcp = api.baseURL.replacingOccurrences(of: "api.", with: "mcp.")
             return URL(string: "\(mcp)/attestation")
         }
-        // Phase 2: live Phala dstack-pha-prod5 CVM feedling-enclave.
-        // Same URL as FeedlingAPI.attestationURL; kept here so the audit
-        // card's fetcher doesn't need to depend on the private attestationURL.
-        return URL(string: "https://051a174f2457a6c474680a5d745372398f97b6ad-5003.dstack-pha-prod5.phala.network/attestation")
+        // Phase 3: live Phala dstack-pha-prod5 CVM with in-enclave TLS.
+        // The `-5003s.` suffix triggers TLS passthrough at dstack-gateway
+        // so the cert the client sees is the one the enclave generated
+        // (bound to compose_hash via dstack-KMS).
+        return URL(string: "https://051a174f2457a6c474680a5d745372398f97b6ad-5003s.dstack-pha-prod5.phala.network/attestation")
     }
 
     // MARK: - Wire type for the /attestation response
@@ -237,8 +306,7 @@ struct AuditCardView: View {
                 note: r.bodySignatureValid ? nil : "expected in Phase 2 on real TDX; simulator skips")
             composeBindingRow(r.composeBinding)
             row("TLS cert bound to attestation", ok: r.tlsCertBindingChecked,
-                note: r.tlsTerminationDisclosure
-                    ?? (r.tlsCertBindingChecked ? nil : "Phase 1 placeholder; real binding in Phase 3"))
+                note: r.tlsTerminationDisclosure)
 
             Divider().padding(.vertical, 4)
             Text("On-chain audit (public transparency, not security)")

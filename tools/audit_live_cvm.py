@@ -1,5 +1,21 @@
-"""6-row audit against the live Phala CVM, mirroring iOS AuditCardView."""
-import json, os, sys, hashlib, subprocess
+"""7-row audit against the live Phala CVM, mirroring iOS AuditCardView.
+
+Rows 1-6 are structural: the quote parses, measurements look real, the
+compose_hash is authorized on-chain, and the event log + mr_config_id
+both bind the claimed compose_hash into the quote. Row 7 (new in
+Phase 3) pins the live TLS cert: sha256(DER) of the cert the TLS
+handshake presents must match `enclave_tls_cert_fingerprint_hex` in
+the attestation. If they disagree, the TLS handshake was intercepted.
+
+Expected usage:
+
+    FEEDLING_ATTESTATION_URL=https://<app-id>-5003s.dstack-pha-prod5.phala.network/attestation
+    # Fetch the bundle ignoring the self-signed cert (we pin separately):
+    curl -sk "$FEEDLING_ATTESTATION_URL" > /tmp/fl_cvm_attest.json
+    python3 tools/audit_live_cvm.py
+"""
+import json, os, sys, hashlib, socket, ssl, subprocess
+from urllib.parse import urlparse
 sys.path.insert(0, "/Users/sxysun/Desktop/suapp/feedling-mcp-v1/tools/dcap")
 from dcap_parse import parse_quote
 
@@ -62,8 +78,46 @@ row(6, "event_log contains compose-hash event with this compose_hash",
     compose_hash.lower() in payload,
     f"event_payload = {payload}")
 
+# Row 7: TLS cert presented by the endpoint is bound to the attestation.
+# sha256(DER) of the cert returned by the live TLS handshake must equal
+# `enclave_tls_cert_fingerprint_hex` in the bundle. If the bundle still
+# carries the all-zeros placeholder, TLS is terminated outside the
+# enclave (pre-Phase-3 deploy) and we surface that explicitly — it's
+# not a pass, it's a disclosure.
+attested_tls = att.get("enclave_tls_cert_fingerprint_hex", "").lower()
+zeros = "0" * 64
+url = os.environ.get(
+    "FEEDLING_ATTESTATION_URL",
+    "https://051a174f2457a6c474680a5d745372398f97b6ad-5003s.dstack-pha-prod5.phala.network/attestation",
+)
+if attested_tls == zeros:
+    row(7, "TLS cert bound to attestation", False,
+        f"enclave_tls_cert_fingerprint_hex = all zeros\n"
+        f"=> TLS terminated by dstack-gateway, not the enclave.\n"
+        f"=> Trust model requires trusting the gateway operator.")
+else:
+    try:
+        parsed = urlparse(url)
+        host, port = parsed.hostname, parsed.port or 443
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE  # we pin, we don't CA-verify
+        with socket.create_connection((host, port), timeout=10) as raw:
+            with ctx.wrap_socket(raw, server_hostname=host) as s:
+                der = s.getpeercert(binary_form=True)
+        live_sha = hashlib.sha256(der).hexdigest()
+        match = live_sha == attested_tls
+        row(7, "TLS cert bound to attestation",
+            match,
+            f"attested sha256(cert.DER) = {attested_tls[:32]}…\n"
+            f"live     sha256(cert.DER) = {live_sha[:32]}…\n"
+            f"=> {'MATCH: TLS handshake reached the attested enclave, no MITM.' if match else 'MISMATCH: handshake was intercepted between you and the enclave.'}")
+    except Exception as e:
+        row(7, "TLS cert bound to attestation", False, f"TLS fetch failed: {e}")
+
 # Summary
 passed = sum(1 for v in rows.values() if v)
+total = len(rows)
 print()
-print(f"===== {passed}/6 rows green — {'ALL PASS' if passed==6 else 'FAILED: '+str([n for n,v in rows.items() if not v])} =====")
-sys.exit(0 if passed==6 else 1)
+print(f"===== {passed}/{total} rows green — {'ALL PASS' if passed==total else 'FAILED: '+str([n for n,v in rows.items() if not v])} =====")
+sys.exit(0 if passed==total else 1)

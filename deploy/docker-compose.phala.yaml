@@ -32,6 +32,12 @@ services:
       # --- BAKED: security-relevant ---
       FEEDLING_ENCLAVE_PORT: "5003"
       FEEDLING_DATA_DIR: "/data"
+      # Phase 3: terminate TLS inside the enclave. With this on,
+      # bootstrap() derives a dstack-KMS-bound ECDSA P-256 cert and
+      # bakes sha256(cert.DER) into REPORT_DATA. Clients verify the
+      # live cert by comparing sha256(DER) to the attested value —
+      # the self-signed chain is expected; PKI trust is not the model.
+      FEEDLING_ENCLAVE_TLS: "true"
       # NOTE: intentionally NOT setting DSTACK_SIMULATOR_ENDPOINT.
       # dstack-sdk treats "is this env var PRESENT?" as "use simulator"
       # even when the value is empty, so an empty string would make it
@@ -53,7 +59,12 @@ services:
       # the healthcheck window and take the whole compose down with it.
       # Real readiness is confirmed externally by /attestation returning
       # 200 (iOS audit card does this).
-      test: ["CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5003/healthz | grep -qE '^(200|503)$'"]
+      #
+      # -k is required because the enclave serves a self-signed cert
+      # whose trust comes from the attestation, not from a local CA
+      # bundle; inside the container there's no way to pin against
+      # REPORT_DATA for this liveness ping anyway.
+      test: ["CMD-SHELL", "curl -k -s -o /dev/null -w '%{http_code}' https://127.0.0.1:5003/healthz | grep -qE '^(200|503)$'"]
       interval: 15s
       timeout: 5s
       retries: 20

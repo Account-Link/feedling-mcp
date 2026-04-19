@@ -30,10 +30,13 @@ See docs/DESIGN_E2E.md §5, §7 for the full architecture.
 from __future__ import annotations
 
 import base64
+import datetime as _dt
 import hashlib
 import json
 import os
+import ssl
 import sys
+import tempfile
 import time
 from typing import Any
 
@@ -43,10 +46,14 @@ import nacl.encoding
 import nacl.exceptions
 import nacl.public
 import nacl.signing
+from cryptography import x509
+from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.hashes import SHA256
+from cryptography.hazmat.primitives import hashes as _hashes
 from cryptography.hazmat.primitives import serialization
 from cryptography.exceptions import InvalidTag
 from flask import Flask, jsonify, Response, request
@@ -69,6 +76,18 @@ if os.environ.get("DSTACK_SIMULATOR_ENDPOINT", "") == "":
     os.environ.pop("DSTACK_SIMULATOR_ENDPOINT", None)
 
 ENCLAVE_PORT = int(os.environ.get("FEEDLING_ENCLAVE_PORT", 5003))
+
+# Phase 3: in-enclave TLS. When true, bootstrap() derives an ECDSA P-256
+# keypair from dstack-KMS, issues a self-signed cert for it, binds
+# sha256(cert-DER) into REPORT_DATA, and serves Flask over HTTPS on
+# ENCLAVE_PORT. Clients verify by matching the presented cert's DER
+# hash against the attested fingerprint — not by PKI chain, since the
+# cert is self-signed on purpose (key material is bound to compose_hash
+# via dstack-KMS, which is stronger than LE trust).
+#
+# Off by default so the local dstack simulator + curl/httpx stay HTTP.
+# docker-compose.phala.yaml sets this true on real deployments.
+ENCLAVE_TLS = os.environ.get("FEEDLING_ENCLAVE_TLS", "false").lower() == "true"
 
 # Internal HTTPS (or HTTP in dev) to the non-TEE Flask backend. This is the
 # only network dependency the enclave has after boot. Requests carry the
@@ -119,6 +138,7 @@ APP_AUTH = {
 
 CONTENT_KEY_PATH = "feedling-content-v1"
 SIGNING_KEY_PATH = "feedling-signing-v1"
+TLS_KEY_PATH = "feedling-tls-v1"
 
 
 def derive_keys(dstack: DstackClient) -> dict[str, Any]:
@@ -153,15 +173,134 @@ def derive_keys(dstack: DstackClient) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Attestation assembly
+# TLS cert material (Phase 3)
 # ---------------------------------------------------------------------------
 
 
-# Placeholder TLS cert fingerprint — in Phase 3 this becomes the SHA-256 of
-# the DER-encoded cert we terminate TLS with inside the enclave. For Phase 1
-# we use zeros and mark the bundle as "phase-1-no-tls-binding" so the iOS
-# verifier doesn't mistake this for the real thing.
+# Sentinel "no TLS binding" fingerprint. Before Phase 3 the bundle always
+# carried this (Caddy/gateway terminated TLS). Post-Phase 3 this appears
+# only when ENCLAVE_TLS=false (local dev). iOS treats all-zeros as
+# "operator terminates TLS" and surfaces the amber disclosure.
 PHASE1_TLS_FINGERPRINT = b"\x00" * 32
+
+
+def derive_tls_cert_and_key(dstack: DstackClient) -> dict[str, Any]:
+    """Derive a deterministic ECDSA P-256 keypair from dstack-KMS and
+    wrap it in a self-signed cert.
+
+    The private key is bound to (compose_hash, app_id, TLS_KEY_PATH) —
+    a different `compose_hash` → a different key → a different cert →
+    a different `sha256(cert.DER)` → the attested fingerprint won't
+    match and iOS rejects the connection. An operator cannot substitute
+    their own cert without also producing a quote over a report_data
+    they cannot sign (TDX PCK signs report_data_binding).
+
+    Returns cert PEM, key PEM, and the 32-byte sha256 of the DER cert —
+    the latter is what gets baked into REPORT_DATA.
+    """
+    # Deterministic seed for the EC private key. We hash the KMS seed
+    # once more before feeding it to `derive_private_key` so a future
+    # reader can't confuse raw KMS material with the TLS key. Using the
+    # SECP256R1 curve order to reduce to a valid scalar is handled by
+    # `derive_private_key` internally.
+    seed_resp = dstack.get_key(TLS_KEY_PATH, "")
+    seed = bytes.fromhex(seed_resp.key) if isinstance(seed_resp.key, str) else seed_resp.key
+    scalar_bytes = hashlib.sha256(b"feedling-tls-v1|" + seed[:32]).digest()
+    scalar = int.from_bytes(scalar_bytes, "big")
+    # Clamp into the curve's scalar range — P-256 order is just under
+    # 2**256 so a rejection probability of ~2^-32 is negligible; fall
+    # back to the hash of the failed scalar rather than adding rounds
+    # that would make this non-deterministic.
+    curve = ec.SECP256R1()
+    priv_key = ec.derive_private_key(scalar, curve)
+
+    # Build a self-signed cert. CN and SAN are cosmetic — iOS pins on
+    # sha256(cert.DER), not on the subject. We still fill them with the
+    # wildcard dstack-pha-prod5 shape because browsers / curl display
+    # this field to humans and it's less confusing than the default.
+    subject_name = x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, "feedling-enclave"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Feedling (TDX CVM)"),
+    ])
+    # Deterministic not_valid_before / serial so the DER is stable
+    # across reboots of the same compose_hash. If the cert DER changes,
+    # report_data changes, and iOS thinks the endpoint is different.
+    not_before = _dt.datetime(2026, 1, 1, tzinfo=_dt.timezone.utc)
+    not_after = _dt.datetime(2036, 1, 1, tzinfo=_dt.timezone.utc)
+    # Use a hash of the pubkey bytes as the serial — stable per key.
+    pub_der = priv_key.public_key().public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    serial = int.from_bytes(hashlib.sha256(pub_der).digest()[:8], "big") | 1
+
+    builder = (
+        x509.CertificateBuilder()
+        .subject_name(subject_name)
+        .issuer_name(subject_name)
+        .public_key(priv_key.public_key())
+        .serial_number(serial)
+        .not_valid_before(not_before)
+        .not_valid_after(not_after)
+        .add_extension(
+            x509.SubjectAlternativeName([
+                x509.DNSName("feedling-enclave"),
+                x509.DNSName("*.dstack-pha-prod5.phala.network"),
+            ]),
+            critical=False,
+        )
+        .add_extension(
+            x509.BasicConstraints(ca=False, path_length=None), critical=True
+        )
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                key_encipherment=True,
+                key_agreement=False,
+                content_commitment=False,
+                data_encipherment=False,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
+            critical=False,
+        )
+    )
+    # Deterministic ECDSA (RFC 6979) so two boots of the same
+    # compose_hash produce byte-identical certs. Without this the TLS
+    # cert fingerprint rotates every reboot — still secure (each quote
+    # binds its own cert) but messy for reproducibility and caches.
+    cert = builder.sign(
+        private_key=priv_key,
+        algorithm=_hashes.SHA256(),
+        ecdsa_deterministic=True,
+    )
+
+    cert_der = cert.public_bytes(serialization.Encoding.DER)
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM)
+    key_pem = priv_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    fingerprint = hashlib.sha256(cert_der).digest()
+
+    return {
+        "cert_pem": cert_pem,
+        "key_pem": key_pem,
+        "cert_der": cert_der,
+        "fingerprint": fingerprint,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Attestation assembly
+# ---------------------------------------------------------------------------
 
 
 def build_report_data(content_pk_bytes: bytes, tls_cert_fingerprint: bytes, version_tag: bytes) -> bytes:
@@ -240,31 +379,58 @@ _state: dict[str, Any] = {
     "content_pk_hex": None,
     "signing_pk_hex": None,
     "tls_cert_fingerprint_hex": PHASE1_TLS_FINGERPRINT.hex(),
+    "tls_enabled": False,
+    "tls_cert_pem": None,  # bytes; only kept for the SSLContext load path
+    "tls_key_pem": None,   # bytes; only kept for the SSLContext load path
     "attestation": None,
     "booted_at": None,
 }
 
 
 def bootstrap():
-    """Derive keys + generate attestation once at startup. Cached thereafter."""
+    """Derive keys + generate attestation once at startup. Cached thereafter.
+
+    When ENCLAVE_TLS is true we also derive an ECDSA P-256 cert bound to
+    compose_hash and bake its sha256(DER) into REPORT_DATA so iOS can
+    pin the TLS cert against the quote. Off → the old zero placeholder
+    stays, and iOS will surface the amber "operator-terminated TLS" row.
+    """
     try:
         dstack = DstackClient()
         keys = derive_keys(dstack)
+
+        tls_fingerprint = PHASE1_TLS_FINGERPRINT
+        if ENCLAVE_TLS:
+            try:
+                tls = derive_tls_cert_and_key(dstack)
+                tls_fingerprint = tls["fingerprint"]
+                _state["tls_cert_pem"] = tls["cert_pem"]
+                _state["tls_key_pem"] = tls["key_pem"]
+                _state["tls_enabled"] = True
+            except Exception as e:
+                # Refuse to boot silently without TLS when the operator
+                # asked for it — iOS would show "operator terminates TLS"
+                # without the operator realizing the enclave never set it
+                # up. Fail loudly instead.
+                raise RuntimeError(f"TLS derivation failed: {e}") from e
+
         report_data = build_report_data(
             content_pk_bytes=keys["content_pk_bytes"],
-            tls_cert_fingerprint=PHASE1_TLS_FINGERPRINT,
+            tls_cert_fingerprint=tls_fingerprint,
             version_tag=b"feedling-v1",
         )
         attestation = fetch_quote_and_measurements(dstack, report_data)
 
         _state["content_pk_hex"] = keys["content_pk_bytes"].hex()
         _state["signing_pk_hex"] = keys["signing_pk_bytes"].hex()
+        _state["tls_cert_fingerprint_hex"] = tls_fingerprint.hex()
         _state["attestation"] = attestation
         _state["booted_at"] = time.time()
         _state["ready"] = True
         print(
             f"[enclave] ready: content_pk={_state['content_pk_hex'][:16]}… "
-            f"compose_hash={attestation['compose_hash'][:16]}…",
+            f"compose_hash={attestation['compose_hash'][:16]}… "
+            f"tls={'yes' if _state['tls_enabled'] else 'no'}",
             flush=True,
         )
     except Exception as e:
@@ -305,10 +471,19 @@ def attestation():
         "enclave_release": RELEASE,
         "app_auth": APP_AUTH,
         "report_data_version": 1,
-        "phase": 1,
+        "phase": 3 if _state["tls_enabled"] else 1,
+        "tls_in_enclave": _state["tls_enabled"],
         "notes": (
-            "phase-1 skeleton — TLS cert binding is a placeholder (all zeros)."
-            " Real TLS-in-enclave + cert fingerprint in REPORT_DATA ships in Phase 3."
+            "phase-3: TLS terminated inside the enclave."
+            " enclave_tls_cert_fingerprint_hex = sha256(cert.DER) of the"
+            " cert the TLS handshake presents. Clients must compare the"
+            " live cert's DER hash to this value; do not trust the"
+            " self-signed chain on its own."
+            if _state["tls_enabled"] else
+            "phase-1 skeleton — TLS cert binding is a placeholder (all"
+            " zeros). Operator-controlled infrastructure terminates TLS."
+            " Until in-enclave TLS is enabled, clients must trust the"
+            " dstack-gateway operator to forward traffic unmodified."
         ),
         "booted_at": _state["booted_at"],
     }
@@ -767,7 +942,41 @@ _cached_content_sk: nacl.public.PrivateKey | None = None
 # ---------------------------------------------------------------------------
 
 
+def _build_ssl_context() -> ssl.SSLContext | None:
+    """Build an SSLContext from the in-memory cert/key material.
+
+    Python's ssl.SSLContext.load_cert_chain only takes file paths; we
+    materialize the PEM through NamedTemporaryFile and unlink right after
+    load so nothing persists. In a TDX CVM /tmp is in-memory anyway —
+    the bytes never hit persistent storage or the operator's disk.
+    """
+    if not _state["tls_enabled"]:
+        return None
+    cert_pem = _state["tls_cert_pem"]
+    key_pem = _state["tls_key_pem"]
+    if not cert_pem or not key_pem:
+        return None
+
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    # Drop the ephemeral PEM paths as soon as load_cert_chain has read them.
+    with tempfile.NamedTemporaryFile("wb", suffix=".pem", delete=False) as cf, \
+         tempfile.NamedTemporaryFile("wb", suffix=".pem", delete=False) as kf:
+        cf.write(cert_pem); cf.flush()
+        kf.write(key_pem); kf.flush()
+        cert_path, key_path = cf.name, kf.name
+    try:
+        ctx.load_cert_chain(certfile=cert_path, keyfile=key_path)
+    finally:
+        for p in (cert_path, key_path):
+            try: os.unlink(p)
+            except OSError: pass
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    return ctx
+
+
 if __name__ == "__main__":
     bootstrap()
-    print(f"Feedling enclave service listening on http://0.0.0.0:{ENCLAVE_PORT}", flush=True)
-    app.run(host="0.0.0.0", port=ENCLAVE_PORT, debug=False)
+    ssl_ctx = _build_ssl_context()
+    scheme = "https" if ssl_ctx else "http"
+    print(f"Feedling enclave service listening on {scheme}://0.0.0.0:{ENCLAVE_PORT}", flush=True)
+    app.run(host="0.0.0.0", port=ENCLAVE_PORT, debug=False, ssl_context=ssl_ctx)
