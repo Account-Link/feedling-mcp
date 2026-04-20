@@ -6,7 +6,7 @@ Whoever picks this up next — start here.
 
 ## TL;DR
 
-- **What's live (through Phase C.2, 2026-04-20)**: iOS app with end-to-end
+- **What's live (through Phase D, 2026-04-20)**: iOS app with end-to-end
   encrypted chat, memory, identity, agent nudges, and agent replies —
   **all write paths now wrap to v1 envelopes**; server disk is always
   ciphertext. Flask+MCP backend on `api.feedling.app`/`mcp.feedling.app`,
@@ -38,9 +38,17 @@ Whoever picks this up next — start here.
     single-user mode, `/v1/identity/nudge` HTTP endpoint, v0 plaintext
     branches in backend + MCP + enclave, `chat_bridge.py`, the silent
     iOS migration subsystem, and `/v1/content/rewrap` are all gone. The
-    prod user data directory was wiped and she reinstalled fresh on
+    prod user data directory was wiped and she reinstalls fresh on
     multi-tenant. The in-place envelope-swap path for visibility toggles
     moved to `/v1/content/swap` (same validation shape, no v0 fallback).
+  - *Phase D*: shipped 2026-04-20 (task #35). CVM on
+    `ghcr.io/account-link/feedling:78b51a6` with compose_hash
+    `0xd92bcd3cb1713ffe8e152417ab46e8179510c37ceed5ae6d423c586a2cd60049`
+    authorized on Sepolia tx
+    `0x235f0120d6982cbf8872e927ee2e59133627177ca9d3f862554d748ac6e60c7c`
+    (block 10696873). CLI audit 8/8 green. VPS flat-layout data wiped
+    same day (kept `.pepper` + APNs key). First deploy with no
+    plaintext-write path anywhere in the backend.
 - *Phase C (part 1)*: shipped 2026-04-20. MCP port 5002 now
     terminates TLS inside the enclave with the same dstack-KMS-bound
     cert as the attestation port. `-5002s.` URL is pinnable; CLI

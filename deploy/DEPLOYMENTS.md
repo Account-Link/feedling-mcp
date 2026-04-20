@@ -17,7 +17,7 @@ phases.
 | Mode | Multi-tenant only. Per-user HMAC-peppered api_keys issued by `POST /v1/users/register`; no shared key, no `SINGLE_USER` env var anymore. |
 | Ports | Flask `:5001`, MCP SSE `:5002`, WebSocket ingest `:9998` |
 | APNs key | `/home/openclaw/feedling-data/AuthKey_5TH55X5U7T.p8` |
-| Current commit | (pending — updated when the v0-strip commit lands) |
+| Current commit | `78b51a6` (v0 / SINGLE_USER strip, 2026-04-20) |
 | Backups | `/home/openclaw/feedling-data.bak.YYYYMMDD-HHMMSS` — created automatically on each upgrade |
 
 Flip history: The VPS originally ran in `SINGLE_USER=true` mode with
@@ -156,7 +156,7 @@ reinstalled fresh against a multi-tenant backend via the normal
 | Purpose | Closes the last plaintext-at-rest gaps for the two write paths that couldn't be closed in Phase A: `identity.nudge` mutations (now wrapped end-to-end via MCP's orchestration of decrypt from enclave → mutate in MCP process → rewrap → replace) and agent-authored chat replies via `feedling.chat.post_message` (MCP wraps plaintext into v1 envelope before POSTing). Remaining plaintext surfaces are limited to the in-flight message itself (present in the MCP process memory inside the TDX-attested container boundary for the duration of one RPC) — never at rest on disk. `mcp.feedling.app` (CA-signed) routing unchanged pending Phase C part 2 (ACME-DNS-01). |
 | Retired by | Phase C.2 deploy below. |
 
-### Phase C.2 TDX CVM with ACME-DNS-01 Let's Encrypt cert inside enclave (running, 2026-04-20)
+### Phase C.2 TDX CVM with ACME-DNS-01 Let's Encrypt cert inside enclave (superseded by Phase D, 2026-04-20)
 
 | | |
 |---|---|
@@ -175,6 +175,25 @@ reinstalled fresh against a multi-tenant backend via the normal
 | Routing | `mcp.feedling.app` DNS → Caddy on VPS `54.209.126.4` (A record at `37bec2c25ad8959659dcc14c244fce4e` zone, DNS-only, not proxied) → reverse-proxies to `-5002s.dstack-pha-prod5.phala.network` with gateway SNI. Claude.ai / Claude Desktop clients see a CA-valid Caddy cert for `mcp.feedling.app`; audit-aware clients can pin directly against the attested pubkey fingerprint via the `-5002s.` path. |
 | Secrets | `CF_ZONE_ID` + `CF_API_TOKEN` injected via `phala deploy -e KEY=VALUE` (encrypted env channel, not baked into compose_hash). Token scope: `Zone:DNS:Edit` for `feedling.app` only. |
 | Purpose | First Feedling deployment where the MCP-port cert is a real CA-signed LE cert (not self-signed dstack-KMS) whose private key is provably inside the TDX enclave. Agents (Claude.ai / mobile MCP clients) get a cert their OS trusts out of the box AND auditors can verify the pubkey is enclave-bound. `mcp.feedling.app` is now end-to-end trusted without trusting the gateway operator on the audit-aware path. |
+| Retired by | Phase D deploy below. |
+
+### Phase D TDX CVM — multi-tenant-only, envelope-only backend (running, 2026-04-20)
+
+| | |
+|---|---|
+| Provider | Phala Cloud (dstack-dev-0.5.8, Intel TDX) on node `prod5` (US-WEST-1) |
+| Name | `feedling-enclave` (same CVM, compose updated in place) |
+| App ID | `051a174f2457a6c474680a5d745372398f97b6ad` |
+| VM UUID | `4386636e-1325-4b92-99d8-f2ca00befdb4` |
+| Compose | `deploy/docker-compose.phala.yaml` @ commit `f3b4837` |
+| Image | `ghcr.io/account-link/feedling:78b51a6` — first image where `SINGLE_USER` mode and the v0 plaintext write path are fully retired. Backend rejects plaintext chat/identity/memory writes with `400`; WS ingest drops frames without a v1 envelope silently; `/v1/content/rewrap` and `/v1/identity/nudge` HTTP endpoints removed (nudge now runs decrypt→mutate→rewrap inside MCP). `chat_bridge.py` + `feedling-chat-bridge.service` deleted. |
+| Compose hash | `0xd92bcd3cb1713ffe8e152417ab46e8179510c37ceed5ae6d423c586a2cd60049` |
+| TLS cert fingerprint (attestation port 5003) | `5698f0ade4bb412d6b0847a62d695138f3bbd287dc7d1dbdeb67b15dc445e5ef` — unchanged across EIGHT compose rotations. dstack-KMS per-app derivation remains load-bearing stable. |
+| MCP TLS pubkey fingerprint (port 5002) | `e98665a3e94ac90a0a26453a73e16d5a569f791c181cfbc6ba98598f358cf63e` — unchanged; LE cert key is still derived from `feedling-mcp-tls-v1`. |
+| MRTD | `f06dfda6dce1cf904d4e2bab1dc37063…` (unchanged — same base image) |
+| On-chain entry | compose_hash `0xd92bcd3c…`: Sepolia tx `0x235f0120d6982cbf8872e927ee2e59133627177ca9d3f862554d748ac6e60c7c` (block 10696873). Every prior compose hash still `isAppAllowed()=true`. |
+| Audit evidence | CLI **8/8** green (`tools/audit_live_cvm.py`) against `compose_hash=0xd92bcd3c…`. VPS flat-layout data wiped same day (keeping `.pepper` + `AuthKey_5TH55X5U7T.p8`) — prod user reinstalls fresh via `POST /v1/users/register`. |
+| Purpose | First Feedling deployment where the backend has no plaintext-write path at all. There is no `SINGLE_USER` flag, no shared `FEEDLING_API_KEY`, no v0→v1 migration endpoint, and no chat-bridge daemon. Every chat message, memory entry, and identity card landing on disk is a v1 envelope wrapped for the enclave's content pk. |
 
 ## Planned
 

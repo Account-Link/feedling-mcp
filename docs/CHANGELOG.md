@@ -51,6 +51,25 @@
 
 ## 2026-04-20
 
+### [DONE] Phase D deploy — multi-tenant-only CVM live
+
+Pairs with the v0 / SINGLE_USER strip below. After the strip landed,
+the VPS data directory was wiped (kept `.pepper` + APNs key), VPS
+services restarted on the new code, then the CVM was redeployed.
+
+- Image: `ghcr.io/account-link/feedling:78b51a6`
+- Compose hash:
+  `0xd92bcd3cb1713ffe8e152417ab46e8179510c37ceed5ae6d423c586a2cd60049`
+- On-chain (Sepolia): tx
+  `0x235f0120d6982cbf8872e927ee2e59133627177ca9d3f862554d748ac6e60c7c`
+  at block 10696873.
+- CLI audit: `tools/audit_live_cvm.py` → 8/8 green.
+- Remaining: prod user reinstalls fresh and verifies the in-app audit
+  card shows 8/8 green + the new compose-hash-changed consent modal
+  fires on first launch (task #36).
+
+Task #35 closed.
+
 ### [DONE] v0 / SINGLE_USER strip — backend is envelope-only
 
 Closes tasks #23 and #33 in a single commit. The one real prod user
