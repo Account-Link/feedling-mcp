@@ -5,17 +5,25 @@
 
 # MCP server — Claude.ai / Claude Desktop connect here over SSE.
 # Phase C.2: traffic is proxied to the Phala CVM MCP service (port 5002),
-# which holds a Let's Encrypt cert for mcp.feedling.app generated inside the
-# TDX enclave. Caddy verifies the CVM's cert via the system CA bundle.
-# tls_server_name overrides the SNI so Caddy sends "mcp.feedling.app" during
-# the upstream TLS handshake — the CVM's LE cert is valid for that name.
+# which holds a Let's Encrypt cert for mcp.feedling.app generated inside
+# the TDX enclave.
 #
-# NOTE: update the upstream URL after every CVM redeploy (the hash prefix
-# changes). Current CVM: 051a174f2457a6c474680a5d745372398f97b6ad
+# SNI quirk: Phala's dstack-gateway routes connections by SNI and only
+# accepts its own `-PORTs.*.phala.network` hostname. If we set
+# `tls_server_name mcp.feedling.app`, the gateway drops the TCP
+# connection before the TLS handshake reaches the CVM. So we send the
+# gateway hostname as SNI and skip upstream cert verification — the
+# real trust root is the attestation at /attestation (port 5003), which
+# iOS and `tools/audit_live_cvm.py` pin independently (Row 8 proves the
+# LE cert's pubkey is bound to the TDX enclave).
+#
+# NOTE: update the upstream URL after every CVM redeploy (the hash
+# prefix changes). Current CVM: 051a174f2457a6c474680a5d745372398f97b6ad
 mcp.feedling.app {
     reverse_proxy https://051a174f2457a6c474680a5d745372398f97b6ad-5002s.dstack-pha-prod5.phala.network {
         transport http {
-            tls_server_name mcp.feedling.app
+            tls_server_name 051a174f2457a6c474680a5d745372398f97b6ad-5002s.dstack-pha-prod5.phala.network
+            tls_insecure_skip_verify
         }
     }
 }

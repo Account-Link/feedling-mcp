@@ -142,38 +142,67 @@ else:
     try:
         parsed = urlparse(mcp_url_env)
         host, port = parsed.hostname, parsed.port or 443
-        # CA-validate with system roots — the cert is LE-signed, not self-signed
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False          # we check manually below
-        ctx.verify_mode = ssl.CERT_REQUIRED
-        with socket.create_connection((host, port), timeout=15) as raw:
-            with ctx.wrap_socket(raw, server_hostname="mcp.feedling.app") as s:
-                der = s.getpeercert(binary_form=True)
-                cert_dict = s.getpeercert()
+        # Phala's dstack-gateway routes based on SNI: the SNI must match
+        # the CVM's own `-PORTs.*.phala.network` hostname or the gateway
+        # drops the TCP connection before the TLS handshake reaches the
+        # CVM. So we fetch the cert chain via `openssl s_client` using
+        # `host` as the SNI (gateway-friendly), then verify the leaf
+        # manually against mcp.feedling.app with the system CA bundle.
+        proc = subprocess.run(
+            ["openssl", "s_client", "-servername", host, "-showcerts",
+             "-connect", f"{host}:{port}"],
+            input="", capture_output=True, text=True, timeout=20,
+        )
+        out = proc.stdout
+        # Extract all PEM certs in the order the server sent them.
+        pem_blocks = []
+        in_block = False; cur = []
+        for ln in out.splitlines():
+            if "BEGIN CERTIFICATE" in ln:
+                in_block = True; cur = [ln]
+            elif "END CERTIFICATE" in ln and in_block:
+                cur.append(ln); pem_blocks.append("\n".join(cur) + "\n"); in_block = False
+            elif in_block:
+                cur.append(ln)
+        if not pem_blocks:
+            raise RuntimeError(f"no certs in openssl output: {proc.stderr[:400]}")
         from cryptography import x509 as _x509
         from cryptography.hazmat.primitives import serialization as _ser
-        leaf = _x509.load_der_x509_certificate(der)
+        from cryptography.x509.verification import PolicyBuilder, Store
+        import datetime as _dt
+        chain = [_x509.load_pem_x509_certificate(p.encode()) for p in pem_blocks]
+        leaf = chain[0]; intermediates = chain[1:]
+        der = leaf.public_bytes(_ser.Encoding.DER)
+        # Build trust store from certifi if present, else openssl's default.
+        try:
+            import certifi as _certifi
+            ca_path = _certifi.where()
+        except ImportError:
+            ca_path = ssl.get_default_verify_paths().cafile
+        with open(ca_path, "rb") as f:
+            trust_roots = _x509.load_pem_x509_certificates(f.read())
+        store = Store(trust_roots)
+        builder = PolicyBuilder().store(store).time(_dt.datetime.now(_dt.timezone.utc))
+        verifier = builder.build_server_verifier(_x509.DNSName("mcp.feedling.app"))
+        verifier.verify(leaf, intermediates)  # raises VerificationError on failure
         pub_der = leaf.public_key().public_bytes(_ser.Encoding.DER, _ser.PublicFormat.SubjectPublicKeyInfo)
         live_pk_fp = hashlib.sha256(pub_der).hexdigest()
         pk_match = live_pk_fp == attested_mcp_pk
-        # Also verify subject CN or SAN includes mcp.feedling.app
-        san_ok = any(
-            "mcp.feedling.app" in str(v)
-            for ext in [leaf.extensions.get_extension_for_class(_x509.SubjectAlternativeName)]
-            for v in ext.value.get_values_for_type(_x509.DNSName)
-        ) if True else False
         row(8, "MCP TLS cert (Let's Encrypt, key in CVM)",
-            pk_match and san_ok,
+            pk_match,
             f"attested pubkey fp = {attested_mcp_pk[:32]}…\n"
             f"live     pubkey fp = {live_pk_fp[:32]}…\n"
-            f"SAN for mcp.feedling.app: {'yes' if san_ok else 'no'}\n"
-            f"=> {'MATCH: LE cert key is inside the attested CVM.' if (pk_match and san_ok) else 'MISMATCH or bad SAN — see details above.'}")
-    except ssl.SSLCertVerificationError as e:
-        row(8, "MCP TLS cert (Let's Encrypt, key in CVM)", False,
-            f"CA verification failed: {e}\n"
-            f"=> MCP cert is not a valid Let's Encrypt cert (may still be Phase C.1 self-signed)")
+            f"cert CA-verified for mcp.feedling.app: yes (Let's Encrypt chain)\n"
+            f"=> {'MATCH: LE cert key is inside the attested CVM.' if pk_match else 'MISMATCH: pubkey fingerprint differs from attested.'}")
     except Exception as e:
-        row(8, "MCP TLS cert (Let's Encrypt, key in CVM)", False, f"TLS fetch failed: {e}")
+        etype = type(e).__name__
+        if "Verification" in etype:
+            row(8, "MCP TLS cert (Let's Encrypt, key in CVM)", False,
+                f"CA verification failed: {e}\n"
+                f"=> MCP cert is not a valid Let's Encrypt cert for mcp.feedling.app")
+        else:
+            row(8, "MCP TLS cert (Let's Encrypt, key in CVM)", False,
+                f"TLS fetch failed: {etype}: {e}")
 
 # Summary
 passed = sum(1 for v in rows.values() if v)

@@ -6,20 +6,26 @@ Whoever picks this up next — start here.
 
 ## TL;DR
 
-- **What's live (through Phase C.3, 2026-04-20)**: iOS app with end-to-end
+- **What's live (through Phase C.2, 2026-04-20)**: iOS app with end-to-end
   encrypted chat, memory, identity, agent nudges, and agent replies —
   **all write paths now wrap to v1 envelopes**; server disk is always
   ciphertext. Flask+MCP backend on `api.feedling.app`/`mcp.feedling.app`,
   plus a real Intel-TDX enclave on Phala Cloud that attests itself,
-  terminates its own TLS on both the attestation port (5003) and MCP port
-  (5002), and hosts the decrypt proxy for agent reads.
+  terminates its own TLS on the attestation port (5003) with a
+  dstack-KMS-bound cert AND on the MCP port (5002) with a real
+  Let's Encrypt cert for `mcp.feedling.app` (private key provably inside
+  the CVM via ACME-DNS-01 running at enclave boot), and hosts the decrypt
+  proxy for agent reads.
 - **CLI audit**: `tools/audit_live_cvm.py` → **8/8 green** against the live
   CVM. Checks `/attestation` parses, DCAP chain to Intel SGX Root CA,
   measurements non-zero + `mr_config_id[0]=0x01`, `compose_hash` authorized
   on FeedlingAppAuth (Eth Sepolia), RTMR3 event log + mr_config_id binding,
   live attestation-port TLS-cert-DER pinned to the attested fingerprint,
-  and (Phase C) live MCP-port TLS-cert-DER also pinned to the same
-  attested fingerprint.
+  and (Phase C.2) live MCP-port Let's Encrypt cert CA-verified for
+  `mcp.feedling.app` with its pubkey SPKI sha256 pinned to the attested
+  `mcp_tls_cert_pubkey_fingerprint_hex`. Pubkey fingerprint is stable
+  across 90-day LE renewals because the key is derived from dstack-KMS
+  at path `feedling-mcp-tls-v1` — cert rotates, key doesn't.
 - **iOS audit card**: **6/6 green**. Screenshot:
   `docs/screenshots/audit_card_phase3_tls_pinned.png`.
 - **Content-plaintext status**:
@@ -48,10 +54,18 @@ Whoever picks this up next — start here.
     security)" copy → "Public release log"; new in-app links to
     `docs/AUDIT.md` (the agent-consumable "is this safe?" guide)
     and the public GitHub repo.
-- *Phase C part 2 open*: ACME-DNS-01 inside the enclave so
-    `mcp.feedling.app` (what Claude.ai hits) can move to layer4
-    SNI passthrough and drop the "trust Caddy on the VPS" step.
-    Needs a DNS API token + renewal scheduler. Task #30.
+- *Phase C part 2*: shipped 2026-04-20. ACME-DNS-01 runs inside
+    the CVM at boot via `backend/acme_dns01.py` (no new deps —
+    uses existing `cryptography` + `httpx`). Cert private key is
+    derived from dstack-KMS at path `feedling-mcp-tls-v1`, so LE
+    renewals (every 60 days via daily watchdog thread) don't
+    rotate the pubkey — audit Row 8 stays green indefinitely.
+    CF_ZONE_ID + CF_API_TOKEN injected via `phala deploy -e`
+    (encrypted env channel, not in compose_hash). SNI quirk:
+    Phala gateway routes by `-PORTs.*.phala.network` SNI, so
+    Caddy uses the gateway hostname as upstream SNI with
+    skip-verify; real trust root is the attestation. Task #30
+    closed.
 - *Phase B wave-2 shipped*: per-item visibility toggle on the
     memory garden (long-press context menu → "Hide from agent" /
     "Share with agent"; eye.slash indicator when local_only) +

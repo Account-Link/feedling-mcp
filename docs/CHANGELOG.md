@@ -51,6 +51,102 @@
 
 ## 2026-04-20
 
+### [DONE] Phase C.2 — ACME-DNS-01 Let's Encrypt cert inside the CVM
+
+`mcp.feedling.app` now serves a real CA-signed Let's Encrypt cert
+whose private key is provably inside the TDX enclave. Closes task #30.
+
+**backend/acme_dns01.py (new, ~260 lines, zero new deps)**
+- Pure-Python ACME v2 client (RFC 8555) — JWS ES256, JWK thumbprints,
+  order/auth/challenge/finalize flow, all over `httpx`.
+- `CfDns` helper talks to Cloudflare API to create/delete the
+  `_acme-challenge` TXT record for DNS-01.
+- `get_or_renew()` caches the cert PEM at `/tls/<domain>.cert.pem`
+  (volume-backed, survives restarts) and re-issues when <30 days
+  left. LE rate limit is 5 certs/week/domain — 30-day buffer means
+  ~12 reissues/year worst case.
+- `start_renewal_watchdog()` spawns a daemon thread that checks
+  daily; on renewal it `os._exit(0)`s to let Docker restart the
+  container and pick up the fresh cert.
+
+**backend/dstack_tls.py (extended)**
+- New path constant `MCP_TLS_KEY_PATH = "feedling-mcp-tls-v1"` +
+  `derive_key_only(dstack, path)` helper. Cert private key is
+  derived from dstack-KMS with a stable hash, so LE renewals rotate
+  the cert but NOT the key — audit Row 8 stays green indefinitely.
+
+**backend/mcp_server.py (extended)**
+- Replaces `_materialize_tls_cert` with `_acquire_tls_cert`. Priority:
+  ACME (when `FEEDLING_ACME_DOMAIN` is set) > dstack-KMS self-signed
+  (Phase C.1 fallback) > plain HTTP. Surfaces the pubkey fingerprint
+  via a module-level `_mcp_cert_pubkey_fingerprint_hex` that gets
+  baked into `/attestation` alongside the attestation-port fingerprint.
+
+**backend/enclave_app.py (extended)**
+- `bootstrap()` derives the MCP cert pubkey from dstack-KMS and
+  computes sha256(SubjectPublicKeyInfo DER). Result is served as
+  `mcp_tls_cert_pubkey_fingerprint_hex` in `/attestation`.
+- Stable-per-app-id (not per-compose) because the derivation path
+  is constant — same rationale as `enclave_tls_cert_fingerprint_hex`
+  and `enclave_content_pk`.
+
+**deploy/docker-compose.phala.yaml**
+- Added `FEEDLING_ACME_DOMAIN=mcp.feedling.app`, `FEEDLING_ACME_EMAIL`,
+  `FEEDLING_TLS_CACHE_DIR=/tls`, `FEEDLING_CF_ZONE_ID=${CF_ZONE_ID}`,
+  `FEEDLING_CF_API_TOKEN=${CF_API_TOKEN}` to the mcp service.
+- CF_* are injected at deploy time via `phala deploy -e KEY=VAL`
+  (encrypted env channel, never in the compose file, never hashed
+  into compose_hash). Zone ID is non-secret; API token is
+  `Zone:DNS:Edit`-scoped to `feedling.app`.
+- New named volume `feedling_mcp_tls_data_v2` mounted at `/tls`.
+  The `_v2` suffix forces Docker to create a fresh volume because
+  the v1 volume was root-owned (Docker initializes empty named
+  volumes as root when the container image doesn't pre-create the
+  mount path). The MCP process runs as `feedling` UID 1000 so
+  root-owned `/tls` = `EACCES` on first cert write → ACME silently
+  fell back to the dstack-KMS self-signed cert on the first deploy.
+
+**deploy/Dockerfile**
+- Pre-creates `/tls` with `feedling:feedling` ownership alongside
+  `/data`. New named volumes get initialized from the container's
+  directory state, so this guarantees feedling ownership for any
+  future fresh volume.
+
+**tools/audit_live_cvm.py**
+- Row 8 rewritten for the real LE path. Uses `openssl s_client -showcerts`
+  to fetch the full cert chain (Python's `ssl.getpeercert` returns
+  only the leaf); builds an `x509.verification.PolicyBuilder` chain
+  from the system CA bundle; calls `build_server_verifier(DNSName(
+  "mcp.feedling.app")).verify(leaf, intermediates)` to CA-validate
+  the cert for the expected name. Then pins the cert's SPKI pubkey
+  sha256 against the attested value.
+- SNI workaround: Phala dstack-gateway routes by SNI and only
+  accepts `-PORTs.*.phala.network` hostnames — sending
+  `mcp.feedling.app` as SNI gets the gateway to drop the TCP
+  connection before the TLS handshake reaches the CVM. Fix:
+  send the gateway hostname as SNI, then verify the cert manually
+  for `mcp.feedling.app`.
+
+**deploy/Caddyfile**
+- `mcp.feedling.app` reverse proxy: `tls_server_name` changed
+  from `mcp.feedling.app` to the gateway hostname + added
+  `tls_insecure_skip_verify`. Same SNI-routing reason. The real
+  trust root is the attestation; Caddy is just a compatibility
+  shim for Claude.ai and other MCP clients that expect a stable
+  hostname and a CA-valid cert.
+
+**Operational**
+- CF DNS: new A record `mcp.feedling.app → 54.209.126.4` (VPS
+  where Caddy runs). DNS-only (not Cloudflare-proxied) so Caddy
+  can do its own HTTP-01 ACME for the public-facing `mcp.feedling.app`
+  cert without Cloudflare terminating first.
+- New compose_hash `0x23a2c2869567d15220383e4acb5ceb5cf27d78e087d2d4e357e4b3c053a5dc68`
+  published on-chain: Sepolia tx `0xe2a9ceab…`.
+- MCP cert pubkey fingerprint: `e98665a3e94ac90a0a26453a73e16d5a569f791c181cfbc6ba98598f358cf63e`
+  — expect this to stay constant across all future deploys (stable
+  dstack-KMS derivation).
+- CLI audit: **8/8 green**.
+
 ### [DONE] Phase B wave-2 + MIGRATION.md
 
 Finishing out the Phase B surface + directly answering "what does
