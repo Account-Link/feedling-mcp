@@ -447,9 +447,8 @@ struct AuditCardView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
-            // Open-source pointer — the user handed to their agent for
-            // "is this safe?" questions. Links to docs/AUDIT.md which is
-            // the agent-consumable audit guide.
+            // Open-source pointers — the docs a user hands to their agent
+            // for "is this safe?" + "how do I migrate?" questions.
             Link(destination: URL(string: "https://github.com/Account-Link/feedling-mcp/blob/main/docs/AUDIT.md")!) {
                 HStack {
                     Image(systemName: "doc.text.magnifyingglass")
@@ -458,6 +457,13 @@ struct AuditCardView: View {
                 }
             }
             .padding(.top, 4)
+            Link(destination: URL(string: "https://github.com/Account-Link/feedling-mcp/blob/main/docs/MIGRATION.md")!) {
+                HStack {
+                    Image(systemName: "arrow.triangle.branch")
+                    Text("Migration guide (self-hosted → cloud)")
+                        .font(.caption)
+                }
+            }
             Link(destination: URL(string: "https://github.com/Account-Link/feedling-mcp")!) {
                 HStack {
                     Image(systemName: "chevron.left.forwardslash.chevron.right")

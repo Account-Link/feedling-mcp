@@ -250,6 +250,76 @@ final class FeedlingAPI: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: PhaseBKeys.onboardingCompletedV1) }
     }
 
+    // MARK: - Phase B wave-2: inline migration progress
+
+    @Published var migrationProgress: (done: Int, total: Int)? = nil
+
+    // MARK: - Phase B wave-2: per-item visibility flip
+
+    /// Flip the visibility of a single memory moment by re-wrapping its
+    /// plaintext with a fresh envelope that either includes or omits
+    /// `K_enclave`, then POSTing to `/v1/content/rewrap`. iOS holds the
+    /// plaintext already (it's displayed in the UI), so no server trip
+    /// for decryption is needed.
+    ///
+    /// - Parameter moment: the moment to flip. Its fields are used both
+    ///   for the new envelope's plaintext body (title + description + type)
+    ///   and for the AEAD AAD binding (`owner_user_id || v || id`).
+    /// - Parameter toLocalOnly: true → `local_only` (K_enclave dropped,
+    ///   agent can no longer read). false → `shared` (K_enclave re-added).
+    /// - Throws: on missing pubkeys, serialization failure, or network
+    ///   error. Caller is expected to surface the error in UI.
+    func flipMemoryVisibility(
+        moment: MemoryMoment,
+        toLocalOnly: Bool
+    ) async throws {
+        guard let userPK = userContentPublicKey,
+              let enclavePK = enclaveContentPublicKey,
+              !userId.isEmpty
+        else {
+            throw NSError(domain: "VisibilityFlip", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey:
+                                     "Content keypair or enclave pubkey not ready — try again after the audit card verifies."])
+        }
+
+        // Build the plaintext body the same way MCP's memory.add_moment
+        // does on the write path, so the AEAD binding is consistent.
+        let inner: [String: String] = [
+            "title": moment.title,
+            "description": moment.description,
+            "type": moment.type,
+        ]
+        let innerData = try JSONSerialization.data(withJSONObject: inner)
+
+        let visibility: ContentEncryption.Visibility = toLocalOnly ? .localOnly : .shared
+        let envelope = try ContentEncryption.envelope(
+            plaintext: innerData,
+            ownerUserID: userId,
+            userContentPK: userPK,
+            enclaveContentPK: toLocalOnly ? nil : enclavePK,
+            visibility: visibility,
+            itemID: moment.id
+        )
+
+        let items: [[String: Any]] = [[
+            "type": "memory",
+            "id": moment.id,
+            "envelope": envelope.jsonBody()["envelope"] as Any
+        ]]
+        let body = try JSONSerialization.data(withJSONObject: ["items": items])
+        guard let req = authorizedRequest(path: "/v1/content/rewrap",
+                                          method: "POST", body: body) else {
+            throw NSError(domain: "VisibilityFlip", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "could not build request"])
+        }
+        let (_, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            throw NSError(domain: "VisibilityFlip",
+                          code: (resp as? HTTPURLResponse)?.statusCode ?? 0,
+                          userInfo: [NSLocalizedDescriptionKey: "HTTP failure"])
+        }
+    }
+
     // MARK: - Phase B: export + delete
 
     struct ExportResult {
@@ -485,6 +555,10 @@ final class FeedlingAPI: ObservableObject {
             return
         }
 
+        // Surface progress to the Privacy hero row so the user can see
+        // "Upgrading 3 of 12" inline while the migration runs.
+        migrationProgress = (done: 0, total: items.count)
+
         // Send in batches of 100 so servers + clients don't hold giant bodies.
         let batchSize = 100
         var allOk = true
@@ -503,11 +577,19 @@ final class FeedlingAPI: ObservableObject {
                 totals.error += summary.error
                 if summary.error > 0 { allOk = false }
             }
+            migrationProgress = (
+                done: min(batchStart + batchSize, items.count),
+                total: items.count
+            )
         }
         print("[migration] done ok=\(totals.ok) already_v1=\(totals.alreadyV1) not_found=\(totals.notFound) error=\(totals.error)")
         if allOk {
             UserDefaults.standard.set(true, forKey: defaultsKey)
         }
+        // Clear progress either way — if it failed, the row switches to
+        // an "error, retry" state (surfaced elsewhere). If it succeeded,
+        // the row disappears and the hero flips to the all-green state.
+        migrationProgress = nil
     }
 
     private struct RewrapSummary { let ok, alreadyV1, notFound, error: Int }

@@ -16,6 +16,17 @@ struct MemoryGardenView: View {
                                     moment: moment,
                                     isNew: vm.newMomentIds.contains(moment.id)
                                 )
+                                .feedlingMemoryVisibilityMenu(moment: moment) { toLocalOnly in
+                                    Task {
+                                        do {
+                                            try await FeedlingAPI.shared.flipMemoryVisibility(
+                                                moment: moment, toLocalOnly: toLocalOnly)
+                                            await vm.loadMoments()
+                                        } catch {
+                                            print("[visibility-flip] \(moment.id): \(error)")
+                                        }
+                                    }
+                                }
                             }
                         }
                         .padding(16)
@@ -65,6 +76,14 @@ private struct MomentCard: View {
                         .foregroundStyle(.white.opacity(0.4))
                 }
                 Spacer()
+                // Phase B wave-2: hidden-from-agent indicator. Subtle
+                // badge; hints to the user that this item is local_only.
+                if moment.visibility == "local_only" {
+                    Image(systemName: "eye.slash")
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.4))
+                        .accessibilityLabel("Hidden from agent")
+                }
                 if !moment.type.isEmpty {
                     Text(moment.type)
                         .font(.caption2)

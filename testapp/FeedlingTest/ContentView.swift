@@ -557,6 +557,13 @@ struct PrivacyPageView: View {
                 }
                 .listRowInsets(EdgeInsets(top: Spacing.sm, leading: Spacing.md,
                                           bottom: Spacing.sm, trailing: Spacing.md))
+                // Phase B wave-2: inline migration progress when the
+                // silent v0→v1 rewrap is in flight. Hidden otherwise.
+                if let prog = api.migrationProgress {
+                    MigrationProgressRow(done: prog.done, total: prog.total)
+                        .listRowInsets(EdgeInsets(top: Spacing.xs, leading: Spacing.md,
+                                                  bottom: Spacing.sm, trailing: Spacing.md))
+                }
             }
             Section("Your data") {
                 Button {
@@ -1100,6 +1107,61 @@ struct ComposeHashChangeConsentView: View {
                 .padding(.bottom, Spacing.xl2)
             }
             .padding(.horizontal, Spacing.xl)
+        }
+    }
+}
+
+
+// MARK: - Phase B wave-2: inline migration progress row
+
+struct MigrationProgressRow: View {
+    let done: Int
+    let total: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: Spacing.sm) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Upgrading your old data — \(done) of \(total)")
+                    .feedlingCaption()
+            }
+            ProgressView(value: Double(done), total: Double(total))
+                .progressViewStyle(.linear)
+                .tint(Color.feedlingSage)
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+// MARK: - Phase B wave-2: memory visibility context menu
+
+/// Adds a long-press context menu to a memory card so the user can
+/// flip it between "Shared with agent" and "Hidden from agent" in
+/// one action. Lives here instead of in MemoryGardenView.swift so the
+/// Phase B wave-2 work stays consolidated in ContentView.swift alongside
+/// the rest of the Privacy surface (MemoryGardenView.swift is iOS
+/// MVP-era code and I don't want to bloat it).
+extension View {
+    func feedlingMemoryVisibilityMenu(
+        moment: MemoryMoment,
+        onFlip: @escaping (Bool) -> Void   // toLocalOnly
+    ) -> some View {
+        self.contextMenu {
+            let currentlyLocal = moment.visibility == "local_only"
+            if currentlyLocal {
+                Button {
+                    onFlip(false)   // flip to shared
+                } label: {
+                    Label("Share with agent", systemImage: "eye")
+                }
+            } else {
+                Button {
+                    onFlip(true)    // flip to local_only
+                } label: {
+                    Label("Hide from agent", systemImage: "eye.slash")
+                }
+            }
         }
     }
 }
