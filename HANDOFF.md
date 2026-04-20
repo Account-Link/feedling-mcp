@@ -6,12 +6,13 @@ Whoever picks this up next — start here.
 
 ## TL;DR
 
-- **What's live (through Phase A, 2026-04-20)**: iOS app with end-to-end
-  encrypted chat (iOS writes) + **agent-authored memory and identity cards
-  now encrypted too via MCP-side envelope wrap**, talking to a Flask+MCP
-  backend on `api.feedling.app`/`mcp.feedling.app`, plus a real Intel-TDX
-  enclave on Phala Cloud that attests itself, terminates its own TLS on
-  the attestation port, and hosts a decrypt proxy for agent reads.
+- **What's live (through Phase C.3, 2026-04-20)**: iOS app with end-to-end
+  encrypted chat, memory, identity, agent nudges, and agent replies —
+  **all write paths now wrap to v1 envelopes**; server disk is always
+  ciphertext. Flask+MCP backend on `api.feedling.app`/`mcp.feedling.app`,
+  plus a real Intel-TDX enclave on Phala Cloud that attests itself,
+  terminates its own TLS on both the attestation port (5003) and MCP port
+  (5002), and hosts the decrypt proxy for agent reads.
 - **CLI audit**: `tools/audit_live_cvm.py` → **8/8 green** against the live
   CVM. Checks `/attestation` parses, DCAP chain to Intel SGX Root CA,
   measurements non-zero + `mr_config_id[0]=0x01`, `compose_hash` authorized
@@ -22,16 +23,15 @@ Whoever picks this up next — start here.
 - **iOS audit card**: **6/6 green**. Screenshot:
   `docs/screenshots/audit_card_phase3_tls_pinned.png`.
 - **Content-plaintext status**:
-  - *Encrypted on server*: chat (iOS writer), memory add, identity init.
-  - *Still plaintext*: `feedling.identity.nudge` (mutate-in-place),
-    `feedling.chat.post_message` (agent→user reply). Both pending Phase C
-    (MCP-in-TEE) because they need decrypt→mutate→rewrap semantics.
-  - *Not yet re-wrapped*: any pre-Phase-A v0 data on disk — **migration
-    code now live (A.6), runs silently on the next iOS launch**. Live
-    endpoint: `POST /v1/content/rewrap` on the CVM (idempotent,
-    batched). Exactly one production user to verify against (noted in
-    task #23); once her migration completes, v0 accept paths + the
-    rewrap endpoint itself get stripped.
+  - *Encrypted on server*: chat (iOS writer), memory add, identity init,
+    `feedling.identity.nudge` (MCP decrypt-mutate-rewrap inside CVM),
+    `feedling.chat.post_message` (MCP wraps to v1 envelope). **All write
+    paths are now ciphertext at rest.**
+  - *Not yet re-wrapped*: any pre-Phase-A v0 data on disk — migration
+    code live (A.6), runs silently on the next iOS launch. Live endpoint:
+    `POST /v1/content/rewrap` on the CVM (idempotent, batched). Exactly
+    one prod user to verify against (task #23); once her migration
+    completes, v0 accept paths + the rewrap endpoint get stripped.
 - *Phase C (part 1)*: shipped 2026-04-20. MCP port 5002 now
     terminates TLS inside the enclave with the same dstack-KMS-bound
     cert as the attestation port. `-5002s.` URL is pinnable; CLI
@@ -159,7 +159,7 @@ screenshots:
 9. Update `testapp/FeedlingTest/FeedlingAPI.swift` `attestationURL` and
    `testapp/FeedlingTest/AuditCardView.swift` `makeAttestationURL` if the
    hostname shape changes. (It won't for minor releases.)
-10. Run `tools/audit_live_cvm.py` — all 6 rows should be green.
+10. Run `tools/audit_live_cvm.py` — all 8 rows should be green.
 
 ## How to update the VPS (non-enclave services)
 
