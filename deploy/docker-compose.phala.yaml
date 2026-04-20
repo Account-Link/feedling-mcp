@@ -25,7 +25,7 @@ name: feedling-enclave
 
 services:
   enclave:
-    image: ghcr.io/account-link/feedling:cc329a8
+    image: ghcr.io/account-link/feedling:6808241
     command: ["python", "-u", "backend/enclave_app.py"]
     restart: unless-stopped
     environment:
@@ -75,7 +75,7 @@ services:
       start_period: 120s
 
   backend:
-    image: ghcr.io/account-link/feedling:cc329a8
+    image: ghcr.io/account-link/feedling:6808241
     command: ["python", "-u", "backend/app.py"]
     restart: unless-stopped
     environment:
@@ -97,7 +97,7 @@ services:
         condition: service_healthy
 
   mcp:
-    image: ghcr.io/account-link/feedling:cc329a8
+    image: ghcr.io/account-link/feedling:6808241
     command: ["python", "-u", "backend/mcp_server.py"]
     restart: unless-stopped
     environment:
@@ -135,7 +135,7 @@ services:
       # Persistent TLS cert cache: avoids hitting LE rate limits (5 certs/week)
       # on every container restart. Only the cert PEM is here; the key is
       # regenerated from dstack-KMS (stable across reboots, no persistence needed).
-      - feedling_mcp_tls_data:/tls
+      - feedling_mcp_tls_data_v2:/tls
     depends_on:
       backend:
         condition: service_started
@@ -145,5 +145,5 @@ volumes:
     name: feedling_enclave_data
   feedling_backend_data:
     name: feedling_backend_data
-  feedling_mcp_tls_data:
-    name: feedling_mcp_tls_data
+  feedling_mcp_tls_data_v2:
+    name: feedling_mcp_tls_data_v2
