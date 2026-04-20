@@ -11,7 +11,7 @@ phases.
 | | |
 |---|---|
 | Host | `ubuntu@54.209.126.4` (login), services run as `openclaw` |
-| Install root | `/home/openclaw/feedling-mcp-v1` |
+| Install root | `/home/openclaw/feedling-mcp` |
 | Data dir | `/home/openclaw/feedling-data` (wiped + re-seeded on 2026-04-20) |
 | Services | `feedling-backend.service`, `feedling-mcp.service` — user-level systemd units under `/home/openclaw/.config/systemd/user/`. (The old `feedling-chat-bridge.service` was retired on 2026-04-20 when MCP's `feedling.chat.post_message` took over agent replies.) |
 | Mode | Multi-tenant only. Per-user HMAC-peppered api_keys issued by `POST /v1/users/register`; no shared key, no `SINGLE_USER` env var anymore. |

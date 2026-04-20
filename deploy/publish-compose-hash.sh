@@ -73,7 +73,7 @@ else:
     docker_yaml = pathlib.Path(compose_yaml_path).read_text()
     app_compose = {
         "manifest_version": 2,
-        "name": "feedling-mcp-v1",
+        "name": "feedling-mcp",
         "runner": "docker-compose",
         "docker_compose_file": docker_yaml,
         "docker_config": {},

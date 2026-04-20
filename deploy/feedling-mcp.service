@@ -6,7 +6,7 @@ Requires=feedling-backend.service
 [Service]
 Type=simple
 User=ubuntu
-WorkingDirectory=/home/ubuntu/feedling-mcp-v1/backend
+WorkingDirectory=/home/ubuntu/feedling-mcp/backend
 EnvironmentFile=/home/ubuntu/feedling.env
 ExecStart=/home/ubuntu/feedling-venv/bin/python mcp_server.py
 Restart=on-failure
