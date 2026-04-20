@@ -10,6 +10,7 @@ class SharedConfig {
     static let captureIntervalMsKey = "capture_interval_ms"
     static let captureIntervalMsDefault: Int = 1000  // 1 second default
     static let ingestTokenKey = "ingest_ws_token"
+    static let ingestEndpointKey = "ingest_ws_endpoint"
 
     static var sharedDefaults: UserDefaults? {
         UserDefaults(suiteName: appGroupIdentifier)
@@ -28,6 +29,11 @@ class SharedConfig {
     static var ingestToken: String {
         get { sharedDefaults?.string(forKey: ingestTokenKey) ?? "" }
         set { sharedDefaults?.set(newValue, forKey: ingestTokenKey) }
+    }
+
+    static var ingestEndpoint: String {
+        get { sharedDefaults?.string(forKey: ingestEndpointKey) ?? "ws://54.209.126.4:9998/ingest" }
+        set { sharedDefaults?.set(newValue, forKey: ingestEndpointKey) }
     }
 
     static var sharedContainerURL: URL? {

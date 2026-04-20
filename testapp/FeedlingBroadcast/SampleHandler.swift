@@ -17,8 +17,10 @@ class SampleHandler: RPBroadcastSampleHandler {
         currentSessionURL = SharedConfig.createSessionDirectory()
 
         let token = SharedConfig.ingestToken.trimmingCharacters(in: .whitespacesAndNewlines)
-        WebSocketManager.shared.connect(token: token.isEmpty ? "feedling" : token)
-        print("[broadcast] started, interval=\(Int(frameInterval * 1000))ms")
+        let endpoint = SharedConfig.ingestEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        WebSocketManager.shared.connect(endpoint: endpoint.isEmpty ? "ws://54.209.126.4:9998/ingest" : endpoint,
+                                        token: token.isEmpty ? "feedling" : token)
+        print("[broadcast] started, interval=\(Int(frameInterval * 1000))ms, endpoint=\(endpoint)")
     }
 
     override func broadcastPaused() {

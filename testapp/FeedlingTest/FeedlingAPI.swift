@@ -130,6 +130,20 @@ final class FeedlingAPI: ObservableObject {
         shared.set(userId, forKey: Keys.userId)
         // The broadcast extension uses `ingestToken` as a WebSocket Bearer.
         shared.set(apiKey, forKey: "ingest_ws_token")
+        // Also sync the ingest endpoint so the extension doesn't rely on a
+        // stale hard-coded host.
+        shared.set(resolveIngestWSEndpoint(from: baseURL), forKey: "ingest_ws_endpoint")
+    }
+
+    private func resolveIngestWSEndpoint(from baseURL: String) -> String {
+        guard let comps = URLComponents(string: baseURL), let host = comps.host, !host.isEmpty else {
+            return "ws://54.209.126.4:9998/ingest"
+        }
+        // Cloud API is behind Cloudflare; ingest ws is exposed on MCP host.
+        if host == "api.feedling.app" {
+            return "ws://mcp.feedling.app:9998/ingest"
+        }
+        return "ws://\(host):9998/ingest"
     }
 
     // MARK: - Registration
