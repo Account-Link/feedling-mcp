@@ -199,11 +199,12 @@ final class FeedlingAPI: ObservableObject {
         }
     }
 
-    /// If we have an api_key but no user_id (e.g. the key was injected via
-    /// env/config rather than created by register()), populate user_id by
-    /// hitting /v1/users/whoami. Idempotent.
+    /// Resolve/refresh user_id and continuously self-heal server public_key via
+    /// /v1/users/whoami. We intentionally run even when userId already exists,
+    /// because legacy installs can have a stale/mismatched registered key that
+    /// causes `[encrypted — decrypt failed]` for all incoming messages.
     func ensureUserIdIfNeeded() async {
-        guard !apiKey.isEmpty, userId.isEmpty else { return }
+        guard !apiKey.isEmpty else { return }
         guard let req = authorizedRequest(path: "/v1/users/whoami") else { return }
         do {
             let (data, resp) = try await URLSession.shared.data(for: req)
@@ -213,7 +214,7 @@ final class FeedlingAPI: ObservableObject {
                 let public_key: String?
             }
             let w = try JSONDecoder().decode(Who.self, from: data)
-            if !w.user_id.isEmpty {
+            if !w.user_id.isEmpty, w.user_id != self.userId {
                 self.userId = w.user_id
                 UserDefaults.standard.set(w.user_id, forKey: Keys.userId)
                 syncToAppGroup()
