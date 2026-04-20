@@ -156,7 +156,8 @@ final class FeedlingAPI: ObservableObject {
             return
         }
         let task = Task { [weak self] in
-            await self?.performRegistration()
+            guard let self = self else { return }
+            await self.performRegistration()
         }
         registrationTask = task
         await task.value
