@@ -970,6 +970,36 @@ def users_whoami():
     return jsonify(resp)
 
 
+@app.route("/v1/users/public-key", methods=["POST"])
+def users_set_public_key():
+    """Update the authenticated user's content public key.
+
+    Used to repair key drift when a client rotates/regenerates its local
+    content keypair but keeps the same api_key.
+    """
+    store = require_user()
+    payload = request.get_json(silent=True) or {}
+    public_key = (payload.get("public_key") or "").strip()
+    if not public_key:
+        return jsonify({"error": "public_key required"}), 400
+
+    updated = False
+    with _users_lock:
+        for u in _users:
+            if u.get("user_id") == store.user_id:
+                u["public_key"] = public_key
+                updated = True
+                break
+        if updated:
+            _save_users()
+
+    if not updated:
+        return jsonify({"error": "user not found"}), 404
+
+    print(f"[users] updated public_key for {store.user_id}")
+    return jsonify({"ok": True, "user_id": store.user_id})
+
+
 def _get_user_public_key(user_id: str) -> str:
     """Return the caller's base64 X25519 content pubkey from users.json,
     or empty string if the user predates v1 registration."""

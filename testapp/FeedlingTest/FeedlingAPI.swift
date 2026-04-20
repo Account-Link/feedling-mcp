@@ -165,7 +165,12 @@ final class FeedlingAPI: ObservableObject {
 
     private func performRegistration() async {
         do {
-            let pubB64 = try KeyStore.shared.ensureKeypairAndReturnPublicKeyBase64()
+            // Register the content-encryption public key (not the identity key).
+            // Chat/Memory/Identity envelopes are wrapped to ContentKeyStore's keypair;
+            // if registration uploads a different key, incoming assistant messages
+            // become undecryptable (`[encrypted — decrypt failed]`).
+            let contentSK = try ContentKeyStore.shared.ensureContentKeypair()
+            let pubB64 = contentSK.publicKey.rawRepresentation.base64EncodedString()
             let body: [String: Any] = ["public_key": pubB64]
             let data = try JSONSerialization.data(withJSONObject: body)
 
@@ -203,13 +208,30 @@ final class FeedlingAPI: ObservableObject {
         do {
             let (data, resp) = try await URLSession.shared.data(for: req)
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
-            struct Who: Decodable { let user_id: String }
+            struct Who: Decodable {
+                let user_id: String
+                let public_key: String?
+            }
             let w = try JSONDecoder().decode(Who.self, from: data)
             if !w.user_id.isEmpty {
                 self.userId = w.user_id
                 UserDefaults.standard.set(w.user_id, forKey: Keys.userId)
                 syncToAppGroup()
                 print("[whoami] resolved user_id=\(w.user_id)")
+            }
+
+            // Self-heal key drift: if the server's registered public_key differs
+            // from this device's content-encryption public key, patch it so
+            // incoming assistant messages are decryptable.
+            let localContentPK = try ContentKeyStore.shared.ensureContentKeypair().publicKey.rawRepresentation.base64EncodedString()
+            if let remotePK = w.public_key, !remotePK.isEmpty, remotePK != localContentPK {
+                print("[whoami] public_key mismatch detected; syncing content key")
+                let body = try JSONSerialization.data(withJSONObject: ["public_key": localContentPK])
+                if let syncReq = authorizedRequest(path: "/v1/users/public-key", method: "POST", body: body) {
+                    let (_, syncResp) = try await URLSession.shared.data(for: syncReq)
+                    let code = (syncResp as? HTTPURLResponse)?.statusCode ?? -1
+                    print("[whoami] public_key sync status=\(code)")
+                }
             }
         } catch {
             print("[whoami] failed: \(error)")
