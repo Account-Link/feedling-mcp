@@ -1472,6 +1472,12 @@ def chat_history():
     out = []
     for m in msgs:
         item = dict(m)
+        # iOS ChatMessage.content is non-optional. v1 envelope messages are
+        # ciphertext-only at rest and may omit plaintext `content`; always
+        # include an empty string so Decodable succeeds and client-side decrypt
+        # can populate content later.
+        item.setdefault("content", "")
+
         role = item.get("role")
         if role == "openclaw":
             item["sender"] = "assistant"
