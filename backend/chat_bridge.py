@@ -10,6 +10,13 @@ BASE = os.environ.get("FEEDLING_API_URL", "http://127.0.0.1:5001")
 POLL_TIMEOUT = 25
 RETRY_SLEEP = 2
 
+# Persist last_ts across restarts. On 2026-04-20 a restart race with the
+# backend caused get_last_ts() to catch a "connection refused" and fall
+# back to 0.0, which made the bridge reprocess the entire chat history
+# and push a reply to every historical user message. Never again.
+STATE_DIR = os.environ.get("FEEDLING_DATA_DIR", "/home/openclaw/feedling-data")
+STATE_PATH = os.path.join(STATE_DIR, "chat_bridge_state.json")
+
 
 def get_json(url: str):
     with urllib.request.urlopen(url, timeout=POLL_TIMEOUT + 10) as r:
@@ -69,19 +76,47 @@ def generate_reply(user_text: str) -> str:
         return "收到，我在。"
 
 
-def get_last_ts() -> float:
+def load_persisted_last_ts() -> float | None:
     try:
-        h = get_json(f"{BASE}/v1/chat/history?limit=1")
-        msgs = h.get("messages", [])
-        if msgs:
-            return float(msgs[-1].get("ts", 0))
-    except Exception:
-        pass
-    return 0.0
+        with open(STATE_PATH, "r") as f:
+            return float(json.load(f).get("last_ts", 0))
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        print(f"[chat-bridge] state file unreadable: {e}", flush=True)
+        return None
+
+
+def save_last_ts(ts: float) -> None:
+    try:
+        tmp = STATE_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"last_ts": ts}, f)
+        os.replace(tmp, STATE_PATH)
+    except Exception as e:
+        print(f"[chat-bridge] could not persist last_ts: {e}", flush=True)
+
+
+def get_last_ts_blocking() -> float:
+    """Block until we can determine last_ts, so we never regress to 0.0
+    and spam replies across every historical message."""
+    persisted = load_persisted_last_ts()
+    if persisted is not None:
+        return persisted
+    while True:
+        try:
+            h = get_json(f"{BASE}/v1/chat/history?limit=1")
+            msgs = h.get("messages", [])
+            ts = float(msgs[-1].get("ts", 0)) if msgs else 0.0
+            save_last_ts(ts)
+            return ts
+        except Exception as e:
+            print(f"[chat-bridge] waiting for backend to init last_ts: {e}", flush=True)
+            time.sleep(RETRY_SLEEP)
 
 
 def main():
-    last_ts = get_last_ts()
+    last_ts = get_last_ts_blocking()
     print(f"[chat-bridge] start with last_ts={last_ts}", flush=True)
 
     while True:
@@ -95,6 +130,7 @@ def main():
                 ts = float(m.get("ts", 0))
                 if ts > last_ts:
                     last_ts = ts
+                    save_last_ts(last_ts)
                 if m.get("role") != "user":
                     continue
                 user_text = (m.get("content") or "").strip()
