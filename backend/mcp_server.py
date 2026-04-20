@@ -352,6 +352,23 @@ def screen_analyze(ctx: Context = None) -> dict:
     ),
 )
 def chat_post_message(content: str, ctx: Context = None) -> dict:
+    """Agent posts a reply. Phase C part 3: wrap into a v1 envelope when
+    pubkeys are available so the message lands as ciphertext on disk.
+    Falls back to v0 plaintext when no enclave is reachable (self-hosted
+    without a TEE).
+    """
+    user_id, user_pk, enclave_pk = _whoami_pubkeys(ctx=ctx)
+    if user_id and user_pk is not None and enclave_pk is not None:
+        envelope = build_envelope(
+            plaintext=content.encode("utf-8"),
+            owner_user_id=user_id,
+            user_pk_bytes=user_pk,
+            enclave_pk_bytes=enclave_pk,
+            visibility="shared",
+        )
+        print(f"[mcp] chat.post_message v1 envelope id={envelope['id']}")
+        return _post("/v1/chat/response", {"envelope": envelope}, ctx=ctx)
+    print("[mcp] chat.post_message v0 plaintext (no pubkeys)")
     return _post("/v1/chat/response", {"content": content}, ctx=ctx)
 
 
@@ -433,11 +450,78 @@ def identity_get(ctx: Context = None) -> dict:
     ),
 )
 def identity_nudge(dimension_name: str, delta: int, reason: str = "", ctx: Context = None) -> dict:
-    return _post("/v1/identity/nudge", {
-        "dimension_name": dimension_name,
-        "delta": delta,
-        "reason": reason,
-    }, ctx=ctx)
+    """Phase C part 3: on v1 cards, MCP orchestrates the
+    decrypt → mutate → rewrap → replace dance. On v0 cards, falls
+    through to the legacy plaintext `/v1/identity/nudge` endpoint.
+
+    Flow for v1:
+      1. GET /v1/identity/get on the ENCLAVE (returns decrypted card).
+      2. Find the matching dimension, clamp `value += delta` to [0, 100],
+         record `last_nudge_reason`.
+      3. Re-build the card envelope with `build_envelope`.
+      4. POST /v1/identity/replace on the backend.
+
+    Plaintext is confined to the MCP process inside the enclave-compose
+    boundary. Server-side storage stays ciphertext throughout.
+    """
+    # Try the v0 path first. If the card is v0 or not yet initialized,
+    # the legacy nudge endpoint handles it. The backend returns 409
+    # with error="nudge_not_supported_on_v1_cards_yet" on v1 cards —
+    # catch that specifically and fall through.
+    try:
+        return _post("/v1/identity/nudge", {
+            "dimension_name": dimension_name,
+            "delta": delta,
+            "reason": reason,
+        }, ctx=ctx)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code != 409:
+            raise
+        # 409 ⇒ v1 card. Fall through to the rewrap path.
+        try:
+            body = e.response.json()
+            if body.get("error") != "nudge_not_supported_on_v1_cards_yet":
+                raise
+        except ValueError:
+            raise
+    return _identity_nudge_v1(dimension_name, delta, reason, ctx)
+
+
+def _identity_nudge_v1(dimension_name: str, delta: int, reason: str, ctx) -> dict:
+    """Separate helper so the caller can catch 409 from v0 and fall in."""
+    user_id, user_pk, enclave_pk = _whoami_pubkeys(ctx=ctx)
+    if not (user_id and user_pk is not None and enclave_pk is not None):
+        return {"error": "cannot nudge v1 card — pubkeys unavailable"}
+
+    # Fetch the decrypted card through the enclave proxy.
+    decoded = _get_decrypted("/v1/identity/get", ctx=ctx)
+    ident = decoded.get("identity") or {}
+    dims = list(ident.get("dimensions") or [])
+    if not dims:
+        return {"error": "identity not initialized or has no dimensions"}
+
+    matched = next((d for d in dims if d.get("name") == dimension_name), None)
+    if matched is None:
+        return {"error": f"dimension '{dimension_name}' not found"}
+    new_val = max(0, min(100, int(matched.get("value", 0)) + int(delta)))
+    matched["value"] = new_val
+    if reason:
+        matched["last_nudge_reason"] = reason
+
+    inner = json.dumps({
+        "agent_name": ident.get("agent_name", ""),
+        "self_introduction": ident.get("self_introduction", ""),
+        "dimensions": dims,
+    }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    envelope = build_envelope(
+        plaintext=inner,
+        owner_user_id=user_id,
+        user_pk_bytes=user_pk,
+        enclave_pk_bytes=enclave_pk,
+        visibility="shared",
+    )
+    print(f"[mcp] identity.nudge v1 rewrap dim={dimension_name} {delta:+d} → {new_val}")
+    return _post("/v1/identity/replace", {"envelope": envelope}, ctx=ctx)
 
 
 # ---------------------------------------------------------------------------

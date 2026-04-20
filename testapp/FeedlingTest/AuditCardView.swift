@@ -292,7 +292,7 @@ fileprivate enum AuditMechanismCopy {
     static let composeBinding = "The enclave's boot sequence hashes its own exact container recipe into a register called mr_config_id. The quote carries this register; the hash IS the recipe. If we control the app, we control the recipe, and the hash on-chain proves which recipe you're talking to."
     static let tlsBinding = "The certificate your phone just saw during the TLS handshake was generated inside the enclave. Its fingerprint is baked into the signed quote we fetched. Match = this really is the enclave we think it is; no middleman could swap the cert without faking Intel's signature."
     static let mcpTlsBinding = "The MCP port (the one your agent connects to) terminates TLS inside the same enclave, with the same cert. We open a second handshake just to verify — if anything's sitting between your agent and the enclave, this catches it."
-    static let onChainAudit = "The recipe hash above has to be pre-authorized on Ethereum before the enclave gets its release key. This link goes to the public transaction that did that — anyone on the internet can verify it."
+    static let onChainAudit = "Every app version we ship gets its compose hash published to a public Ethereum contract. Agents or auditors can read the full release history on-chain and cross-reference it against what the enclave is actually running. This link goes to the transaction that published the current version."
 }
 
 // Row-level expand/collapse state — local so tapping one row doesn't
@@ -425,14 +425,14 @@ struct AuditCardView: View {
                          mechanism: AuditMechanismCopy.mcpTlsBinding)
 
             Divider().padding(.vertical, 4)
-            Text("On-chain audit (public transparency, not security)")
+            Text("Public release log")
                 .font(.caption).foregroundStyle(.secondary)
             if let tx = r.onChainTxURL {
                 VStack(alignment: .leading, spacing: 2) {
                     Link(destination: tx) {
                         HStack {
                             Image(systemName: "link")
-                            Text("View AppAuth deploy on Etherscan")
+                            Text("View on Etherscan")
                                 .font(.caption)
                         }
                     }
@@ -445,6 +445,25 @@ struct AuditCardView: View {
             } else {
                 Text("on-chain info not available")
                     .font(.caption).foregroundStyle(.secondary)
+            }
+
+            // Open-source pointer — the user handed to their agent for
+            // "is this safe?" questions. Links to docs/AUDIT.md which is
+            // the agent-consumable audit guide.
+            Link(destination: URL(string: "https://github.com/Account-Link/feedling-mcp/blob/main/docs/AUDIT.md")!) {
+                HStack {
+                    Image(systemName: "doc.text.magnifyingglass")
+                    Text("Read the audit guide (for your agent)")
+                        .font(.caption)
+                }
+            }
+            .padding(.top, 4)
+            Link(destination: URL(string: "https://github.com/Account-Link/feedling-mcp")!) {
+                HStack {
+                    Image(systemName: "chevron.left.forwardslash.chevron.right")
+                    Text("Browse the source on GitHub")
+                        .font(.caption)
+                }
             }
 
             Divider().padding(.vertical, 4)

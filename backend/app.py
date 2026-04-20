@@ -1622,11 +1622,40 @@ def chat_message():
 
 @app.route("/v1/chat/response", methods=["POST"])
 def chat_response():
+    """Agent posts a reply. Phase C part 3: accepts v1 envelopes in
+    addition to legacy plaintext so agent-authored chat can be stored
+    as ciphertext just like user-authored chat. Shape matches
+    /v1/chat/message's envelope branch.
+    """
     store = require_user()
     payload = request.get_json(silent=True) or {}
+    envelope = payload.get("envelope")
     content = (payload.get("content") or "").strip()
+
+    if envelope is not None:
+        required = ["body_ct", "nonce", "K_user", "visibility", "owner_user_id"]
+        missing = [f for f in required if not envelope.get(f)]
+        if missing:
+            return jsonify({"error": f"envelope missing fields: {missing}"}), 400
+        if envelope["visibility"] not in ("shared", "local_only"):
+            return jsonify({"error": "envelope.visibility must be 'shared' or 'local_only'"}), 400
+        if envelope["visibility"] == "shared" and not envelope.get("K_enclave"):
+            return jsonify({"error": "envelope with visibility=shared requires K_enclave"}), 400
+        msg = store.append_chat("openclaw", "", source="chat", envelope=envelope)
+        # Trigger optional push sidecar if the agent set those fields.
+        if payload.get("push_live_activity"):
+            push_payload = {
+                "title": payload.get("title", ""),
+                "body": payload.get("push_body", ""),  # push body stays plaintext metadata
+                "subtitle": payload.get("subtitle"),
+                "data": payload.get("data", {}),
+            }
+            push_live_activity_inner(store, push_payload)
+        print(f"[chat:{store.user_id}] openclaw(v1, ciphertext) id={msg['id']}")
+        return jsonify({"id": msg["id"], "ts": msg["ts"], "v": msg["v"]})
+
     if not content:
-        return jsonify({"error": "content required"}), 400
+        return jsonify({"error": "content or envelope required"}), 400
 
     msg = store.append_chat("openclaw", content, source="chat")
     print(f"[chat:{store.user_id}] openclaw: {content[:80]}")
@@ -1784,6 +1813,54 @@ def identity_init():
     _log_bootstrap_event(store, "identity_written", success=True)
     print(f"[identity:{store.user_id}] initialized: agent_name={agent_name}")
     return jsonify({"status": "created", "identity": identity, "v": 0}), 201
+
+
+@app.route("/v1/identity/replace", methods=["POST"])
+def identity_replace():
+    """Phase C part 3: replace the identity card in place. Used by MCP
+    to implement `identity.nudge` on v1 cards — MCP fetches the
+    decrypted card from the enclave, mutates one dimension, re-wraps,
+    POSTs here. Same envelope shape as `/v1/identity/init` but does NOT
+    409 when a card already exists. Preserves the original `created_at`
+    so the card's history tracking is intact.
+    """
+    store = require_user()
+    existing = _load_identity(store)
+    payload = request.get_json(silent=True) or {}
+    envelope = payload.get("envelope")
+    now = datetime.now().isoformat()
+
+    if envelope is None:
+        return jsonify({"error": "envelope required for replace; use /v1/identity/init for plaintext"}), 400
+
+    required = ["body_ct", "nonce", "K_user", "visibility", "owner_user_id"]
+    missing = [f for f in required if not envelope.get(f)]
+    if missing:
+        return jsonify({"error": f"envelope missing fields: {missing}"}), 400
+    if envelope["visibility"] not in ("shared", "local_only"):
+        return jsonify({"error": "envelope.visibility must be 'shared' or 'local_only'"}), 400
+    if envelope["visibility"] == "shared" and not envelope.get("K_enclave"):
+        return jsonify({"error": "envelope with visibility=shared requires K_enclave"}), 400
+
+    created_at = existing.get("created_at") if existing else now
+    identity = {
+        "v": 1,
+        "id": envelope.get("id") or (existing.get("id") if existing else uuid.uuid4().hex),
+        "body_ct": envelope["body_ct"],
+        "nonce": envelope["nonce"],
+        "K_user": envelope["K_user"],
+        "enclave_pk_fpr": envelope.get("enclave_pk_fpr", ""),
+        "visibility": envelope["visibility"],
+        "owner_user_id": envelope["owner_user_id"],
+        "created_at": created_at,
+        "updated_at": now,
+    }
+    if envelope.get("K_enclave"):
+        identity["K_enclave"] = envelope["K_enclave"]
+    _save_identity(store, identity)
+    _log_bootstrap_event(store, "identity_replaced_v1", success=True)
+    print(f"[identity:{store.user_id}] replaced v1 visibility={envelope['visibility']}")
+    return jsonify({"status": "replaced", "identity": identity, "v": 1})
 
 
 @app.route("/v1/identity/nudge", methods=["POST"])

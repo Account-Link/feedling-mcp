@@ -550,9 +550,13 @@ struct PrivacyPageView: View {
     var body: some View {
         List {
             Section {
-                PrivacyHeroRow()
-                    .listRowInsets(EdgeInsets(top: Spacing.sm, leading: Spacing.md,
-                                              bottom: Spacing.sm, trailing: Spacing.md))
+                NavigationLink {
+                    AuditCardPage()
+                } label: {
+                    PrivacyHeroRow()
+                }
+                .listRowInsets(EdgeInsets(top: Spacing.sm, leading: Spacing.md,
+                                          bottom: Spacing.sm, trailing: Spacing.md))
             }
             Section("Your data") {
                 Button {
@@ -646,9 +650,6 @@ private struct PrivacyHeroRow: View {
                     .foregroundStyle(Color.feedlingInkMuted)
             }
             Spacer()
-            Image(systemName: "chevron.right")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(Color.feedlingInkMuted)
         }
         .padding(.vertical, Spacing.sm)
         .contentShape(Rectangle())
