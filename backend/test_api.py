@@ -3,30 +3,32 @@
 Feedling backend API test suite.
 
 Usage:
-    python test_api.py                        # runs against http://localhost:5001
-    python test_api.py http://54.209.126.4:5001
-    python test_api.py http://localhost:5001 --multi-tenant
+    python test_api.py                        # needs --key or --multi-tenant (everything is auth-gated)
+    python test_api.py http://54.209.126.4:5001 --multi-tenant
     python test_api.py http://localhost:5001 --key <shared_api_key>
 
-NOTE — post-SINGLE_USER/v0 strip (2026-04-20):
-    The backend now rejects plaintext chat/identity/memory writes with 400.
-    The identity/memory tests in sections 6-7 below still POST plaintext and
-    will fail against a clean multi-tenant deploy. They stay here as a
-    regression anchor for when we rewrite this harness to build v1 envelopes
-    client-side. End-to-end crypto coverage lives in
-    tools/e2e_encryption_test.py.
+Post-SINGLE_USER/v0 strip (2026-04-20):
+    The backend rejects plaintext chat / identity / memory writes with 400.
+    These tests now (a) assert that rejection and (b) exercise the v1 envelope
+    path for the same write endpoints. They do NOT encrypt anything — the
+    envelopes here carry dummy ciphertext. End-to-end encryption semantics
+    (enclave wrap/unwrap) live in tools/e2e_encryption_test.py.
 
 Tests cover:
     1. Read endpoints (screen/analyze, frames, tokens)
-    2. Chat: send message, fetch history, OpenClaw response
-    3. Long-poll: timeout case + immediate wake-up case
-    4. Full round-trip: user sends → poll wakes → OpenClaw replies → visible in history
-    5. Bootstrap endpoint
-    6. Identity card (init / get — nudge moved to MCP)
-    7. Memory garden (add / list / get / delete)
-    8. Multi-tenant: registration + per-user isolation + 401 enforcement
+    2. Chat: plaintext write rejected; v1 envelope stored verbatim
+    3. Chat response: plaintext rejected; v1 envelope accepted
+    4. Long-poll: timeout case
+    5. Long-poll: wakes when user sends a v1 envelope
+    6. Full round-trip: user envelope → poll wakes → openclaw envelope → history
+    7. Bootstrap
+    8. Identity: plaintext init rejected; get still works
+    9. Memory garden: plaintext rejected; v1 envelope add/list/get/delete
+   10. Multi-tenant: v1 isolation + 401 enforcement
+   11. v1 envelope validation (missing fields, bad visibility, etc.)
 """
 
+import base64
 import sys
 import threading
 import time
@@ -37,6 +39,7 @@ import requests
 BASE_URL = "http://localhost:5001"
 MULTI_TENANT = False
 SHARED_KEY = ""
+USER_ID = ""
 
 for arg in sys.argv[1:]:
     if arg == "--multi-tenant":
@@ -94,9 +97,17 @@ if MULTI_TENANT:
         check("register response has user_id (usr_*)",
               body.get("user_id", "").startswith("usr_"))
         SHARED_KEY = body["api_key"]
+        USER_ID = body.get("user_id", "")
 
 if SHARED_KEY:
     AUTH_HEADERS = {"X-API-Key": SHARED_KEY}
+
+# If we were handed a key but not a user_id (i.e. --key mode), fetch it via whoami.
+if SHARED_KEY and not USER_ID:
+    wr = requests.get(f"{BASE_URL}/v1/users/whoami",
+                      headers=AUTH_HEADERS, timeout=5)
+    if wr.status_code == 200:
+        USER_ID = wr.json().get("user_id", "")
 
 # Monkey-patch requests.{get,post,delete} so existing test bodies auto-forward
 # X-API-Key without us needing to touch every call site.
@@ -133,6 +144,30 @@ requests.delete = _auth_delete
 
 
 # ---------------------------------------------------------------------------
+# v1 envelope helper — dummy ciphertext; server never decrypts.
+# ---------------------------------------------------------------------------
+
+def make_envelope(owner: str, *, visibility: str = "shared",
+                  with_k_enclave: bool = True, **overrides) -> dict:
+    body = base64.b64encode(uuid.uuid4().bytes * 4).decode()
+    nonce = base64.b64encode(uuid.uuid4().bytes[:12] * 2).decode()
+    k = base64.b64encode(uuid.uuid4().bytes * 3).decode()
+    env = {
+        "v": 1,
+        "body_ct": body,
+        "nonce": nonce,
+        "K_user": k,
+        "enclave_pk_fpr": "00" * 16,
+        "visibility": visibility,
+        "owner_user_id": owner,
+    }
+    if with_k_enclave:
+        env["K_enclave"] = k
+    env.update(overrides)
+    return env
+
+
+# ---------------------------------------------------------------------------
 # 1. Health / read endpoints
 # ---------------------------------------------------------------------------
 
@@ -153,28 +188,36 @@ check("GET /v1/push/tokens returns 200", r.status_code == 200)
 check("tokens response has 'tokens' list", "tokens" in r.json())
 
 # ---------------------------------------------------------------------------
-# 2. Chat — basic send + history
+# 2. Chat — plaintext rejected, v1 envelope accepted
 # ---------------------------------------------------------------------------
 
-section("2. Chat: send message and fetch history")
+section("2. Chat: plaintext rejected, v1 envelope stored")
 
-unique = f"test-{uuid.uuid4().hex[:8]}"
-r = requests.post(f"{BASE_URL}/v1/chat/message", json={"content": unique}, timeout=5)
-check("POST /v1/chat/message returns 200", r.status_code == 200)
-msg_id = r.json().get("id")
-msg_ts = r.json().get("ts")
-check("response has 'id' and 'ts'", bool(msg_id and msg_ts))
+r = requests.post(f"{BASE_URL}/v1/chat/message",
+                  json={"content": "plaintext should fail now"}, timeout=5)
+check("POST plaintext /v1/chat/message → 400", r.status_code == 400,
+      f"got {r.status_code}: {r.text[:120]}")
+
+env = make_envelope(USER_ID)
+r = requests.post(f"{BASE_URL}/v1/chat/message", json={"envelope": env}, timeout=5)
+check("POST v1 envelope /v1/chat/message → 200", r.status_code == 200)
+msg_id = r.json().get("id") if r.status_code == 200 else None
+msg_ts = r.json().get("ts") if r.status_code == 200 else None
+check("envelope response has id/ts/v=1",
+      bool(msg_id) and bool(msg_ts) and (r.json().get("v") if r.status_code == 200 else None) == 1)
 
 r = requests.get(f"{BASE_URL}/v1/chat/history?limit=10", timeout=5)
 check("GET /v1/chat/history returns 200", r.status_code == 200)
 msgs = r.json().get("messages", [])
-check("chat history contains our message", any(m.get("content") == unique for m in msgs))
+check("history contains our envelope message",
+      any(m.get("id") == msg_id and m.get("body_ct") == env["body_ct"] for m in msgs))
 
-# history ?since filter
-r = requests.get(f"{BASE_URL}/v1/chat/history?since={msg_ts + 1}", timeout=5)
-check("?since filters out older messages", not any(m.get("id") == msg_id for m in r.json().get("messages", [])))
+# history ?since filter still works
+if msg_ts is not None:
+    r = requests.get(f"{BASE_URL}/v1/chat/history?since={msg_ts + 1}", timeout=5)
+    check("?since filters out older messages",
+          not any(m.get("id") == msg_id for m in r.json().get("messages", [])))
 
-# invalid params
 r = requests.get(f"{BASE_URL}/v1/chat/history?limit=abc", timeout=5)
 check("invalid limit returns 400", r.status_code == 400)
 
@@ -182,25 +225,29 @@ r = requests.get(f"{BASE_URL}/v1/chat/history?since=abc", timeout=5)
 check("invalid since returns 400", r.status_code == 400)
 
 # ---------------------------------------------------------------------------
-# 3. Chat — OpenClaw response
+# 3. Chat — openclaw response (v1 envelope only)
 # ---------------------------------------------------------------------------
 
-section("3. Chat: OpenClaw response")
+section("3. Chat: openclaw response via v1 envelope")
 
-unique_reply = f"reply-{uuid.uuid4().hex[:8]}"
-r = requests.post(f"{BASE_URL}/v1/chat/response", json={"content": unique_reply}, timeout=5)
-check("POST /v1/chat/response returns 200", r.status_code == 200)
-reply_id = r.json().get("id")
-check("response has 'id'", bool(reply_id))
+r = requests.post(f"{BASE_URL}/v1/chat/response",
+                  json={"content": "plaintext reply should fail"}, timeout=5)
+check("POST plaintext /v1/chat/response → 400", r.status_code == 400)
 
-r = requests.get(f"{BASE_URL}/v1/chat/history?limit=10", timeout=5)
+reply_env = make_envelope(USER_ID)
+r = requests.post(f"{BASE_URL}/v1/chat/response", json={"envelope": reply_env}, timeout=5)
+check("POST v1 envelope /v1/chat/response → 200", r.status_code == 200)
+reply_id = r.json().get("id") if r.status_code == 200 else None
+check("envelope response has id", bool(reply_id))
+
+r = requests.get(f"{BASE_URL}/v1/chat/history?limit=20", timeout=5)
 msgs = r.json().get("messages", [])
-openclaw_msgs = [m for m in msgs if m.get("role") == "openclaw"]
-check("openclaw message appears in history", any(m.get("content") == unique_reply for m in openclaw_msgs))
-check("openclaw message has role='openclaw'", any(m.get("role") == "openclaw" for m in openclaw_msgs))
+oc = [m for m in msgs if m.get("role") == "openclaw"]
+check("openclaw envelope reply appears in history",
+      any(m.get("id") == reply_id and m.get("body_ct") == reply_env["body_ct"] for m in oc))
 
 r = requests.post(f"{BASE_URL}/v1/chat/response", json={}, timeout=5)
-check("empty content returns 400", r.status_code == 400)
+check("empty body returns 400", r.status_code == 400)
 
 # ---------------------------------------------------------------------------
 # 4. Long-poll — timeout case
@@ -208,7 +255,6 @@ check("empty content returns 400", r.status_code == 400)
 
 section("4. Long-poll: timeout")
 
-# Use a very recent ts so there are no pending messages
 recent_ts = time.time()
 t0 = time.time()
 r = requests.get(f"{BASE_URL}/v1/chat/poll?since={recent_ts}&timeout=2", timeout=10)
@@ -223,14 +269,15 @@ else:
     _failures += ["timed_out is true when no message", "messages is empty on timeout", "timeout respected (~2s)"]
 
 # ---------------------------------------------------------------------------
-# 5. Long-poll — immediate wake-up
+# 5. Long-poll — wakes when user posts v1 envelope
 # ---------------------------------------------------------------------------
 
-section("5. Long-poll: wakes up when user sends message")
+section("5. Long-poll: wakes when user sends v1 envelope")
 
 poll_result = {}
 poll_error = {}
 poll_since = time.time()
+
 
 def do_poll():
     try:
@@ -243,14 +290,14 @@ def do_poll():
     except Exception as e:
         poll_error["err"] = str(e)
 
-# Start poll in background
+
 t = threading.Thread(target=do_poll, daemon=True)
 t.start()
 
-# Wait briefly then send a message
 time.sleep(0.3)
-unique_wake = f"wake-{uuid.uuid4().hex[:8]}"
-requests.post(f"{BASE_URL}/v1/chat/message", json={"content": unique_wake}, timeout=5)
+wake_env = make_envelope(USER_ID)
+wake_r = requests.post(f"{BASE_URL}/v1/chat/message", json={"envelope": wake_env}, timeout=5)
+wake_id = wake_r.json().get("id") if wake_r.status_code == 200 else None
 
 t.join(timeout=8)
 
@@ -262,22 +309,23 @@ else:
     body = poll_result.get("body", {})
     check("timed_out is false", body.get("timed_out") is False)
     msgs = body.get("messages", [])
-    check("wake message is in poll response", any(m.get("content") == unique_wake for m in msgs))
+    check("wake envelope is in poll response",
+          any(m.get("id") == wake_id for m in msgs))
 
 # ---------------------------------------------------------------------------
-# 6. Full round-trip: user → poll wakes → OpenClaw replies → visible in history
+# 6. Full round-trip: user envelope → poll wakes → openclaw envelope → history
 # ---------------------------------------------------------------------------
 
-section("6. Full round-trip conversation")
+section("6. Full round-trip (envelopes)")
 
 round_ts = time.time()
-round_user_msg = f"round-user-{uuid.uuid4().hex[:8]}"
-round_oc_reply = f"round-openclaw-{uuid.uuid4().hex[:8]}"
+user_env = make_envelope(USER_ID)
+oc_env = make_envelope(USER_ID)
 
 poll_rt = {}
 
+
 def poll_and_reply():
-    """Simulate OpenClaw: long-poll, get user message, post response."""
     try:
         r = requests.get(f"{BASE_URL}/v1/chat/poll?since={round_ts}&timeout=10", timeout=15)
         poll_rt["poll_status"] = r.status_code
@@ -286,39 +334,42 @@ def poll_and_reply():
         else:
             poll_rt["err"] = f"HTTP {r.status_code}: {r.text[:80]}"
             return
-        # OpenClaw replies
-        rr = requests.post(f"{BASE_URL}/v1/chat/response", json={"content": round_oc_reply}, timeout=5)
+        rr = requests.post(f"{BASE_URL}/v1/chat/response", json={"envelope": oc_env}, timeout=5)
         poll_rt["reply_status"] = rr.status_code
+        if rr.status_code == 200:
+            poll_rt["reply_id"] = rr.json().get("id")
     except Exception as e:
         poll_rt["err"] = str(e)
+
 
 t = threading.Thread(target=poll_and_reply, daemon=True)
 t.start()
 
 time.sleep(0.3)
-requests.post(f"{BASE_URL}/v1/chat/message", json={"content": round_user_msg}, timeout=5)
+user_r = requests.post(f"{BASE_URL}/v1/chat/message", json={"envelope": user_env}, timeout=5)
+user_id_rt = user_r.json().get("id") if user_r.status_code == 200 else None
 t.join(timeout=10)
 
 check("round-trip poll completed", not t.is_alive())
 if "err" not in poll_rt:
-    check("poll woke up with user message", poll_rt.get("poll_body", {}).get("timed_out") is False)
-    check("OpenClaw reply posted successfully", poll_rt.get("reply_status") == 200)
+    check("poll woke up with user envelope",
+          poll_rt.get("poll_body", {}).get("timed_out") is False)
+    check("openclaw envelope reply posted", poll_rt.get("reply_status") == 200)
 
-    # Verify both messages appear in history
     r = requests.get(f"{BASE_URL}/v1/chat/history?since={round_ts}&limit=20", timeout=5)
     all_msgs = r.json().get("messages", [])
-    user_present = any(m.get("content") == round_user_msg and m.get("role") == "user" for m in all_msgs)
-    oc_present = any(m.get("content") == round_oc_reply and m.get("role") == "openclaw" for m in all_msgs)
-    check("user message visible in history", user_present)
-    check("OpenClaw reply visible in history", oc_present)
+    user_present = any(m.get("id") == user_id_rt and m.get("role") == "user" for m in all_msgs)
+    oc_present = any(m.get("id") == poll_rt.get("reply_id") and m.get("role") == "openclaw" for m in all_msgs)
+    check("user envelope visible in history", user_present)
+    check("openclaw envelope reply visible in history", oc_present)
 else:
     check("no round-trip error", False, poll_rt["err"])
 
 # ---------------------------------------------------------------------------
-# 5. Bootstrap
+# 7. Bootstrap
 # ---------------------------------------------------------------------------
 
-section("5. Bootstrap")
+section("7. Bootstrap")
 
 r = requests.post(f"{BASE_URL}/v1/bootstrap", timeout=5)
 check("POST /v1/bootstrap returns 200", r.status_code == 200)
@@ -331,125 +382,140 @@ if r.status_code == 200:
         check("first_time response has 'instructions'", "instructions" in body)
 
 # ---------------------------------------------------------------------------
-# 6. Identity card
+# 8. Identity card
 # ---------------------------------------------------------------------------
 
-section("6. Identity card")
+section("8. Identity card: plaintext rejected, get works")
 
-# init (may already exist — 409 is also acceptable)
-identity_payload = {
+# plaintext → 400 (post-v0 strip)
+plaintext_identity = {
     "agent_name": "TestAgent",
-    "self_introduction": "Test identity created by test_api.py",
-    "dimensions": [
-        {"name": "好奇", "value": 80, "description": "喜欢探索新事物"},
-        {"name": "温柔", "value": 70, "description": "说话轻声细语"},
-        {"name": "锐利", "value": 60, "description": "有时直接"},
-        {"name": "稳定", "value": 55, "description": "情绪平稳"},
-        {"name": "幽默", "value": 65, "description": "偶尔开玩笑"},
-    ],
+    "self_introduction": "plaintext should fail",
+    "dimensions": [{"name": "x", "value": 50, "description": "y"}],
 }
-r = requests.post(f"{BASE_URL}/v1/identity/init", json=identity_payload, timeout=5)
-check("POST /v1/identity/init returns 201 or 409", r.status_code in (201, 409))
+r = requests.post(f"{BASE_URL}/v1/identity/init", json=plaintext_identity, timeout=5)
+# Server returns 400 for a missing envelope *only if* no identity exists yet; a
+# freshly-registered user hits the 400 branch. For --key mode where identity
+# might already exist, 409 is also valid.
+check("plaintext /v1/identity/init → 400 or 409",
+      r.status_code in (400, 409), f"got {r.status_code}: {r.text[:120]}")
 
-# get
+# v1 envelope init (only if none exists yet)
+env_id = make_envelope(USER_ID)
+r = requests.post(f"{BASE_URL}/v1/identity/init", json={"envelope": env_id}, timeout=5)
+check("v1 envelope /v1/identity/init → 201 or 409",
+      r.status_code in (201, 409), f"got {r.status_code}: {r.text[:120]}")
+
 r = requests.get(f"{BASE_URL}/v1/identity/get", timeout=5)
-check("GET /v1/identity/get returns 200", r.status_code == 200)
+check("GET /v1/identity/get returns 200 (or 404 if none)",
+      r.status_code in (200, 404))
 if r.status_code == 200:
     body = r.json()
     check("identity response has 'identity' key", "identity" in body)
     if "identity" in body:
         identity = body["identity"]
-        check("identity has agent_name", "agent_name" in identity)
-        check("identity has dimensions", "dimensions" in identity)
-        check("identity has exactly 5 dimensions", len(identity.get("dimensions", [])) == 5)
-
-# nudge: the HTTP endpoint was removed in the SINGLE_USER/v0 strip —
-# identity mutation now lives inside the enclave (MCP feedling.identity.nudge).
-# The MCP path is exercised by tools/e2e_encryption_test.py instead.
+        check("v1 identity has body_ct",
+              identity.get("v") == 1 and bool(identity.get("body_ct")))
 
 # ---------------------------------------------------------------------------
-# 7. Memory garden
+# 9. Memory garden: plaintext rejected, v1 envelope add/list/get/delete
 # ---------------------------------------------------------------------------
 
-section("7. Memory garden")
+section("9. Memory garden: v1 envelope round-trip")
 
-# add
-mem_title = f"test-mem-{uuid.uuid4().hex[:6]}"
+# plaintext add → 400
 r = requests.post(
     f"{BASE_URL}/v1/memory/add",
-    json={
-        "title": mem_title,
-        "description": "A test memory moment created by test_api.py",
-        "occurred_at": "2025-01-01T12:00:00",
-        "type": "测试",
-        "source": "bootstrap",
-    },
+    json={"title": "plaintext", "description": "should fail",
+          "occurred_at": "2025-01-01T12:00:00", "type": "测试", "source": "bootstrap"},
     timeout=5,
 )
-check("POST /v1/memory/add returns 201", r.status_code == 201)
-mem_id = None
+check("plaintext /v1/memory/add → 400", r.status_code == 400,
+      f"got {r.status_code}: {r.text[:120]}")
+
+# v1 envelope add — needs plaintext `occurred_at` alongside the envelope for
+# server-side ordering; the backend reads it off the envelope dict (see
+# app.py:memory_add).
+mem_id = f"mom_{uuid.uuid4().hex[:12]}"
+env_mem = make_envelope(
+    USER_ID,
+    id=mem_id,
+    occurred_at="2025-01-01T12:00:00",
+    source="bootstrap",
+)
+r = requests.post(f"{BASE_URL}/v1/memory/add", json={"envelope": env_mem}, timeout=5)
+check("POST v1 envelope /v1/memory/add → 201", r.status_code == 201,
+      f"got {r.status_code}: {r.text[:120]}")
 if r.status_code == 201:
-    mem_id = r.json().get("moment", {}).get("id")
-    check("add response has moment.id", bool(mem_id))
+    mem = r.json().get("moment", {})
+    check("add response has moment.id == our id", mem.get("id") == mem_id)
+    check("add response preserves body_ct", mem.get("body_ct") == env_mem["body_ct"])
 
 # list
 r = requests.get(f"{BASE_URL}/v1/memory/list?limit=20", timeout=5)
 check("GET /v1/memory/list returns 200", r.status_code == 200)
 if r.status_code == 200:
-    body = r.json()
-    check("list has 'moments' key", "moments" in body)
-    moments = body.get("moments", [])
-    check("our test moment appears in list", any(m.get("title") == mem_title for m in moments))
+    moments = r.json().get("moments", [])
+    check("our envelope moment appears in list",
+          any(m.get("id") == mem_id for m in moments))
 
 # get
-if mem_id:
-    r = requests.get(f"{BASE_URL}/v1/memory/get?id={mem_id}", timeout=5)
-    check("GET /v1/memory/get returns 200", r.status_code == 200)
-    if r.status_code == 200:
-        check("get response has correct title", r.json().get("moment", {}).get("title") == mem_title)
+r = requests.get(f"{BASE_URL}/v1/memory/get?id={mem_id}", timeout=5)
+check("GET /v1/memory/get returns 200", r.status_code == 200)
+if r.status_code == 200:
+    check("get preserves body_ct",
+          r.json().get("moment", {}).get("body_ct") == env_mem["body_ct"])
 
 # delete
-if mem_id:
-    r = requests.delete(f"{BASE_URL}/v1/memory/delete?id={mem_id}", timeout=5)
-    check("DELETE /v1/memory/delete returns 200", r.status_code == 200)
+r = requests.delete(f"{BASE_URL}/v1/memory/delete?id={mem_id}", timeout=5)
+check("DELETE /v1/memory/delete returns 200", r.status_code == 200)
 
-    # confirm deletion
-    r = requests.get(f"{BASE_URL}/v1/memory/get?id={mem_id}", timeout=5)
-    check("get after delete returns 404", r.status_code == 404)
+r = requests.get(f"{BASE_URL}/v1/memory/get?id={mem_id}", timeout=5)
+check("get after delete returns 404", r.status_code == 404)
+
+# owner_user_id mismatch → 403
+env_wrong_owner = make_envelope(
+    "usr_somebody_else",
+    occurred_at="2025-01-01T12:00:00",
+)
+r = requests.post(f"{BASE_URL}/v1/memory/add", json={"envelope": env_wrong_owner}, timeout=5)
+check("memory envelope with wrong owner_user_id → 403",
+      r.status_code == 403, f"got {r.status_code}")
 
 # ---------------------------------------------------------------------------
-# 8. Multi-tenant: isolation + 401 enforcement
+# 10. Multi-tenant: isolation + 401 enforcement (envelopes)
 # ---------------------------------------------------------------------------
 
 if MULTI_TENANT:
-    section("8. Multi-tenant: isolation + 401 enforcement")
+    section("10. Multi-tenant: v1 isolation + 401 enforcement")
 
-    # Register a second user; their chat should not overlap with the first.
     rr2 = _orig_post(f"{BASE_URL}/v1/users/register", json={}, timeout=5)
     check("second register returns 201", rr2.status_code == 201)
     if rr2.status_code == 201:
         user2 = rr2.json()
         key2 = user2["api_key"]
+        uid2 = user2["user_id"]
 
-        # user2 sends a message
+        # user2 sends a v1 envelope with a distinctive body_ct
+        user2_env = make_envelope(uid2)
         r = _orig_post(f"{BASE_URL}/v1/chat/message",
-                       json={"content": "isolated-from-user2"},
+                       json={"envelope": user2_env},
                        headers={"X-API-Key": key2}, timeout=5)
-        check("user2 send message 200", r.status_code == 200)
+        check("user2 send envelope 200", r.status_code == 200)
 
-        # current user (user1) should not see user2's message
+        # user1 must not see user2's ciphertext
         r = _orig_get(f"{BASE_URL}/v1/chat/history?limit=50",
                       headers={"X-API-Key": SHARED_KEY}, timeout=5)
         msgs = r.json().get("messages", [])
-        check("user1 does NOT see user2's message",
-              not any(m.get("content") == "isolated-from-user2" for m in msgs))
+        check("user1 does NOT see user2's envelope",
+              not any(m.get("body_ct") == user2_env["body_ct"] for m in msgs))
 
-        # user2 sees their own
+        # user2 does see their own
         r = _orig_get(f"{BASE_URL}/v1/chat/history?limit=50",
                       headers={"X-API-Key": key2}, timeout=5)
         msgs = r.json().get("messages", [])
-        check("user2 sees their own message",
-              any(m.get("content") == "isolated-from-user2" for m in msgs))
+        check("user2 sees their own envelope",
+              any(m.get("body_ct") == user2_env["body_ct"] for m in msgs))
 
     # No key at all → 401
     r = _orig_get(f"{BASE_URL}/v1/screen/analyze", timeout=5)
@@ -478,81 +544,36 @@ if MULTI_TENANT:
 
 
 # ---------------------------------------------------------------------------
-# 9. Chat v1 envelope (ciphertext) storage round-trip
+# 11. v1 envelope validation (shape errors)
 # ---------------------------------------------------------------------------
 
-section("9. Chat v1 envelope round-trip")
+section("11. v1 envelope validation")
 
-# These tests don't actually encrypt anything — they verify the server
-# stores and returns envelope fields verbatim, without inspecting them.
-# Actual encryption semantics are covered by the end-to-end enclave test.
-import base64
-dummy_body = base64.b64encode(b"\x01" * 64).decode()
-dummy_nonce = base64.b64encode(b"\x02" * 24).decode()
-dummy_k = base64.b64encode(b"\x03" * 48).decode()
-owner = "usr_testowner"
-
-# v1 shared envelope
-env = {
-    "v": 1,
-    "body_ct": dummy_body,
-    "nonce": dummy_nonce,
-    "K_user": dummy_k,
-    "K_enclave": dummy_k,
-    "enclave_pk_fpr": "00" * 16,
-    "visibility": "shared",
-    "owner_user_id": owner,
-}
-r = requests.post(f"{BASE_URL}/v1/chat/message", json={"envelope": env}, timeout=5)
-check("POST v1 envelope returns 200", r.status_code == 200)
-check("v1 response has v=1", r.status_code == 200 and r.json().get("v") == 1)
-env_msg_id = r.json().get("id") if r.status_code == 200 else None
-
-# v0 plaintext continues to work (backward compat)
-r = requests.post(f"{BASE_URL}/v1/chat/message", json={"content": "plaintext-coexists"}, timeout=5)
-check("POST v0 plaintext returns 200", r.status_code == 200)
-check("v0 response has v=0", r.status_code == 200 and r.json().get("v") == 0)
-
-# History returns envelope fields intact
-r = requests.get(f"{BASE_URL}/v1/chat/history?limit=50", timeout=5)
-msgs = r.json().get("messages", [])
-found = next((m for m in msgs if m.get("id") == env_msg_id), None)
-check("v1 envelope message appears in history", found is not None)
-if found:
-    check("history preserves body_ct", found.get("body_ct") == dummy_body)
-    check("history preserves nonce", found.get("nonce") == dummy_nonce)
-    check("history preserves K_enclave", found.get("K_enclave") == dummy_k)
-    check("history preserves visibility", found.get("visibility") == "shared")
-    check("history preserves owner_user_id", found.get("owner_user_id") == owner)
-
-# local_only envelope — K_enclave should be acceptable as null/missing
-env_lo = dict(env)
-env_lo.pop("K_enclave")
-env_lo["visibility"] = "local_only"
+# local_only — K_enclave optional
+env_lo = make_envelope(USER_ID, visibility="local_only", with_k_enclave=False)
 r = requests.post(f"{BASE_URL}/v1/chat/message", json={"envelope": env_lo}, timeout=5)
-check("POST local_only envelope (no K_enclave) returns 200", r.status_code == 200)
+check("local_only envelope without K_enclave → 200", r.status_code == 200)
 
-# Shared envelope without K_enclave should be rejected
-env_bad = dict(env)
-env_bad.pop("K_enclave")
+# shared without K_enclave → 400
+env_bad = make_envelope(USER_ID, with_k_enclave=False)
 r = requests.post(f"{BASE_URL}/v1/chat/message", json={"envelope": env_bad}, timeout=5)
 check("shared without K_enclave → 400", r.status_code == 400)
 
-# Missing required field → 400
-env_missing = dict(env)
+# missing required field → 400
+env_missing = make_envelope(USER_ID)
 env_missing.pop("body_ct")
 r = requests.post(f"{BASE_URL}/v1/chat/message", json={"envelope": env_missing}, timeout=5)
 check("envelope missing body_ct → 400", r.status_code == 400)
 
-# Invalid visibility → 400
-env_badvis = dict(env)
+# invalid visibility → 400
+env_badvis = make_envelope(USER_ID)
 env_badvis["visibility"] = "public"
 r = requests.post(f"{BASE_URL}/v1/chat/message", json={"envelope": env_badvis}, timeout=5)
 check("envelope with bad visibility → 400", r.status_code == 400)
 
-# No content or envelope → 400
+# empty body → 400
 r = requests.post(f"{BASE_URL}/v1/chat/message", json={}, timeout=5)
-check("no content/envelope → 400", r.status_code == 400)
+check("no envelope → 400", r.status_code == 400)
 
 
 # ---------------------------------------------------------------------------

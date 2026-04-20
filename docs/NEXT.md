@@ -16,13 +16,15 @@ Last updated: 2026-04-20. Whoever picks this up — start here.
 | Phase C.1 | MCP in-enclave TLS on port 5002; `dstack_tls.py` shared cert derivation | `cc329a8` |
 | Phase C.2 | ACME-DNS-01 inside the enclave — Let's Encrypt cert for `mcp.feedling.app`, key derived from dstack-KMS, never exported | `169cb6a` |
 | Phase C.3 | `identity.nudge` v1 decrypt-mutate-rewrap in MCP; `chat.post_message` wraps to v1 | `cc329a8` |
-| v0 strip  | SINGLE_USER + v0 plaintext branches + `/v1/identity/nudge` HTTP + `/v1/content/rewrap` + `chat_bridge.py` + silent migration removed; `/v1/content/swap` replaces rewrap for visibility toggles | `<pending>` |
+| v0 strip  | SINGLE_USER + v0 plaintext branches + `/v1/identity/nudge` HTTP + `/v1/content/rewrap` + `chat_bridge.py` + silent migration removed; `/v1/content/swap` replaces rewrap for visibility toggles | `78b51a6` |
+| Phase D deploy | CVM rebuilt on `:78b51a6`; compose_hash authorized on Sepolia; VPS flat-layout wiped; prod user reinstalls fresh on multi-tenant (task #35, #36) | `4826ec7` |
+| iOS reg-race fix | `FeedlingAPI.ensureRegisteredIfCloud` serialized via `@MainActor` Task mutex — fixes 6 orphan users created in the fresh-install flow | `93665cf` |
 | Docs | `AUDIT.md`, `MIGRATION.md`, `DESIGN.md`, `PHASE_B_PLAN.md`, GitHub footer links | `3a4acf5` |
 
 CLI auditor `tools/audit_live_cvm.py`: **8/8 green** (Row 8 now verifies CA-valid LE cert for `mcp.feedling.app` + pubkey fp matches attested).
 iOS audit card: **6/6 green** (with 8th row: MCP-port TLS bound to attestation).
-Current CVM image: `ghcr.io/account-link/feedling:169cb6a`.
-Current compose_hash on-chain: `0x23a2c2869567d15220383e4acb5ceb5cf27d78e087d2d4e357e4b3c053a5dc68`.
+Current CVM image: `ghcr.io/account-link/feedling:78b51a6`.
+Current compose_hash on-chain: `0xd92bcd3cb1713ffe8e152417ab46e8179510c37ceed5ae6d423c586a2cd60049` (Sepolia tx `0x235f0120d6982cbf8872e927ee2e59133627177ca9d3f862554d748ac6e60c7c`, block 10696873).
 
 ---
 
@@ -58,8 +60,9 @@ than keep rewrap as a compatibility shim we retired the whole v0 stack:
   `ChatViewModel.swift`, `SampleHandler+WebSocketQueue.swift`: removed
   plaintext fallbacks (backend now rejects them with 400 / drops silently).
   Dead `WebSocketManager.sendFrame(IngestFramePayload)` removed.
-- `backend/test_api.py`: removed `/v1/identity/nudge` cases, added header
-  note that write-path tests need an envelope-aware rewrite.
+- `backend/test_api.py`: removed `/v1/identity/nudge` cases; write-path
+  tests fully rewritten to exercise v1 envelopes (plaintext POSTs now assert
+  the 400 rejection) — CI is green on `--multi-tenant`.
 - `tools/e2e_encryption_test.py`, `.github/workflows/ci.yml`: dropped
   `SINGLE_USER` env + CI matrix row.
 - `/v1/content/export` now includes frames (full v1 envelopes inlined),
@@ -69,7 +72,11 @@ than keep rewrap as a compatibility shim we retired the whole v0 stack:
 
 ---
 
-### 2 — Phase D: Eth Sepolia → Ethereum mainnet  ← DEFERRED (do last)
+### 2 — Eth Sepolia → Ethereum mainnet (Phase E)  ← DEFERRED (do last)
+
+> Naming note: "Phase D" in `HANDOFF.md` refers to the 2026-04-20 CVM rebuild
+> on `:78b51a6` (task #35), which is now done. The Eth-mainnet migration
+> below is tracked as **Phase E** to keep the two separable.
 
 **Status: DEFERRED** — per user direction 2026-04-20 ("Eth mainnet migration last").  
 **Pre-reqs:** Phase C part 2 shipped and stable ≥ 1 week; v0 strip done; hardware wallet in hand; no open security bugs.

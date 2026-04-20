@@ -49,6 +49,21 @@ Whoever picks this up next — start here.
     (block 10696873). CLI audit 8/8 green. VPS flat-layout data wiped
     same day (kept `.pepper` + APNs key). First deploy with no
     plaintext-write path anywhere in the backend.
+  - *Prod user verified (task #36, 2026-04-20)*: the one real prod user
+    did a fresh reinstall against multi-tenant on `:78b51a6`. iOS audit
+    card went 8/8 green; chat / garden / identity all empty as expected
+    post-wipe. During the verification I found 6 orphan users created
+    server-side from a registration race in the iOS client — concurrent
+    callers into `FeedlingAPI.ensureRegisteredIfCloud()` all passed the
+    empty-api_key guard before any of them wrote back. Fixed in
+    `93665cf` by serializing registration on an `@MainActor` Task
+    mutex; orphan users + their data dirs were purged from the VPS
+    (kept `usr_08a1cdac7e48a048`). Also hardened the VPS at the same
+    time: `AuthKey_5TH55X5U7T.p8` chmod 600 (was 644), zombie
+    `feedling-chat-bridge.service` disabled.
+  - *CI post-strip*: `backend/test_api.py` rewritten to exercise v1
+    envelopes end-to-end (plaintext POSTs now assert 400 rejection).
+    Full suite green locally against a fresh multi-tenant backend.
 - *Phase C (part 1)*: shipped 2026-04-20. MCP port 5002 now
     terminates TLS inside the enclave with the same dstack-KMS-bound
     cert as the attestation port. `-5002s.` URL is pinnable; CLI
