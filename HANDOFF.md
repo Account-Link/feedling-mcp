@@ -52,6 +52,15 @@ Whoever picks this up next — start here.
     `mcp.feedling.app` (what Claude.ai hits) can move to layer4
     SNI passthrough and drop the "trust Caddy on the VPS" step.
     Needs a DNS API token + renewal scheduler. Task #30.
+- *Phase B wave-2 shipped*: per-item visibility toggle on the
+    memory garden (long-press context menu → "Hide from agent" /
+    "Share with agent"; eye.slash indicator when local_only) +
+    inline migration-progress row in Privacy hero (uses
+    `FeedlingAPI.migrationProgress` `@Published` state).
+- *New doc `docs/MIGRATION.md`*: concrete three-option guide for
+    the one real prod user to move from self-hosted VPS to
+    Feedling Cloud's TEE-backed encryption. Linked from the
+    in-app audit card.
 - *Phase B UX*: shipped 2026-04-20. Onboarding (3-slide),
     Settings → Privacy (hero + export / delete / reset / runbook),
     audit card promoted with tap-to-expand mechanism reveals + raw

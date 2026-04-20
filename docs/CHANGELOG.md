@@ -51,6 +51,52 @@
 
 ## 2026-04-20
 
+### [DONE] Phase B wave-2 + MIGRATION.md
+
+Finishing out the Phase B surface + directly answering "what does
+the one prod user actually do to migrate to E2E?".
+
+**docs/MIGRATION.md (new)**
+- Three concrete options for a self-hosted VPS user to move to
+  Feedling Cloud's TEE-backed encryption. Option 1 (recommended)
+  uses the Phase B Reset & re-import pipeline; the user's agent
+  re-adds content via MCP tools, which now wrap everything into
+  v1 envelopes on the way in. Option 2 keeps self-hosted without
+  encryption (legitimate — they own the server). Option 3 is
+  self-hosted with their own TEE (documented, not recommended).
+- Linked from the in-app audit card footer alongside AUDIT.md +
+  the repo root.
+
+**Per-item memory visibility toggle**
+- `FeedlingAPI.flipMemoryVisibility(moment, toLocalOnly:)` — builds
+  a fresh envelope with the new visibility from the plaintext iOS
+  already has in memory, POSTs to `/v1/content/rewrap`. No server
+  trip for re-decryption.
+- MemoryGardenView: long-press context menu on each card with
+  "Hide from agent" / "Share with agent"; subtle `eye.slash`
+  indicator in the card header when `local_only`. Reloads the
+  garden after a successful flip.
+- Chat is intentionally skipped — many items, transient; the
+  "hide from agent" affordance matters more on persistent
+  memory-garden entries.
+
+**Inline migration progress**
+- `FeedlingAPI` gains `@Published migrationProgress: (done, total)?`.
+  `runSilentV1MigrationIfNeeded` sets it before the batching loop,
+  updates per batch, clears on completion or error.
+- New `MigrationProgressRow` renders an inline `ProgressView` with
+  label "Upgrading your old data — N of M" beneath the Privacy
+  hero when migrationProgress is non-nil. Hidden otherwise.
+
+**iOS verification**
+- `xcodebuild BUILD SUCCEEDED` on iPhone 16 Pro sim with all
+  wave-2 changes.
+
+**No backend change** — wave-2 is iOS-only on top of existing
+`/v1/content/rewrap`. CVM does not need a redeploy for this ship.
+
+---
+
 ### [DONE] Phase C.3 — encrypted identity.nudge + encrypted agent chat reply + UX fixes
 
 Closes the last two plaintext-at-rest write paths. Also applies the
