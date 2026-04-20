@@ -22,3 +22,4 @@ testapp/FeedlingTest.xcodeproj/project.xcworkspace/xcuserdata/
 ios/FeedlingDCAP/.build/
 ios/FeedlingDCAP/.swiftpm/
 ios/**/Package.resolved
+.gstack/

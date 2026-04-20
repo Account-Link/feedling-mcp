@@ -46,18 +46,16 @@ import nacl.encoding
 import nacl.exceptions
 import nacl.public
 import nacl.signing
-from cryptography import x509
-from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
-from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.hashes import SHA256
-from cryptography.hazmat.primitives import hashes as _hashes
 from cryptography.hazmat.primitives import serialization
 from cryptography.exceptions import InvalidTag
 from flask import Flask, jsonify, Response, request
 from dstack_sdk import DstackClient
+
+from dstack_tls import derive_tls_cert_and_key, TLS_KEY_PATH
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +136,8 @@ APP_AUTH = {
 
 CONTENT_KEY_PATH = "feedling-content-v1"
 SIGNING_KEY_PATH = "feedling-signing-v1"
-TLS_KEY_PATH = "feedling-tls-v1"
+# TLS_KEY_PATH is imported from dstack_tls so mcp_server and enclave_app
+# derive from the same KMS-bound path.
 
 
 def derive_keys(dstack: DstackClient) -> dict[str, Any]:
@@ -184,118 +183,9 @@ def derive_keys(dstack: DstackClient) -> dict[str, Any]:
 PHASE1_TLS_FINGERPRINT = b"\x00" * 32
 
 
-def derive_tls_cert_and_key(dstack: DstackClient) -> dict[str, Any]:
-    """Derive a deterministic ECDSA P-256 keypair from dstack-KMS and
-    wrap it in a self-signed cert.
-
-    The private key is bound to (compose_hash, app_id, TLS_KEY_PATH) —
-    a different `compose_hash` → a different key → a different cert →
-    a different `sha256(cert.DER)` → the attested fingerprint won't
-    match and iOS rejects the connection. An operator cannot substitute
-    their own cert without also producing a quote over a report_data
-    they cannot sign (TDX PCK signs report_data_binding).
-
-    Returns cert PEM, key PEM, and the 32-byte sha256 of the DER cert —
-    the latter is what gets baked into REPORT_DATA.
-    """
-    # Deterministic seed for the EC private key. We hash the KMS seed
-    # once more before feeding it to `derive_private_key` so a future
-    # reader can't confuse raw KMS material with the TLS key. Using the
-    # SECP256R1 curve order to reduce to a valid scalar is handled by
-    # `derive_private_key` internally.
-    seed_resp = dstack.get_key(TLS_KEY_PATH, "")
-    seed = bytes.fromhex(seed_resp.key) if isinstance(seed_resp.key, str) else seed_resp.key
-    scalar_bytes = hashlib.sha256(b"feedling-tls-v1|" + seed[:32]).digest()
-    scalar = int.from_bytes(scalar_bytes, "big")
-    # Clamp into the curve's scalar range — P-256 order is just under
-    # 2**256 so a rejection probability of ~2^-32 is negligible; fall
-    # back to the hash of the failed scalar rather than adding rounds
-    # that would make this non-deterministic.
-    curve = ec.SECP256R1()
-    priv_key = ec.derive_private_key(scalar, curve)
-
-    # Build a self-signed cert. CN and SAN are cosmetic — iOS pins on
-    # sha256(cert.DER), not on the subject. We still fill them with the
-    # wildcard dstack-pha-prod5 shape because browsers / curl display
-    # this field to humans and it's less confusing than the default.
-    subject_name = x509.Name([
-        x509.NameAttribute(NameOID.COMMON_NAME, "feedling-enclave"),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Feedling (TDX CVM)"),
-    ])
-    # Deterministic not_valid_before / serial so the DER is stable
-    # across reboots of the same compose_hash. If the cert DER changes,
-    # report_data changes, and iOS thinks the endpoint is different.
-    not_before = _dt.datetime(2026, 1, 1, tzinfo=_dt.timezone.utc)
-    not_after = _dt.datetime(2036, 1, 1, tzinfo=_dt.timezone.utc)
-    # Use a hash of the pubkey bytes as the serial — stable per key.
-    pub_der = priv_key.public_key().public_bytes(
-        encoding=serialization.Encoding.DER,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    )
-    serial = int.from_bytes(hashlib.sha256(pub_der).digest()[:8], "big") | 1
-
-    builder = (
-        x509.CertificateBuilder()
-        .subject_name(subject_name)
-        .issuer_name(subject_name)
-        .public_key(priv_key.public_key())
-        .serial_number(serial)
-        .not_valid_before(not_before)
-        .not_valid_after(not_after)
-        .add_extension(
-            x509.SubjectAlternativeName([
-                x509.DNSName("feedling-enclave"),
-                x509.DNSName("*.dstack-pha-prod5.phala.network"),
-            ]),
-            critical=False,
-        )
-        .add_extension(
-            x509.BasicConstraints(ca=False, path_length=None), critical=True
-        )
-        .add_extension(
-            x509.KeyUsage(
-                digital_signature=True,
-                key_encipherment=True,
-                key_agreement=False,
-                content_commitment=False,
-                data_encipherment=False,
-                key_cert_sign=False,
-                crl_sign=False,
-                encipher_only=False,
-                decipher_only=False,
-            ),
-            critical=True,
-        )
-        .add_extension(
-            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
-            critical=False,
-        )
-    )
-    # Deterministic ECDSA (RFC 6979) so two boots of the same
-    # compose_hash produce byte-identical certs. Without this the TLS
-    # cert fingerprint rotates every reboot — still secure (each quote
-    # binds its own cert) but messy for reproducibility and caches.
-    cert = builder.sign(
-        private_key=priv_key,
-        algorithm=_hashes.SHA256(),
-        ecdsa_deterministic=True,
-    )
-
-    cert_der = cert.public_bytes(serialization.Encoding.DER)
-    cert_pem = cert.public_bytes(serialization.Encoding.PEM)
-    key_pem = priv_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
-    fingerprint = hashlib.sha256(cert_der).digest()
-
-    return {
-        "cert_pem": cert_pem,
-        "key_pem": key_pem,
-        "cert_der": cert_der,
-        "fingerprint": fingerprint,
-    }
+# `derive_tls_cert_and_key` is imported from `dstack_tls` so mcp_server
+# (which also terminates TLS inside the enclave in Phase C) derives from
+# the same path and produces the same cert.
 
 
 # ---------------------------------------------------------------------------

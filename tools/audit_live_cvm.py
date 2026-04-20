@@ -1,11 +1,14 @@
-"""7-row audit against the live Phala CVM, mirroring iOS AuditCardView.
+"""8-row audit against the live Phala CVM, mirroring iOS AuditCardView.
 
 Rows 1-6 are structural: the quote parses, measurements look real, the
 compose_hash is authorized on-chain, and the event log + mr_config_id
-both bind the claimed compose_hash into the quote. Row 7 (new in
-Phase 3) pins the live TLS cert: sha256(DER) of the cert the TLS
-handshake presents must match `enclave_tls_cert_fingerprint_hex` in
-the attestation. If they disagree, the TLS handshake was intercepted.
+both bind the claimed compose_hash into the quote. Row 7 (Phase 3) pins
+the attestation-port TLS cert: sha256(DER) of the cert the TLS handshake
+presents must match `enclave_tls_cert_fingerprint_hex` in the
+attestation. Row 8 (Phase C) extends the same pin to the MCP port —
+same cert (derived from dstack-KMS via the shared `feedling-tls-v1`
+path), different port. If either disagrees, the TLS handshake was
+intercepted.
 
 Expected usage:
 
@@ -114,6 +117,38 @@ else:
             f"=> {'MATCH: TLS handshake reached the attested enclave, no MITM.' if match else 'MISMATCH: handshake was intercepted between you and the enclave.'}")
     except Exception as e:
         row(7, "TLS cert bound to attestation", False, f"TLS fetch failed: {e}")
+
+# Row 8: MCP port (5002) TLS cert is bound to the SAME attestation.
+# Phase C: the MCP server uses the same dstack-KMS-derived cert as the
+# attestation port (derived from `feedling-tls-v1`), so the fingerprint
+# the TLS handshake on 5002s presents should equal `enclave_tls_cert_fingerprint_hex`.
+# Skipped if fingerprint is all zeros (pre-Phase-3 deployments).
+if attested_tls == zeros:
+    row(8, "MCP TLS cert bound to attestation", False,
+        "skipped — attestation-side TLS isn't in-enclave yet")
+else:
+    mcp_url_env = os.environ.get(
+        "FEEDLING_MCP_URL",
+        "https://051a174f2457a6c474680a5d745372398f97b6ad-5002s.dstack-pha-prod5.phala.network/",
+    )
+    try:
+        parsed = urlparse(mcp_url_env)
+        host, port = parsed.hostname, parsed.port or 443
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        with socket.create_connection((host, port), timeout=10) as raw:
+            with ctx.wrap_socket(raw, server_hostname=host) as s:
+                der = s.getpeercert(binary_form=True)
+        live_mcp_sha = hashlib.sha256(der).hexdigest()
+        match = live_mcp_sha == attested_tls
+        row(8, "MCP TLS cert bound to attestation",
+            match,
+            f"mcp port fingerprint = {live_mcp_sha[:32]}…\n"
+            f"attested fingerprint = {attested_tls[:32]}…\n"
+            f"=> {'MATCH: the MCP port terminates TLS with the same enclave-bound cert.' if match else 'MISMATCH: MCP handshake was intercepted or wrong cert served.'}")
+    except Exception as e:
+        row(8, "MCP TLS cert bound to attestation", False, f"TLS fetch failed: {e}")
 
 # Summary
 passed = sum(1 for v in rows.values() if v)

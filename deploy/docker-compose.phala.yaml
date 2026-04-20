@@ -110,8 +110,18 @@ services:
       FEEDLING_ENCLAVE_URL: "https://enclave:5003"
       FEEDLING_MCP_PORT: "5002"
       FEEDLING_MCP_TRANSPORT: "sse"
+      # Phase C: terminate MCP TLS inside the enclave. Uses the same
+      # dstack-KMS-bound cert as the attestation port (derived from
+      # `feedling-tls-v1`), so `sha256(cert.DER)` on port 5002 matches
+      # `enclave_tls_cert_fingerprint_hex` in the attestation bundle.
+      # The `-5002s.` gateway URL becomes pinnable by iOS + CLI audit.
+      FEEDLING_MCP_TLS: "true"
     ports:
       - "5002:5002"
+    volumes:
+      # Same socket the enclave service uses — MCP needs dstack-sdk at
+      # boot to derive the TLS cert.
+      - /var/run/dstack.sock:/var/run/dstack.sock
     depends_on:
       backend:
         condition: service_started

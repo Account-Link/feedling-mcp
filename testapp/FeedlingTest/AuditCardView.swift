@@ -72,6 +72,8 @@ final class AuditViewModel: ObservableObject {
         var bodySignatureValid: Bool
         var tlsCertBindingChecked: Bool
         var tlsTerminationDisclosure: String?
+        var mcpTlsCertBindingChecked: Bool      // Phase C
+        var mcpTlsDisclosure: String?           // Phase C
         var composeBinding: EventLogReplay.Result?
         var enclaveContentPK: String?
         var releaseGitCommit: String?
@@ -184,6 +186,36 @@ final class AuditViewModel: ObservableObject {
             txURL = URL(string: "\(explorer)/tx/\(deployTx)")
         }
 
+        // 4b. Phase C — MCP port (5002s) shares the same dstack-KMS-derived
+        //    cert. Open a separate TLS handshake to the MCP endpoint, capture
+        //    its cert DER, and compare to the same attested fingerprint. Done
+        //    after (4) so we can reuse `attested`.
+        var mcpChecked = false
+        var mcpDisclosure: String? = nil
+        if attested == zeros {
+            mcpChecked = false
+            mcpDisclosure = "Attestation-port TLS isn't in-enclave yet; skipping MCP pin."
+        } else {
+            let mcpPinner = PinningCaptureDelegate()
+            let mcpSession = URLSession(configuration: .ephemeral,
+                                        delegate: mcpPinner, delegateQueue: nil)
+            if let mcpURL = URL(string: "https://051a174f2457a6c474680a5d745372398f97b6ad-5002s.dstack-pha-prod5.phala.network/") {
+                _ = try? await mcpSession.data(from: mcpURL)
+                if let live = mcpPinner.capturedCertSHA256Hex?.lowercased() {
+                    if live == attested {
+                        mcpChecked = true
+                        mcpDisclosure = "MCP port presents the same enclave-bound cert as /attestation. No middleman between Claude.ai → MCP → your data."
+                    } else {
+                        mcpChecked = false
+                        mcpDisclosure = "MCP handshake presented \(String(live.prefix(16)))…, attested fingerprint is \(String(attested.prefix(16)))…. MITM or misconfigured deploy."
+                    }
+                } else {
+                    mcpChecked = false
+                    mcpDisclosure = "Couldn't capture MCP port cert — TLS handshake may have failed."
+                }
+            }
+        }
+
         self.report = AuditReport(
             verifiedAt: Date(),
             hardwareAttestationValid: hardwareValid,
@@ -193,6 +225,8 @@ final class AuditViewModel: ObservableObject {
             bodySignatureValid: bodySigValid,
             tlsCertBindingChecked: tlsChecked,
             tlsTerminationDisclosure: disclosure,
+            mcpTlsCertBindingChecked: mcpChecked,
+            mcpTlsDisclosure: mcpDisclosure,
             composeBinding: composeBinding,
             enclaveContentPK: bundle.enclave_content_pk_hex,
             releaseGitCommit: bundle.enclave_release?.git_commit,
@@ -257,6 +291,7 @@ fileprivate enum AuditMechanismCopy {
     static let bodySignature = "The attestation payload itself is signed by the enclave's own key, which is in turn signed by Intel's hardware. Verifying this signature proves the report came from this exact enclave at this exact moment."
     static let composeBinding = "The enclave's boot sequence hashes its own exact container recipe into a register called mr_config_id. The quote carries this register; the hash IS the recipe. If we control the app, we control the recipe, and the hash on-chain proves which recipe you're talking to."
     static let tlsBinding = "The certificate your phone just saw during the TLS handshake was generated inside the enclave. Its fingerprint is baked into the signed quote we fetched. Match = this really is the enclave we think it is; no middleman could swap the cert without faking Intel's signature."
+    static let mcpTlsBinding = "The MCP port (the one your agent connects to) terminates TLS inside the same enclave, with the same cert. We open a second handshake just to verify — if anything's sitting between your agent and the enclave, this catches it."
     static let onChainAudit = "The recipe hash above has to be pre-authorized on Ethereum before the enclave gets its release key. This link goes to the public transaction that did that — anyone on the internet can verify it."
 }
 
@@ -384,6 +419,10 @@ struct AuditCardView: View {
                          ok: r.tlsCertBindingChecked,
                          note: r.tlsTerminationDisclosure,
                          mechanism: AuditMechanismCopy.tlsBinding)
+            AuditRowView(title: "MCP port TLS bound to attestation",
+                         ok: r.mcpTlsCertBindingChecked,
+                         note: r.mcpTlsDisclosure,
+                         mechanism: AuditMechanismCopy.mcpTlsBinding)
 
             Divider().padding(.vertical, 4)
             Text("On-chain audit (public transparency, not security)")

@@ -22,6 +22,7 @@ any key (the backend will accept unauthenticated requests), or set
 import base64
 import json
 import os
+import tempfile
 import threading
 from typing import Any
 
@@ -554,10 +555,38 @@ def bootstrap(ctx: Context = None) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _materialize_tls_cert() -> tuple[str | None, str | None]:
+    """Phase C: derive the same dstack-KMS-bound TLS cert that enclave_app.py
+    uses on port 5003, write cert + key to transient tempfiles (tmpfs in
+    the CVM), and return the paths. Returns (None, None) when
+    FEEDLING_MCP_TLS is unset, so local dev stays HTTP.
+    """
+    if os.environ.get("FEEDLING_MCP_TLS", "false").lower() != "true":
+        return (None, None)
+    # Match enclave_app's "don't use empty string as simulator endpoint" hygiene.
+    if os.environ.get("DSTACK_SIMULATOR_ENDPOINT", "") == "":
+        os.environ.pop("DSTACK_SIMULATOR_ENDPOINT", None)
+    # Import dstack_sdk lazily so local-dev-without-TLS doesn't pay for it.
+    from dstack_sdk import DstackClient
+    from dstack_tls import derive_tls_cert_and_key
+
+    dstack = DstackClient()
+    tls = derive_tls_cert_and_key(dstack)
+    cert_file = tempfile.NamedTemporaryFile(mode="wb", suffix=".pem", delete=False)
+    key_file = tempfile.NamedTemporaryFile(mode="wb", suffix=".pem", delete=False)
+    cert_file.write(tls["cert_pem"]); cert_file.flush(); cert_file.close()
+    key_file.write(tls["key_pem"]); key_file.flush(); key_file.close()
+    return (cert_file.name, key_file.name)
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("FEEDLING_MCP_PORT", 5002))
     transport = os.environ.get("FEEDLING_MCP_TRANSPORT", "sse").lower()
-    print(f"Feedling MCP server: transport={transport} port={port} flask={FLASK_BASE} single_user={SINGLE_USER}")
+    cert_path, key_path = _materialize_tls_cert()
+    tls_on = cert_path is not None
+    scheme = "https" if tls_on else "http"
+    print(f"Feedling MCP server: transport={transport} port={port} scheme={scheme} "
+          f"flask={FLASK_BASE} single_user={SINGLE_USER}")
 
     if transport == "sse":
         # Build a Starlette app so we can attach the key-capture middleware,
@@ -568,6 +597,11 @@ if __name__ == "__main__":
             transport="sse",
             middleware=[StarletteMW(KeyCaptureMiddleware)],
         )
-        uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+        if tls_on:
+            uvicorn.run(app, host="0.0.0.0", port=port,
+                        ssl_certfile=cert_path, ssl_keyfile=key_path,
+                        log_level="info")
+        else:
+            uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
     else:
         mcp.run(transport=transport, host="0.0.0.0", port=port)
