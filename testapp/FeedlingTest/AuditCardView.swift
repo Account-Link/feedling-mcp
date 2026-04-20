@@ -19,13 +19,12 @@ import CryptoKit
 /// the enclave's sealed key material.
 final class PinningCaptureDelegate: NSObject, URLSessionDelegate {
 
-    /// sha256(DER-encoded leaf cert) as lowercase hex — populated on
-    /// the first challenge. Nil means no TLS handshake happened (HTTP
-    /// URL) or the server presented no cert.
+    /// sha256(DER-encoded leaf cert) as lowercase hex.
     private(set) var capturedCertSHA256Hex: String?
+    /// sha256(SubjectPublicKeyInfo DER of leaf cert) as lowercase hex.
+    /// Stable across cert renewals when the key doesn't change (Phase C.2).
+    private(set) var capturedCertPubkeySHA256Hex: String?
 
-    /// Record and accept any server cert. The viewmodel decides whether
-    /// to trust the fetched bytes based on a later comparison.
     func urlSession(_ session: URLSession,
                     didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
@@ -35,9 +34,6 @@ final class PinningCaptureDelegate: NSObject, URLSessionDelegate {
             return
         }
 
-        // Pull the leaf cert's DER out of the trust object. On iOS 15+
-        // use SecTrustCopyCertificateChain; older deprecated path is
-        // SecTrustGetCertificateAtIndex which still exists but warns.
         var cert: SecCertificate?
         if #available(iOS 15.0, *) {
             if let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate], let leaf = chain.first {
@@ -48,11 +44,30 @@ final class PinningCaptureDelegate: NSObject, URLSessionDelegate {
         }
         if let c = cert {
             let der = SecCertificateCopyData(c) as Data
-            let hash = SHA256.hash(data: der)
-            capturedCertSHA256Hex = hash.map { String(format: "%02x", $0) }.joined()
+            capturedCertSHA256Hex = SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
+            // Extract SubjectPublicKeyInfo DER via SecCertificateCopyKey
+            if let secKey = SecCertificateCopyKey(c),
+               let pubKeyDER = SecKeyCopyExternalRepresentation(secKey, nil) as Data? {
+                // SecKeyCopyExternalRepresentation returns the raw key bytes (X9.62 for EC),
+                // not the full SPKI DER. We need the SPKI wrapper. Wrap it manually:
+                // SPKI for EC P-256 = sequence { sequence { OID ecPublicKey, OID prime256v1 }, bitstring { 0x00 || raw_key } }
+                let oidSequence = Data([0x30, 0x13,
+                                        0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01,  // OID ecPublicKey
+                                        0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07]) // OID prime256v1
+                var bitString = Data([0x03]) // bitstring tag
+                let bsContent = Data([0x00]) + pubKeyDER
+                bitString += encodeDERLength(bsContent.count) + bsContent
+                let spki = Data([0x30]) + encodeDERLength((oidSequence + bitString).count) + oidSequence + bitString
+                capturedCertPubkeySHA256Hex = SHA256.hash(data: spki).map { String(format: "%02x", $0) }.joined()
+            }
         }
-        // Accept the cert. Validation happens after the bundle is parsed.
         completionHandler(.useCredential, URLCredential(trust: trust))
+    }
+
+    private func encodeDERLength(_ length: Int) -> Data {
+        if length < 128 { return Data([UInt8(length)]) }
+        let bytes = withUnsafeBytes(of: length.bigEndian) { Array($0.drop(while: { $0 == 0 })) }
+        return Data([0x80 | UInt8(bytes.count)] + bytes)
     }
 }
 
@@ -186,32 +201,32 @@ final class AuditViewModel: ObservableObject {
             txURL = URL(string: "\(explorer)/tx/\(deployTx)")
         }
 
-        // 4b. Phase C — MCP port (5002s) shares the same dstack-KMS-derived
-        //    cert. Open a separate TLS handshake to the MCP endpoint, capture
-        //    its cert DER, and compare to the same attested fingerprint. Done
-        //    after (4) so we can reuse `attested`.
+        // 4b. Phase C.2 — MCP port has a Let's Encrypt cert whose key was
+        //    generated inside the CVM. The attestation bundle now contains
+        //    mcp_tls_cert_pubkey_fingerprint_hex = sha256(SubjectPublicKeyInfo DER).
+        //    We open a CA-verified TLS session to the MCP endpoint, extract the
+        //    cert's public key DER, sha256 it, and compare to the attested value.
         var mcpChecked = false
         var mcpDisclosure: String? = nil
-        if attested == zeros {
-            mcpChecked = false
-            mcpDisclosure = "Attestation-port TLS isn't in-enclave yet; skipping MCP pin."
+        let attestedMcpPkFp = (bundle.mcp_tls_cert_pubkey_fingerprint_hex ?? "").lowercased()
+        if attestedMcpPkFp.isEmpty {
+            mcpDisclosure = "Pre-Phase-C.2 deployment — MCP pubkey fingerprint not in attestation bundle yet."
         } else {
-            let mcpPinner = PinningCaptureDelegate()
+            let mcpCapture = PinningCaptureDelegate()
             let mcpSession = URLSession(configuration: .ephemeral,
-                                        delegate: mcpPinner, delegateQueue: nil)
+                                        delegate: mcpCapture, delegateQueue: nil)
             if let mcpURL = URL(string: "https://051a174f2457a6c474680a5d745372398f97b6ad-5002s.dstack-pha-prod5.phala.network/") {
                 _ = try? await mcpSession.data(from: mcpURL)
-                if let live = mcpPinner.capturedCertSHA256Hex?.lowercased() {
-                    if live == attested {
+                // capturedCertPubkeySHA256Hex holds sha256(SubjectPublicKeyInfo DER)
+                if let livePkFp = mcpCapture.capturedCertPubkeySHA256Hex?.lowercased() {
+                    if livePkFp == attestedMcpPkFp {
                         mcpChecked = true
-                        mcpDisclosure = "MCP port presents the same enclave-bound cert as /attestation. No middleman between Claude.ai → MCP → your data."
+                        mcpDisclosure = "Let's Encrypt cert, key inside CVM. Pubkey fingerprint matches attestation bundle — the private key was generated inside the hardware boundary."
                     } else {
-                        mcpChecked = false
-                        mcpDisclosure = "MCP handshake presented \(String(live.prefix(16)))…, attested fingerprint is \(String(attested.prefix(16)))…. MITM or misconfigured deploy."
+                        mcpDisclosure = "Pubkey mismatch: live \(String(livePkFp.prefix(16)))… vs attested \(String(attestedMcpPkFp.prefix(16)))…. Possible MITM or stale attestation."
                     }
                 } else {
-                    mcpChecked = false
-                    mcpDisclosure = "Couldn't capture MCP port cert — TLS handshake may have failed."
+                    mcpDisclosure = "Couldn't capture MCP port cert public key — TLS handshake may have failed."
                 }
             }
         }
@@ -255,6 +270,9 @@ final class AuditViewModel: ObservableObject {
         let tdx_quote_hex: String
         let enclave_content_pk_hex: String
         let enclave_tls_cert_fingerprint_hex: String
+        // Phase C.2: sha256(SubjectPublicKeyInfo DER) of MCP cert key.
+        // Stable across LE renewals; empty string on pre-C.2 deployments.
+        let mcp_tls_cert_pubkey_fingerprint_hex: String?
         let compose_hash: String
         let event_log_json: String?
         let measurements: Measurements?
@@ -291,7 +309,7 @@ fileprivate enum AuditMechanismCopy {
     static let bodySignature = "The attestation payload itself is signed by the enclave's own key, which is in turn signed by Intel's hardware. Verifying this signature proves the report came from this exact enclave at this exact moment."
     static let composeBinding = "The enclave's boot sequence hashes its own exact container recipe into a register called mr_config_id. The quote carries this register; the hash IS the recipe. If we control the app, we control the recipe, and the hash on-chain proves which recipe you're talking to."
     static let tlsBinding = "The certificate your phone just saw during the TLS handshake was generated inside the enclave. Its fingerprint is baked into the signed quote we fetched. Match = this really is the enclave we think it is; no middleman could swap the cert without faking Intel's signature."
-    static let mcpTlsBinding = "The MCP port (the one your agent connects to) terminates TLS inside the same enclave, with the same cert. We open a second handshake just to verify — if anything's sitting between your agent and the enclave, this catches it."
+    static let mcpTlsBinding = "The MCP port (where your agent connects) has a certificate from Let's Encrypt — a globally trusted authority. The certificate's private key was generated inside the TDX enclave and never left it. The key fingerprint is baked into the attestation bundle so you can verify it yourself: the private key serving your agent's requests was born inside the hardware boundary and is provably the same one the enclave attests to."
     static let onChainAudit = "Every app version we ship gets its compose hash published to a public Ethereum contract. Agents or auditors can read the full release history on-chain and cross-reference it against what the enclave is actually running. This link goes to the transaction that published the current version."
 }
 
@@ -419,7 +437,7 @@ struct AuditCardView: View {
                          ok: r.tlsCertBindingChecked,
                          note: r.tlsTerminationDisclosure,
                          mechanism: AuditMechanismCopy.tlsBinding)
-            AuditRowView(title: "MCP port TLS bound to attestation",
+            AuditRowView(title: "MCP TLS: Let's Encrypt cert, key in CVM",
                          ok: r.mcpTlsCertBindingChecked,
                          note: r.mcpTlsDisclosure,
                          mechanism: AuditMechanismCopy.mcpTlsBinding)

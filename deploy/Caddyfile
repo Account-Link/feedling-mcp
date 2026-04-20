@@ -3,11 +3,21 @@
 # Caddy auto-provisions Let's Encrypt certs on first reload — make sure DNS
 # for both hostnames points at this VPS before starting.
 
-# MCP server — Claude.ai / Claude Desktop / ChatGPT connect here over SSE.
-# SSE needs no special config in Caddy v2; reverse_proxy handles event-stream
-# chunked transfer and long-lived connections automatically.
+# MCP server — Claude.ai / Claude Desktop connect here over SSE.
+# Phase C.2: traffic is proxied to the Phala CVM MCP service (port 5002),
+# which holds a Let's Encrypt cert for mcp.feedling.app generated inside the
+# TDX enclave. Caddy verifies the CVM's cert via the system CA bundle.
+# tls_server_name overrides the SNI so Caddy sends "mcp.feedling.app" during
+# the upstream TLS handshake — the CVM's LE cert is valid for that name.
+#
+# NOTE: update the upstream URL after every CVM redeploy (the hash prefix
+# changes). Current CVM: 051a174f2457a6c474680a5d745372398f97b6ad
 mcp.feedling.app {
-    reverse_proxy localhost:5002
+    reverse_proxy https://051a174f2457a6c474680a5d745372398f97b6ad-5002s.dstack-pha-prod5.phala.network {
+        transport http {
+            tls_server_name mcp.feedling.app
+        }
+    }
 }
 
 # iOS app API — mobile client + HTTP skill agents connect here.

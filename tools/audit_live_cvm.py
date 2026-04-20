@@ -5,10 +5,15 @@ compose_hash is authorized on-chain, and the event log + mr_config_id
 both bind the claimed compose_hash into the quote. Row 7 (Phase 3) pins
 the attestation-port TLS cert: sha256(DER) of the cert the TLS handshake
 presents must match `enclave_tls_cert_fingerprint_hex` in the
-attestation. Row 8 (Phase C) extends the same pin to the MCP port —
-same cert (derived from dstack-KMS via the shared `feedling-tls-v1`
-path), different port. If either disagrees, the TLS handshake was
-intercepted.
+attestation. Row 8 (Phase C.2) checks the MCP port cert:
+  - The MCP server presents a Let's Encrypt cert for mcp.feedling.app.
+  - The cert was signed using a key derived from dstack-KMS at
+    'feedling-mcp-tls-v1' inside the CVM.
+  - The attestation bundle now includes mcp_tls_cert_pubkey_fingerprint_hex
+    = sha256(SubjectPublicKeyInfo DER of that key).
+  - We verify: cert is CA-valid for mcp.feedling.app AND its pubkey
+    fingerprint matches the attested value.
+  - Fingerprint is STABLE across LE renewals (key doesn't change, cert does).
 
 Expected usage:
 
@@ -118,14 +123,17 @@ else:
     except Exception as e:
         row(7, "TLS cert bound to attestation", False, f"TLS fetch failed: {e}")
 
-# Row 8: MCP port (5002) TLS cert is bound to the SAME attestation.
-# Phase C: the MCP server uses the same dstack-KMS-derived cert as the
-# attestation port (derived from `feedling-tls-v1`), so the fingerprint
-# the TLS handshake on 5002s presents should equal `enclave_tls_cert_fingerprint_hex`.
-# Skipped if fingerprint is all zeros (pre-Phase-3 deployments).
-if attested_tls == zeros:
-    row(8, "MCP TLS cert bound to attestation", False,
-        "skipped — attestation-side TLS isn't in-enclave yet")
+# Row 8: MCP port (5002) has a Let's Encrypt cert whose key is bound to attestation.
+# Phase C.2: MCP acquires an LE cert via ACME-DNS-01 inside the CVM.
+# The cert key is derived from dstack-KMS at 'feedling-mcp-tls-v1' — stable key,
+# only the CA-signed wrapper changes on renewal. The attestation bundle includes
+# mcp_tls_cert_pubkey_fingerprint_hex = sha256(SubjectPublicKeyInfo DER of that key).
+# We verify: (a) cert is CA-valid for mcp.feedling.app; (b) pubkey fingerprint matches.
+attested_mcp_pk = att.get("mcp_tls_cert_pubkey_fingerprint_hex", "")
+if not attested_mcp_pk:
+    row(8, "MCP TLS cert (Let's Encrypt, key in CVM)", False,
+        "skipped — mcp_tls_cert_pubkey_fingerprint_hex not in attestation bundle "
+        "(pre-Phase-C.2 deployment)")
 else:
     mcp_url_env = os.environ.get(
         "FEEDLING_MCP_URL",
@@ -134,21 +142,38 @@ else:
     try:
         parsed = urlparse(mcp_url_env)
         host, port = parsed.hostname, parsed.port or 443
+        # CA-validate with system roots — the cert is LE-signed, not self-signed
         ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((host, port), timeout=10) as raw:
-            with ctx.wrap_socket(raw, server_hostname=host) as s:
+        ctx.check_hostname = False          # we check manually below
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        with socket.create_connection((host, port), timeout=15) as raw:
+            with ctx.wrap_socket(raw, server_hostname="mcp.feedling.app") as s:
                 der = s.getpeercert(binary_form=True)
-        live_mcp_sha = hashlib.sha256(der).hexdigest()
-        match = live_mcp_sha == attested_tls
-        row(8, "MCP TLS cert bound to attestation",
-            match,
-            f"mcp port fingerprint = {live_mcp_sha[:32]}…\n"
-            f"attested fingerprint = {attested_tls[:32]}…\n"
-            f"=> {'MATCH: the MCP port terminates TLS with the same enclave-bound cert.' if match else 'MISMATCH: MCP handshake was intercepted or wrong cert served.'}")
+                cert_dict = s.getpeercert()
+        from cryptography import x509 as _x509
+        from cryptography.hazmat.primitives import serialization as _ser
+        leaf = _x509.load_der_x509_certificate(der)
+        pub_der = leaf.public_key().public_bytes(_ser.Encoding.DER, _ser.PublicFormat.SubjectPublicKeyInfo)
+        live_pk_fp = hashlib.sha256(pub_der).hexdigest()
+        pk_match = live_pk_fp == attested_mcp_pk
+        # Also verify subject CN or SAN includes mcp.feedling.app
+        san_ok = any(
+            "mcp.feedling.app" in str(v)
+            for ext in [leaf.extensions.get_extension_for_class(_x509.SubjectAlternativeName)]
+            for v in ext.value.get_values_for_type(_x509.DNSName)
+        ) if True else False
+        row(8, "MCP TLS cert (Let's Encrypt, key in CVM)",
+            pk_match and san_ok,
+            f"attested pubkey fp = {attested_mcp_pk[:32]}…\n"
+            f"live     pubkey fp = {live_pk_fp[:32]}…\n"
+            f"SAN for mcp.feedling.app: {'yes' if san_ok else 'no'}\n"
+            f"=> {'MATCH: LE cert key is inside the attested CVM.' if (pk_match and san_ok) else 'MISMATCH or bad SAN — see details above.'}")
+    except ssl.SSLCertVerificationError as e:
+        row(8, "MCP TLS cert (Let's Encrypt, key in CVM)", False,
+            f"CA verification failed: {e}\n"
+            f"=> MCP cert is not a valid Let's Encrypt cert (may still be Phase C.1 self-signed)")
     except Exception as e:
-        row(8, "MCP TLS cert bound to attestation", False, f"TLS fetch failed: {e}")
+        row(8, "MCP TLS cert (Let's Encrypt, key in CVM)", False, f"TLS fetch failed: {e}")
 
 # Summary
 passed = sum(1 for v in rows.values() if v)

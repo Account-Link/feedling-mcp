@@ -110,18 +110,32 @@ services:
       FEEDLING_ENCLAVE_URL: "https://enclave:5003"
       FEEDLING_MCP_PORT: "5002"
       FEEDLING_MCP_TRANSPORT: "sse"
-      # Phase C: terminate MCP TLS inside the enclave. Uses the same
-      # dstack-KMS-bound cert as the attestation port (derived from
-      # `feedling-tls-v1`), so `sha256(cert.DER)` on port 5002 matches
-      # `enclave_tls_cert_fingerprint_hex` in the attestation bundle.
-      # The `-5002s.` gateway URL becomes pinnable by iOS + CLI audit.
+      # Phase C.1 fallback: dstack-KMS self-signed cert. Used when
+      # FEEDLING_ACME_DOMAIN is unset (e.g., local dev without CF token).
       FEEDLING_MCP_TLS: "true"
+      # Phase C.2: ACME-DNS-01 via Cloudflare. When set, MCP acquires a
+      # Let's Encrypt cert for this domain at boot and serves it on port
+      # 5002. The cert key is derived from dstack-KMS ('feedling-mcp-tls-v1')
+      # so its public key fingerprint is stable and pre-computed by the
+      # enclave service for the attestation bundle.
+      FEEDLING_ACME_DOMAIN: "mcp.feedling.app"
+      FEEDLING_ACME_EMAIL: "sxysun9@gmail.com"
+      FEEDLING_TLS_CACHE_DIR: "/tls"
+      # FEEDLING_ACME_STAGING: "false"   # set to "true" to test against LE staging
+      # CF_ZONE_ID and CF_API_TOKEN must be injected via Phala's encrypted
+      # environment variable channel — do NOT hardcode here (they are not
+      # part of the compose_hash but must not appear in plaintext in the file).
+      FEEDLING_CF_ZONE_ID: "${CF_ZONE_ID}"
+      FEEDLING_CF_API_TOKEN: "${CF_API_TOKEN}"
     ports:
       - "5002:5002"
     volumes:
-      # Same socket the enclave service uses — MCP needs dstack-sdk at
-      # boot to derive the TLS cert.
+      # dstack socket for key derivation (cert key + account key from dstack-KMS).
       - /var/run/dstack.sock:/var/run/dstack.sock
+      # Persistent TLS cert cache: avoids hitting LE rate limits (5 certs/week)
+      # on every container restart. Only the cert PEM is here; the key is
+      # regenerated from dstack-KMS (stable across reboots, no persistence needed).
+      - feedling_mcp_tls_data:/tls
     depends_on:
       backend:
         condition: service_started
@@ -131,3 +145,5 @@ volumes:
     name: feedling_enclave_data
   feedling_backend_data:
     name: feedling_backend_data
+  feedling_mcp_tls_data:
+    name: feedling_mcp_tls_data

@@ -55,7 +55,7 @@ from cryptography.exceptions import InvalidTag
 from flask import Flask, jsonify, Response, request
 from dstack_sdk import DstackClient
 
-from dstack_tls import derive_tls_cert_and_key, TLS_KEY_PATH
+from dstack_tls import derive_tls_cert_and_key, derive_key_only, TLS_KEY_PATH, MCP_TLS_KEY_PATH
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +269,7 @@ _state: dict[str, Any] = {
     "content_pk_hex": None,
     "signing_pk_hex": None,
     "tls_cert_fingerprint_hex": PHASE1_TLS_FINGERPRINT.hex(),
+    "mcp_tls_cert_pubkey_fingerprint_hex": "",  # populated in bootstrap() when ENCLAVE_TLS=true
     "tls_enabled": False,
     "tls_cert_pem": None,  # bytes; only kept for the SSLContext load path
     "tls_key_pem": None,   # bytes; only kept for the SSLContext load path
@@ -303,6 +304,21 @@ def bootstrap():
                 # without the operator realizing the enclave never set it
                 # up. Fail loudly instead.
                 raise RuntimeError(f"TLS derivation failed: {e}") from e
+
+            # Derive MCP cert key to get its pubkey fingerprint. This is
+            # the same key mcp_server.py uses for the ACME CSR, so the LE
+            # cert's public key fingerprint is stable and pre-computable.
+            try:
+                mcp_key = derive_key_only(dstack, MCP_TLS_KEY_PATH)
+                mcp_pub_der = mcp_key.public_key().public_bytes(
+                    serialization.Encoding.DER,
+                    serialization.PublicFormat.SubjectPublicKeyInfo,
+                )
+                _state["mcp_tls_cert_pubkey_fingerprint_hex"] = (
+                    hashlib.sha256(mcp_pub_der).hexdigest()
+                )
+            except Exception as e:
+                print(f"[enclave] MCP cert fingerprint derivation failed: {e}", flush=True)
 
         report_data = build_report_data(
             content_pk_bytes=keys["content_pk_bytes"],
@@ -358,6 +374,11 @@ def attestation():
         "enclave_content_pk_hex": _state["content_pk_hex"],
         "enclave_signing_pk_hex": _state["signing_pk_hex"],
         "enclave_tls_cert_fingerprint_hex": _state["tls_cert_fingerprint_hex"],
+        # Phase C.2: sha256(SubjectPublicKeyInfo DER) of the MCP port's cert key.
+        # Derived independently from dstack-KMS so it's pre-computable without
+        # talking to the MCP service. Stable across LE cert renewals because the
+        # key doesn't change — only the CA-signed certificate wrapper does.
+        "mcp_tls_cert_pubkey_fingerprint_hex": _state["mcp_tls_cert_pubkey_fingerprint_hex"],
         "enclave_release": RELEASE,
         "app_auth": APP_AUTH,
         "report_data_version": 1,
