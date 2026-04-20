@@ -51,6 +51,78 @@
 
 ## 2026-04-20
 
+### [DONE] v0 / SINGLE_USER strip — backend is envelope-only
+
+Closes tasks #23 and #33 in a single commit. The one real prod user
+OK'd wiping her data + fresh multi-tenant reinstall, so instead of
+keeping rewrap as a 30-day compatibility shim we retired the entire
+v0 stack in one go.
+
+**Backend (`backend/`)**
+- `app.py`: removed all `SINGLE_USER` branches, v0 plaintext accept
+  branches in `/v1/chat/message`, `/v1/chat/response`, `/v1/memory/add`,
+  `/v1/identity/init`; removed the HTTP `/v1/identity/nudge` endpoint
+  (identity mutation now only lives in MCP `feedling.identity.nudge`);
+  removed `/v1/content/rewrap` and all `_rewrap_*` helpers.
+- `app.py`: added `/v1/content/export` inlining full v1 frame envelopes
+  (schema bumped 1→2, cap 50→80 MiB — frames are now part of the
+  portable dataset the user walks away with).
+- `app.py`: restored a purpose-built `/v1/content/swap` endpoint for
+  ongoing in-place envelope swaps (used by iOS visibility-toggle).
+  Same validation shape as old rewrap minus the `already_v1` status —
+  no v0 concept left in the response.
+- `mcp_server.py`: dropped the `SINGLE_USER` constant and every v0
+  fallback in `chat_post_message`, `identity_init`, `memory_add_moment`,
+  `identity_nudge` — they now fail loud when pubkeys are unavailable.
+- `enclave_app.py`: dropped `if v == 0:` pass-throughs in chat, memory,
+  and identity decrypt loops.
+- `chat_bridge.py` + `deploy/feedling-chat-bridge.service`: deleted.
+  MCP's in-enclave `feedling.chat.post_message` replaces them (and
+  avoids the April spam-reply incident where a systemd restart race
+  caused duplicate Hermes replies).
+
+**Deploy (`deploy/`)**
+- `docker-compose.yaml`, `docker-compose.phala.yaml`: removed
+  `SINGLE_USER` env, shared `FEEDLING_API_KEY` stubs. Backend is always
+  multi-tenant.
+- `setup.sh`, `feedling.env.example`: removed shared-key / SINGLE_USER
+  provisioning. Fresh VPS bootstrap now produces a multi-tenant box.
+
+**iOS (`testapp/FeedlingTest/`)**
+- `FeedlingAPI.swift`: removed `runSilentV1MigrationIfNeeded`,
+  `RewrapSummary`, `collectV0Chat/MemoryEnvelopes`, `postRewrap`, the
+  `@Published migrationProgress` state, and the 403-SINGLE_USER branch
+  in `ensureRegisteredIfCloud`. `flipMemoryVisibility` now POSTs to
+  `/v1/content/swap`.
+- `ContentView.swift`: removed `MigrationProgressRow` + its usage in
+  the Privacy hero.
+- `FeedlingTestApp.swift`: removed the migration kickoff call from the
+  `.task { … }` startup block.
+- `ChatViewModel.swift`, `SampleHandler+WebSocketQueue.swift`: removed
+  plaintext fallbacks and dead `WebSocketManager.sendFrame` — backend
+  now rejects non-envelope writes, so silent fallbacks would just
+  produce invisible 400s / dropped frames.
+
+**Tests + CI**
+- `backend/test_api.py`: removed `/v1/identity/nudge` cases, added
+  header note that write-path tests POST plaintext and will 400 against
+  the v1-only backend until they're rewritten to build envelopes
+  client-side.
+- `tools/e2e_encryption_test.py`, `.github/workflows/ci.yml`: dropped
+  `SINGLE_USER` env + the CI matrix dimension (no more `single-user` +
+  `multi-tenant` rows — multi-tenant is the only mode).
+
+**Docs**
+- `HANDOFF.md`, `docs/NEXT.md`, `docs/AUDIT.md`, `docs/DESIGN_E2E.md`,
+  `CLAUDE.md`: updated to reflect the stripped state. Phase 5's
+  "retire v0 over 30 days" checkbox flipped to done.
+
+**Exit criterion**: `grep -r "SINGLE_USER\|single_user" backend/ deploy/`
+returns no hits outside this file. Server never stores unencrypted
+content and no longer exposes a path to write plaintext.
+
+---
+
 ### [DONE] Phase C.2 — ACME-DNS-01 Let's Encrypt cert inside the CVM
 
 `mcp.feedling.app` now serves a real CA-signed Let's Encrypt cert

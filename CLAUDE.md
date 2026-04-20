@@ -25,8 +25,9 @@ tokens defined at the bottom of `DESIGN.md`.
 - TDX enclave operations — cross-reference
   `/Users/sxysun/Desktop/suapp/dstack-tutorial` when something about
   keys/attestation/gateway/TLS is non-obvious.
-- Prod user count: **1** (`@sxysun`'s friend, on VPS in SINGLE_USER
-  mode). Migrations + retirements can be aggressive per task #23.
-- iOS auto-migration of legacy plaintext runs on first launch after
-  the Phase A.6 update. Don't remove `/v1/content/rewrap` until
-  that's confirmed complete.
+- Prod user count: **1** (`@sxysun`'s friend, on VPS in multi-tenant
+  mode after the 2026-04-20 SINGLE_USER/v0 strip). Migrations + clean
+  reinstalls are fair game per task #23.
+- `/v1/content/swap` is the ongoing in-place envelope-swap endpoint
+  (visibility toggles). There is no v0→v1 migration path anymore;
+  plaintext writes now return 400.

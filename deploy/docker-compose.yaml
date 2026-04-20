@@ -40,14 +40,13 @@
 # is NOT allowed and would fail the iOS audit card.
 #
 # Current audit:
-#   SINGLE_USER                     — BAKED to true for this file.
-#                                     Hosted multi-tenant deploys override in
-#                                     a separate deploy/docker-compose.prod.yaml
-#                                     whose hash gets its own on-chain entry.
-#   FEEDLING_API_KEY                — BAKED empty. Single-user no-auth. If
-#                                     you want pre-shared-key auth for
-#                                     self-hosted, fork this file + publish
-#                                     your own compose_hash.
+#   FEEDLING_API_KEY                — BAKED empty. The backend never accepts
+#                                     unauthenticated requests; per-user
+#                                     api_keys come from POST /v1/users/register.
+#                                     If you want MCP to talk to the backend
+#                                     in dev without registering, set a shared
+#                                     key via your own override file and publish
+#                                     its compose_hash.
 #   FEEDLING_MCP_TRANSPORT          — BAKED to sse. No silent downgrade.
 #   FEEDLING_FLASK_URL              — BAKED to the compose-internal DNS name.
 #                                     Operator can't redirect to a snooping
@@ -75,7 +74,6 @@ services:
     restart: unless-stopped
     environment:
       # --- BAKED: security-relevant, audited by iOS ---
-      SINGLE_USER: "true"
       FEEDLING_API_KEY: ""
       FEEDLING_DATA_DIR: "/data"
       FEEDLING_WS_PORT: "9998"
@@ -104,7 +102,6 @@ services:
     restart: unless-stopped
     environment:
       # --- BAKED: security-relevant ---
-      SINGLE_USER: "true"
       FEEDLING_API_KEY: ""
       FEEDLING_FLASK_URL: "http://backend:5001"
       FEEDLING_MCP_PORT: "5002"

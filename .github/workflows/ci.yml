@@ -40,15 +40,11 @@ jobs:
         continue-on-error: true
 
   # -------------------------------------------------------------------------
-  # Python — backend API tests in both deployment modes
+  # Python — backend API tests (multi-tenant only; SINGLE_USER mode retired)
   # -------------------------------------------------------------------------
   python-tests:
-    name: test_api.py (${{ matrix.mode }})
+    name: test_api.py (multi-tenant)
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        mode: [single-user, multi-tenant]
     steps:
       - uses: actions/checkout@v4
 
@@ -63,11 +59,10 @@ jobs:
           pip install --require-hashes -r backend/requirements.lock
           pip install requests  # test-only
 
-      - name: Start backend (${{ matrix.mode }})
+      - name: Start backend
         env:
           FEEDLING_DATA_DIR: /tmp/feedling-data-ci
           FEEDLING_WS_PORT: "19998"
-          SINGLE_USER: ${{ matrix.mode == 'single-user' && 'true' || 'false' }}
         run: |
           mkdir -p "$FEEDLING_DATA_DIR"
           python backend/app.py > /tmp/backend.log 2>&1 &
@@ -84,10 +79,7 @@ jobs:
           exit 1
 
       - name: Run test suite
-        run: |
-          FLAG=""
-          if [ "${{ matrix.mode }}" = "multi-tenant" ]; then FLAG="--multi-tenant"; fi
-          python backend/test_api.py http://127.0.0.1:5001 $FLAG
+        run: python backend/test_api.py http://127.0.0.1:5001 --multi-tenant
 
       - name: Stop backend
         if: always()
@@ -112,8 +104,6 @@ jobs:
         run: docker compose -f deploy/docker-compose.yaml build --no-cache
 
       - name: Compose up + healthcheck
-        env:
-          SINGLE_USER: "true"
         run: |
           docker compose -f deploy/docker-compose.yaml up -d
           for i in $(seq 1 30); do

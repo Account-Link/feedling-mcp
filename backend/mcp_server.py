@@ -14,9 +14,9 @@ current MCP session_id. Each tool invocation reads the key back and forwards
 it as `X-API-Key` to the Flask backend, which performs the actual bcrypt-style
 user lookup.
 
-Single-user / self-hosted mode: set `SINGLE_USER=true` on the backend and use
-any key (the backend will accept unauthenticated requests), or set
-`FEEDLING_API_KEY=<shared>` on both sides.
+Self-hosted mode: set `FEEDLING_API_KEY=<shared>` on both the backend and this
+process. The backend still requires an api_key on every request — there is no
+unauthenticated fallback.
 """
 
 import base64
@@ -38,15 +38,12 @@ from content_encryption import build_envelope
 FLASK_BASE = os.environ.get("FEEDLING_FLASK_URL", "http://127.0.0.1:5001")
 # When set, MCP routes content reads (chat history, memory list,
 # identity get) through the enclave's decrypt endpoints so agents see
-# plaintext rather than ciphertext. When unset (dev / self-hosted
-# without an enclave), MCP calls Flask directly — v0 items come back
-# plaintext, v1 items come back as opaque envelopes.
+# plaintext rather than opaque ciphertext envelopes.
 # verify=False on these calls because the enclave's TLS cert is
 # self-signed; trust is REPORT_DATA-pinned from outside, not a PKI
 # property of the in-cluster hop.
 ENCLAVE_BASE = os.environ.get("FEEDLING_ENCLAVE_URL", "").rstrip("/")
 FALLBACK_API_KEY = os.environ.get("FEEDLING_API_KEY", "").strip()
-SINGLE_USER = os.environ.get("SINGLE_USER", "true").lower() == "true"
 
 # ---------------------------------------------------------------------------
 # Session-id → api_key cache
@@ -227,9 +224,8 @@ def _whoami_pubkeys(ctx: Context | None = None) -> tuple[str, bytes | None, byte
     current caller by hitting /v1/users/whoami on the backend.
 
     Returns bytes=None for either pubkey if the backend can't supply it
-    (pre-v1 user with no uploaded pubkey, or no reachable enclave). The
-    caller should fall back to plaintext write in that case so agents
-    can still use the tool end-to-end.
+    (malformed whoami response, or no reachable enclave). In that case
+    wrap-required tools fail loud rather than leak plaintext.
     """
     try:
         info = _get("/v1/users/whoami", ctx=ctx)
@@ -352,24 +348,24 @@ def screen_analyze(ctx: Context = None) -> dict:
     ),
 )
 def chat_post_message(content: str, ctx: Context = None) -> dict:
-    """Agent posts a reply. Phase C part 3: wrap into a v1 envelope when
-    pubkeys are available so the message lands as ciphertext on disk.
-    Falls back to v0 plaintext when no enclave is reachable (self-hosted
-    without a TEE).
+    """Agent posts a reply, always as a v1 envelope. The MCP process runs
+    inside the enclave-compose boundary, so wrapping prerequisites
+    (owner_user_id + both pubkeys) are always available by the time
+    this tool is callable; if not, fail loud rather than regress to
+    plaintext.
     """
     user_id, user_pk, enclave_pk = _whoami_pubkeys(ctx=ctx)
-    if user_id and user_pk is not None and enclave_pk is not None:
-        envelope = build_envelope(
-            plaintext=content.encode("utf-8"),
-            owner_user_id=user_id,
-            user_pk_bytes=user_pk,
-            enclave_pk_bytes=enclave_pk,
-            visibility="shared",
-        )
-        print(f"[mcp] chat.post_message v1 envelope id={envelope['id']}")
-        return _post("/v1/chat/response", {"envelope": envelope}, ctx=ctx)
-    print("[mcp] chat.post_message v0 plaintext (no pubkeys)")
-    return _post("/v1/chat/response", {"content": content}, ctx=ctx)
+    if not (user_id and user_pk is not None and enclave_pk is not None):
+        return {"error": "cannot post chat — pubkeys unavailable"}
+    envelope = build_envelope(
+        plaintext=content.encode("utf-8"),
+        owner_user_id=user_id,
+        user_pk_bytes=user_pk,
+        enclave_pk_bytes=enclave_pk,
+        visibility="shared",
+    )
+    print(f"[mcp] chat.post_message v1 envelope id={envelope['id']}")
+    return _post("/v1/chat/response", {"envelope": envelope}, ctx=ctx)
 
 
 @mcp.tool(
@@ -399,38 +395,27 @@ def identity_init(
     dimensions: list[dict],
     ctx: Context = None,
 ) -> dict:
-    """Wrap the identity card into a v1 envelope before POSTing when
-    wrapping prerequisites are available. Same pattern + fallback rules
-    as `feedling.memory.add_moment`.
-
-    Note: `feedling.identity.nudge` stays plaintext for now — in-place
-    mutation of an encrypted card requires a decrypt-mutate-rewrap
-    dance, which is cleanly solved by Phase C (MCP in TEE) and left
-    for that cut. See `docs/NEXT.md`.
+    """Wrap the identity card into a v1 envelope before POSTing. MCP runs
+    inside the enclave so wrapping prerequisites are always available;
+    if they're not, fail loud rather than regress to plaintext.
     """
     user_id, user_pk, enclave_pk = _whoami_pubkeys(ctx=ctx)
-    if user_id and user_pk is not None and enclave_pk is not None:
-        inner = json.dumps({
-            "agent_name": agent_name,
-            "self_introduction": self_introduction,
-            "dimensions": dimensions,
-        }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        envelope = build_envelope(
-            plaintext=inner,
-            owner_user_id=user_id,
-            user_pk_bytes=user_pk,
-            enclave_pk_bytes=enclave_pk,
-            visibility="shared",
-        )
-        print(f"[mcp] identity.init v1 envelope id={envelope['id']}")
-        return _post("/v1/identity/init", {"envelope": envelope}, ctx=ctx)
-
-    print("[mcp] identity.init v0 plaintext (no user/enclave pubkey available)")
-    return _post("/v1/identity/init", {
+    if not (user_id and user_pk is not None and enclave_pk is not None):
+        return {"error": "cannot init identity — pubkeys unavailable"}
+    inner = json.dumps({
         "agent_name": agent_name,
         "self_introduction": self_introduction,
         "dimensions": dimensions,
-    }, ctx=ctx)
+    }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    envelope = build_envelope(
+        plaintext=inner,
+        owner_user_id=user_id,
+        user_pk_bytes=user_pk,
+        enclave_pk_bytes=enclave_pk,
+        visibility="shared",
+    )
+    print(f"[mcp] identity.init v1 envelope id={envelope['id']}")
+    return _post("/v1/identity/init", {"envelope": envelope}, ctx=ctx)
 
 
 @mcp.tool(
@@ -450,11 +435,10 @@ def identity_get(ctx: Context = None) -> dict:
     ),
 )
 def identity_nudge(dimension_name: str, delta: int, reason: str = "", ctx: Context = None) -> dict:
-    """Phase C part 3: on v1 cards, MCP orchestrates the
-    decrypt → mutate → rewrap → replace dance. On v0 cards, falls
-    through to the legacy plaintext `/v1/identity/nudge` endpoint.
+    """MCP orchestrates the decrypt → mutate → rewrap → replace dance for
+    the (always-v1) identity card.
 
-    Flow for v1:
+    Flow:
       1. GET /v1/identity/get on the ENCLAVE (returns decrypted card).
       2. Find the matching dimension, clamp `value += delta` to [0, 100],
          record `last_nudge_reason`.
@@ -464,31 +448,6 @@ def identity_nudge(dimension_name: str, delta: int, reason: str = "", ctx: Conte
     Plaintext is confined to the MCP process inside the enclave-compose
     boundary. Server-side storage stays ciphertext throughout.
     """
-    # Try the v0 path first. If the card is v0 or not yet initialized,
-    # the legacy nudge endpoint handles it. The backend returns 409
-    # with error="nudge_not_supported_on_v1_cards_yet" on v1 cards —
-    # catch that specifically and fall through.
-    try:
-        return _post("/v1/identity/nudge", {
-            "dimension_name": dimension_name,
-            "delta": delta,
-            "reason": reason,
-        }, ctx=ctx)
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code != 409:
-            raise
-        # 409 ⇒ v1 card. Fall through to the rewrap path.
-        try:
-            body = e.response.json()
-            if body.get("error") != "nudge_not_supported_on_v1_cards_yet":
-                raise
-        except ValueError:
-            raise
-    return _identity_nudge_v1(dimension_name, delta, reason, ctx)
-
-
-def _identity_nudge_v1(dimension_name: str, delta: int, reason: str, ctx) -> dict:
-    """Separate helper so the caller can catch 409 from v0 and fall in."""
     user_id, user_pk, enclave_pk = _whoami_pubkeys(ctx=ctx)
     if not (user_id and user_pk is not None and enclave_pk is not None):
         return {"error": "cannot nudge v1 card — pubkeys unavailable"}
@@ -545,51 +504,32 @@ def memory_add_moment(
     source: str = "live_conversation",
     ctx: Context = None,
 ) -> dict:
-    """Wrap the memory moment into a v1 envelope before POSTing when the
-    backend returns the keys we need.
-
-    Plaintext fields stay plaintext on the wire only while the MCP
-    process is on the VPS (Phase A). Once MCP moves into the enclave
-    (Phase C), plaintext never leaves the TEE boundary. See
-    `docs/NEXT.md` for the migration plan.
-
-    Fallback: if the caller doesn't have a content pubkey uploaded
-    (pre-v1 registration) or the enclave is unreachable, the tool
-    reverts to the v0 plaintext POST so agents never lose write
-    capability mid-session.
+    """Wrap the memory moment into a v1 envelope before POSTing. MCP runs
+    inside the enclave-compose boundary so wrapping prerequisites are
+    always available; if they're not, fail loud.
     """
     user_id, user_pk, enclave_pk = _whoami_pubkeys(ctx=ctx)
-    if user_id and user_pk is not None and enclave_pk is not None:
-        inner = json.dumps({
-            "title": title,
-            "description": description,
-            "type": type,
-        }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        envelope = build_envelope(
-            plaintext=inner,
-            owner_user_id=user_id,
-            user_pk_bytes=user_pk,
-            enclave_pk_bytes=enclave_pk,
-            visibility="shared",
-        )
-        # occurred_at + source are plaintext metadata the server uses
-        # for sorting/indexing. They ride alongside the ciphertext inside
-        # the envelope dict per the schema in /v1/memory/add.
-        envelope["occurred_at"] = occurred_at
-        envelope["source"] = source
-        print(f"[mcp] memory.add v1 envelope id={envelope['id']} body_ct_len={len(envelope['body_ct'])}")
-        return _post("/v1/memory/add", {"envelope": envelope}, ctx=ctx)
-
-    # v0 plaintext fallback — keep the tool usable even when
-    # v1 prerequisites aren't in place (self-hosted, fresh register).
-    print("[mcp] memory.add v0 plaintext (no user/enclave pubkey available)")
-    return _post("/v1/memory/add", {
+    if not (user_id and user_pk is not None and enclave_pk is not None):
+        return {"error": "cannot add memory — pubkeys unavailable"}
+    inner = json.dumps({
         "title": title,
         "description": description,
-        "occurred_at": occurred_at,
         "type": type,
-        "source": source,
-    }, ctx=ctx)
+    }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    envelope = build_envelope(
+        plaintext=inner,
+        owner_user_id=user_id,
+        user_pk_bytes=user_pk,
+        enclave_pk_bytes=enclave_pk,
+        visibility="shared",
+    )
+    # occurred_at + source are plaintext metadata the server uses
+    # for sorting/indexing. They ride alongside the ciphertext inside
+    # the envelope dict per the schema in /v1/memory/add.
+    envelope["occurred_at"] = occurred_at
+    envelope["source"] = source
+    print(f"[mcp] memory.add v1 envelope id={envelope['id']} body_ct_len={len(envelope['body_ct'])}")
+    return _post("/v1/memory/add", {"envelope": envelope}, ctx=ctx)
 
 
 @mcp.tool(
@@ -737,7 +677,7 @@ if __name__ == "__main__":
     tls_on = cert_path is not None
     scheme = "https" if tls_on else "http"
     print(f"Feedling MCP server: transport={transport} port={port} scheme={scheme} "
-          f"flask={FLASK_BASE} single_user={SINGLE_USER}")
+          f"flask={FLASK_BASE}")
 
     if transport == "sse":
         # Build a Starlette app so we can attach the key-capture middleware,

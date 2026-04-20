@@ -557,13 +557,6 @@ struct PrivacyPageView: View {
                 }
                 .listRowInsets(EdgeInsets(top: Spacing.sm, leading: Spacing.md,
                                           bottom: Spacing.sm, trailing: Spacing.md))
-                // Phase B wave-2: inline migration progress when the
-                // silent v0→v1 rewrap is in flight. Hidden otherwise.
-                if let prog = api.migrationProgress {
-                    MigrationProgressRow(done: prog.done, total: prog.total)
-                        .listRowInsets(EdgeInsets(top: Spacing.xs, leading: Spacing.md,
-                                                  bottom: Spacing.sm, trailing: Spacing.md))
-                }
             }
             Section("Your data") {
                 Button {
@@ -1111,28 +1104,6 @@ struct ComposeHashChangeConsentView: View {
     }
 }
 
-
-// MARK: - Phase B wave-2: inline migration progress row
-
-struct MigrationProgressRow: View {
-    let done: Int
-    let total: Int
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: Spacing.sm) {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Upgrading your old data — \(done) of \(total)")
-                    .feedlingCaption()
-            }
-            ProgressView(value: Double(done), total: Double(total))
-                .progressViewStyle(.linear)
-                .tint(Color.feedlingSage)
-        }
-        .padding(.vertical, 2)
-    }
-}
 
 // MARK: - Phase B wave-2: memory visibility context menu
 

@@ -8,18 +8,23 @@ Usage:
     python test_api.py http://localhost:5001 --multi-tenant
     python test_api.py http://localhost:5001 --key <shared_api_key>
 
+NOTE — post-SINGLE_USER/v0 strip (2026-04-20):
+    The backend now rejects plaintext chat/identity/memory writes with 400.
+    The identity/memory tests in sections 6-7 below still POST plaintext and
+    will fail against a clean multi-tenant deploy. They stay here as a
+    regression anchor for when we rewrite this harness to build v1 envelopes
+    client-side. End-to-end crypto coverage lives in
+    tools/e2e_encryption_test.py.
+
 Tests cover:
     1. Read endpoints (screen/analyze, frames, tokens)
     2. Chat: send message, fetch history, OpenClaw response
     3. Long-poll: timeout case + immediate wake-up case
     4. Full round-trip: user sends → poll wakes → OpenClaw replies → visible in history
     5. Bootstrap endpoint
-    6. Identity card (init / get / nudge)
+    6. Identity card (init / get — nudge moved to MCP)
     7. Memory garden (add / list / get / delete)
     8. Multi-tenant: registration + per-user isolation + 401 enforcement
-
-    If --multi-tenant is passed, the suite registers a fresh user first and
-    runs steps 1-7 using its api_key, plus the dedicated multi-tenant tests.
 """
 
 import sys
@@ -358,17 +363,9 @@ if r.status_code == 200:
         check("identity has dimensions", "dimensions" in identity)
         check("identity has exactly 5 dimensions", len(identity.get("dimensions", [])) == 5)
 
-# nudge
-r = requests.post(
-    f"{BASE_URL}/v1/identity/nudge",
-    json={"dimension_name": "好奇", "delta": 1, "reason": "test nudge"},
-    timeout=5,
-)
-check("POST /v1/identity/nudge returns 200", r.status_code == 200)
-
-# nudge — missing required fields
-r = requests.post(f"{BASE_URL}/v1/identity/nudge", json={}, timeout=5)
-check("nudge with empty body returns 400", r.status_code == 400)
+# nudge: the HTTP endpoint was removed in the SINGLE_USER/v0 strip —
+# identity mutation now lives inside the enclave (MCP feedling.identity.nudge).
+# The MCP path is exercised by tools/e2e_encryption_test.py instead.
 
 # ---------------------------------------------------------------------------
 # 7. Memory garden

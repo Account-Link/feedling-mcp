@@ -574,8 +574,8 @@ def v1_chat_history():
     if not api_key:
         return jsonify({"error": "missing api_key"}), 401
 
-    # Resolve whose content we're decrypting. In multi-tenant this returns
-    # the user's usr_...; in single-user it's always "default".
+    # Resolve whose content we're decrypting — returns the caller's usr_...
+    # from the backend's per-user HMAC-peppered api_key lookup.
     try:
         whoami = _flask_get("/v1/users/whoami", api_key)
     except httpx.HTTPStatusError as e:
@@ -586,7 +586,7 @@ def v1_chat_history():
     if not authorized_user_id:
         return jsonify({"error": "cannot resolve user_id"}), 401
 
-    # Fetch the raw history (envelopes + legacy plaintext).
+    # Fetch the raw history (always v1 envelopes post-strip).
     since = request.args.get("since", "0")
     limit = request.args.get("limit", "200")
     try:
@@ -607,20 +607,7 @@ def v1_chat_history():
     errors = []
     for m in hist.get("messages", []):
         v = int(m.get("v", 0))
-        if v == 0:
-            # Legacy plaintext path — just pass through.
-            decrypted.append({
-                "id": m["id"],
-                "role": m["role"],
-                "ts": m["ts"],
-                "source": m.get("source"),
-                "content": m.get("content", ""),
-                "v": 0,
-                "decrypt_status": "plaintext",
-            })
-            continue
-
-        # v1+ envelope.
+        # v1+ envelope (v0 plaintext paths were stripped post-migration).
         if m.get("visibility") == "local_only":
             decrypted.append({
                 "id": m["id"],
@@ -713,14 +700,6 @@ def v1_memory_list():
             "source": m.get("source"),
             "v": v,
         }
-        if v == 0:
-            base.update({
-                "title": m.get("title"),
-                "description": m.get("description"),
-                "type": m.get("type"),
-                "decrypt_status": "plaintext",
-            })
-            decrypted.append(base); continue
         if m.get("visibility") == "local_only":
             base.update({
                 "title": None, "description": None, "type": None,
@@ -793,15 +772,6 @@ def v1_identity_get():
         "created_at": identity.get("created_at"),
         "updated_at": identity.get("updated_at"),
     }
-    if v == 0:
-        base.update({
-            "agent_name": identity.get("agent_name"),
-            "self_introduction": identity.get("self_introduction"),
-            "dimensions": identity.get("dimensions", []),
-            "decrypt_status": "plaintext",
-        })
-        return jsonify({"identity": base, "user_id": authorized_user_id})
-
     if identity.get("visibility") == "local_only":
         base.update({
             "visibility": "local_only",

@@ -32,12 +32,15 @@ Whoever picks this up next — start here.
   - *Encrypted on server*: chat (iOS writer), memory add, identity init,
     `feedling.identity.nudge` (MCP decrypt-mutate-rewrap inside CVM),
     `feedling.chat.post_message` (MCP wraps to v1 envelope). **All write
-    paths are now ciphertext at rest.**
-  - *Not yet re-wrapped*: any pre-Phase-A v0 data on disk — migration
-    code live (A.6), runs silently on the next iOS launch. Live endpoint:
-    `POST /v1/content/rewrap` on the CVM (idempotent, batched). Exactly
-    one prod user to verify against (task #23); once her migration
-    completes, v0 accept paths + the rewrap endpoint get stripped.
+    paths are now ciphertext at rest, and the backend rejects plaintext
+    writes with 400.**
+  - *SINGLE_USER + v0 strip*: shipped 2026-04-20 (task #23/#33). The
+    single-user mode, `/v1/identity/nudge` HTTP endpoint, v0 plaintext
+    branches in backend + MCP + enclave, `chat_bridge.py`, the silent
+    iOS migration subsystem, and `/v1/content/rewrap` are all gone. The
+    prod user data directory was wiped and she reinstalled fresh on
+    multi-tenant. The in-place envelope-swap path for visibility toggles
+    moved to `/v1/content/swap` (same validation shape, no v0 fallback).
 - *Phase C (part 1)*: shipped 2026-04-20. MCP port 5002 now
     terminates TLS inside the enclave with the same dstack-KMS-bound
     cert as the attestation port. `-5002s.` URL is pinnable; CLI
@@ -68,9 +71,10 @@ Whoever picks this up next — start here.
     closed.
 - *Phase B wave-2 shipped*: per-item visibility toggle on the
     memory garden (long-press context menu → "Hide from agent" /
-    "Share with agent"; eye.slash indicator when local_only) +
-    inline migration-progress row in Privacy hero (uses
-    `FeedlingAPI.migrationProgress` `@Published` state).
+    "Share with agent"; eye.slash indicator when local_only). The
+    inline migration-progress row was stripped alongside the v0
+    migration subsystem on 2026-04-20 — there's no legacy data left
+    to re-wrap.
 - *New doc `docs/MIGRATION.md`*: concrete three-option guide for
     the one real prod user to move from self-hosted VPS to
     Feedling Cloud's TEE-backed encryption. Linked from the
@@ -183,9 +187,11 @@ ssh -i $SSH_KEY ubuntu@54.209.126.4 "sudo -iu openclaw bash -c '
     cd ~/feedling-mcp-v1 && git pull --ff-only origin main &&
     ~/feedling-mcp-v1/backend/.venv/bin/pip install -qr backend/requirements.txt &&
     pkill -f \"feedling-mcp-v1/backend/app.py\" &&
-    pkill -f \"feedling-mcp-v1/backend/mcp_server.py\" &&
-    pkill -f \"feedling-mcp-v1/backend/chat_bridge.py\"'"
+    pkill -f \"feedling-mcp-v1/backend/mcp_server.py\"'"
 # systemd Restart=always brings them back.
+# (chat_bridge.py + feedling-chat-bridge.service were retired in the
+# 2026-04-20 SINGLE_USER/v0 strip — MCP feedling.chat.post_message
+# replaces them.)
 ```
 
 Note: repo path on the VPS is still `feedling-mcp-v1/` (was not renamed
@@ -199,7 +205,6 @@ backend/
   app.py                       # Flask API (HTTP + WS ingest)
   enclave_app.py               # TDX enclave service (/attestation + decrypt)
   mcp_server.py                # FastMCP SSE for Claude.ai
-  chat_bridge.py               # agent-side long-poll bridge
   semantic_analysis.py         # keyword-based screen classifier
 contracts/                     # Foundry project, FeedlingAppAuth.sol
   .env                         # deployer key + RPCs (gitignored)
@@ -239,7 +244,7 @@ tools/
 
 # 2. Services
 rm -rf /tmp/fl && mkdir -p /tmp/fl
-SINGLE_USER=false FEEDLING_DATA_DIR=/tmp/fl \
+FEEDLING_DATA_DIR=/tmp/fl \
   FEEDLING_ENCLAVE_URL=http://127.0.0.1:5003 \
   PORT=5001 python3 backend/app.py &
 
@@ -319,7 +324,8 @@ endpoint. See `docs/screenshots/audit_card_phase3_tls_pinned.png`.
   `feedling.userID` from the App Group UserDefaults. The main app
   writes it on every `publishContentKeysToAppGroup()`. If someone uses
   the broadcast extension before the main app has ever registered (no
-  userID yet), frames fall through to legacy plaintext. Fine for now.
+  userID yet), the extension now drops the frame (backend rejects
+  non-v1 ingest post-strip).
 - **iCloud Keychain on the broadcast extension**: extension reads its
   (non-secret) public keys from App Group; no secret keys live there.
   So iCloud Keychain sync applies only to the main app's

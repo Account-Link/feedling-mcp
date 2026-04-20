@@ -26,7 +26,7 @@ feedling-mcp-v1/
 ## Status (as of 2026-04-20)
 
 **Infrastructure**
-- [x] Flask backend on VPS (port 5001) — dual-mode: single-user or multi-tenant
+- [x] Flask backend on VPS (port 5001) — multi-tenant only (SINGLE_USER retired 2026-04-20)
 - [x] FastMCP server (`mcp_server.py`, port 5002) — 14 MCP tools, SSE with per-key sessions
 - [x] `deploy/` — Caddyfile + systemd service files + `setup.sh` that generates a fresh API key
 - [x] Multi-tenant: per-user directories, `POST /v1/users/register`, bcrypt-hashed API keys
@@ -99,14 +99,19 @@ Claude.ai / Claude Desktop       OpenClaw / Hermes
 |---------|------|------|---------|
 | Flask backend | `backend/app.py` | 5001 | iOS app API, data storage |
 | MCP server | `backend/mcp_server.py` | 5002 | MCP protocol for Claude.ai / agents |
-| Chat bridge | `backend/chat_bridge.py` | — | Hermes auto-reply (opt-in only) |
+
+(Before 2026-04-20 there was a third service, `backend/chat_bridge.py`,
+that polled Flask and relayed user messages to Hermes for auto-reply.
+It was retired when MCP's `feedling.chat.post_message` tool landed — the
+replacement path writes replies as v1 envelopes directly inside the
+enclave, so there's no plaintext stop-over.)
 
 ### Run (quick start)
 
 **Docker / docker-compose (recommended, dstack-ready):**
 
 ```bash
-cp deploy/feedling.env.example deploy/.env   # edit SINGLE_USER, FEEDLING_API_KEY, etc.
+cp deploy/feedling.env.example deploy/.env   # edit APNs, public base URL, etc.
 docker compose -f deploy/docker-compose.yaml --env-file deploy/.env up -d --build
 ```
 
@@ -136,7 +141,7 @@ and writes `~/feedling.env` automatically.
 | POST | `/v1/bootstrap` | First-connection trigger — returns instructions for Agent |
 | GET | `/v1/identity/get` | Read identity card |
 | POST | `/v1/identity/init` | Write identity card (once, 5 dimensions) |
-| POST | `/v1/identity/nudge` | Micro-adjust one dimension (delta + reason) |
+| ~~POST~~ | ~~`/v1/identity/nudge`~~ | Removed 2026-04-20 — use MCP `feedling.identity.nudge` |
 | GET | `/v1/memory/list` | List memory moments |
 | GET | `/v1/memory/get` | Get one moment by id |
 | POST | `/v1/memory/add` | Add a memory moment |
@@ -160,7 +165,7 @@ and writes `~/feedling.env` automatically.
 | `feedling.bootstrap` | POST /v1/bootstrap |
 | `feedling.identity.init` | POST /v1/identity/init |
 | `feedling.identity.get` | GET /v1/identity/get |
-| `feedling.identity.nudge` | POST /v1/identity/nudge |
+| `feedling.identity.nudge` | in-enclave decrypt-mutate-rewrap → POST /v1/identity/replace |
 | `feedling.memory.add_moment` | POST /v1/memory/add |
 | `feedling.memory.list` | GET /v1/memory/list |
 | `feedling.memory.get` | GET /v1/memory/get |
@@ -312,9 +317,7 @@ end-to-end SSH runbook an agent can follow to deploy the server itself.
 
 | Variable | Value |
 |----------|-------|
-| `SINGLE_USER` | `true` (self-hosted, flat layout) or `false` (hosted multi-tenant, per-user dirs) |
 | `FEEDLING_API_URL` | `http://localhost:5001` (VPS local) |
-| `FEEDLING_API_KEY` | shared key — required in SINGLE_USER mode; unused in multi-tenant (each user has their own) |
 | `FEEDLING_DATA_DIR` | `~/feedling-data/` |
 | `FEEDLING_MCP_TRANSPORT` | `sse` (default) or `streamable-http` |
 | Flask port | `5001` |
@@ -345,6 +348,6 @@ end-to-end SSH runbook an agent can follow to deploy the server itself.
     └── bootstrap_events.jsonl
 ```
 
-In `SINGLE_USER=true` mode the single "default" user uses the flat
-`~/feedling-data/` layout (no subdirectory) so existing data is preserved
-across a restart.
+All users live at `~/feedling-data/<user_id>/` — there is no shared-key
+flat-layout mode anymore. `users.json` + `.pepper` at the top level are
+the only files outside a user directory.

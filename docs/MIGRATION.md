@@ -1,7 +1,14 @@
 # Migration guide — from self-hosted VPS to Feedling Cloud
 
+> **Archived 2026-04-20.** The only self-hosted prod user this guide
+> existed for has already migrated and is now on the multi-tenant
+> cloud backend. `SINGLE_USER` mode itself was retired the same day
+> (see `docs/CHANGELOG.md` → "v0 / SINGLE_USER strip"), so the
+> starting premise of this doc ("you're on a SINGLE_USER VPS") can no
+> longer happen. Kept as a historical record of the options we offered.
+
 If you're reading this, you're on the self-hosted Feedling VPS
-(`SINGLE_USER=true`, no enclave) and the team just shipped end-to-end
+(formerly `SINGLE_USER=true`, no enclave) and the team just shipped end-to-end
 content encryption on the hosted cloud path. Your data on the VPS is
 safe — you own the server — but the new encryption story only kicks
 in once you're on the TEE-backed cloud backend.

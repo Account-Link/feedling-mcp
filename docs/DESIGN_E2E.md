@@ -669,7 +669,9 @@ dstack-KMS + new measurement seed). Process:
 3. iOS, upon accepting new MRTD, kicks off a per-user re-wrap: fetches items
    needing re-wrap (server returns items whose `enclave_pk_fpr` differs from
    the new enclave's), unseals `K_user` locally, re-seals `K` to new
-   `enclave_content_pk`, uploads re-wraps via `POST /v1/content/rewrap`.
+   `enclave_content_pk`, uploads re-wraps via `POST /v1/content/swap` (the
+   in-place envelope-swap endpoint; formerly `/v1/content/rewrap`, renamed
+   when the v0 migration path was retired on 2026-04-20).
 4. During re-wrap, reads of not-yet-rewrapped items by the new enclave return
    `{content: null, rewrap_pending: true}` — agent sees a placeholder
    gracefully; iOS UI sees them normally (has own key).
@@ -809,10 +811,14 @@ pinned (not `${…}`-overridable by whoever deploys the CVM):
 | Variable | Why it's dangerous if operator-mutable |
 |---|---|
 | `FEEDLING_FLASK_URL` | Redirecting to attacker-controlled Flask lets them feed the enclave another user's ciphertext for decryption to a session they authorize. Defeated by AEAD+user_id binding (§3.4) even so, but pinning is defense-in-depth. |
-| `SINGLE_USER` | Operator could disable auth by flipping this. |
 | `FEEDLING_MCP_TRANSPORT` | Changing transport could silently downgrade security properties. |
 | Any `_URL` variable | Could redirect outbound data to attacker infra. |
 | Any `_KEY` or `_SECRET` | Shared secrets baked into the measured compose, not injected at deploy time. |
+
+(Historical note: `SINGLE_USER` used to appear in this table. The strip on
+2026-04-20 removed the variable entirely — the backend is now
+multi-tenant only, and auth comes from per-user HMAC-peppered api_keys.
+There is no path left to disable auth by flipping an env var.)
 
 The only env vars allowed to stay operator-settable are things that
 genuinely don't affect trust (e.g. verbosity, cache sizes, non-security
@@ -1033,8 +1039,11 @@ can read their data, under what conditions, and what recourse they have.
 
 ### Phase 5 — Production cutover (~2–4 weeks rolling)
 
-- [ ] Migrate prod users in batches. Email + in-app prompt.
-- [ ] Retire v0 plaintext write endpoints over 30 days.
+- [x] Migrate prod users in batches. (2026-04-20: exactly one prod user,
+      wiped + fresh reinstall on multi-tenant — no batch needed.)
+- [x] Retire v0 plaintext write endpoints. (2026-04-20: stripped in one
+      cycle instead of the planned 30-day wind-down; all four v0 accept
+      branches and `/v1/content/rewrap` are gone.)
 - [ ] Update website / product copy / `README.md` / `skill/SKILL.md` to
       reflect the new guarantees.
 - [ ] Decommission old Flask-direct read paths for content (metadata/admin

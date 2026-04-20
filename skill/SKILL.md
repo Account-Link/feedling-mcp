@@ -226,23 +226,27 @@ GET {FEEDLING_API_URL}/v1/identity/get
 
 ---
 
-### POST /v1/identity/nudge
+### Identity nudge (MCP-only, retired from HTTP)
 
-Micro-adjust a dimension after something meaningful happens in conversation.
+Micro-adjust a dimension after something meaningful happens in
+conversation. The HTTP `/v1/identity/nudge` endpoint was retired on
+2026-04-20 — identity cards are encrypted at rest, so mutation only
+happens inside the TDX enclave.
+
+Use the MCP tool instead:
 
 ```
-POST {FEEDLING_API_URL}/v1/identity/nudge
-X-API-Key: {FEEDLING_API_KEY}
-Content-Type: application/json
-
-{
-  "dimension_name": "锐利",
-  "delta": +5,
-  "reason": "用户今天问了个很直接的问题，我没绕弯子就答了"
-}
+tool:  feedling.identity.nudge
+input: { "dimension_name": "锐利", "delta": 5, "reason": "…" }
 ```
 
-`delta` can be positive or negative. Use sparingly — only when something genuinely changed.
+The MCP server runs inside the TDX CVM: it fetches the current v1
+envelope, decrypts it with the enclave's content key, applies the
+mutation, re-seals to a fresh v1 envelope, and POSTs the result to
+`/v1/identity/replace`. Plaintext never touches Flask disk.
+
+`delta` can be positive or negative. Use sparingly — only when
+something genuinely changed.
 
 ---
 
@@ -501,18 +505,21 @@ scp AuthKey_<KEY_ID>.p8 <user>@<host>:~/feedling-data/
 ```
 Without it, push endpoints log only — chat + identity + memory still work.
 
-### 4. Write the env file (single-user mode)
+### 4. Write the env file (multi-tenant)
 ```bash
 ssh <user>@<host> <<EOF
 cat > ~/feedling-data/.env <<INNER
-SINGLE_USER=true
-FEEDLING_API_KEY=$API_KEY
 FEEDLING_DATA_DIR=/home/$(whoami)/feedling-data
 INNER
 chmod 600 ~/feedling-data/.env
 EOF
 ```
 **Verify:** `ssh <user>@<host> "ls -l ~/feedling-data/.env"` shows `-rw-------`.
+
+The backend is multi-tenant only (as of 2026-04-20 — the old
+`SINGLE_USER` shared-key mode was retired). The first API key is
+provisioned in step 6 by calling `POST /v1/users/register`, which also
+creates the `~/feedling-data/<user_id>/` directory for you.
 
 ### 5. Install and start systemd units
 ```bash
@@ -525,11 +532,24 @@ EOF
 ```
 **Verify:** `ssh <user>@<host> "sudo systemctl is-active feedling-backend feedling-mcp"` prints `active` twice.
 
-### 6. Smoke test locally on the VPS
+### 6. Register the first user + smoke test
 ```bash
-ssh <user>@<host> "curl -s -H 'X-API-Key: $API_KEY' http://127.0.0.1:5001/v1/screen/analyze"
+ssh <user>@<host> <<'EOF'
+# Register a user — returns the api_key you'll paste into iOS.
+REGBODY='{"public_key":"","handle":"owner"}'
+API_KEY=$(curl -sf -H 'content-type: application/json' \
+    -d "$REGBODY" http://127.0.0.1:5001/v1/users/register \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["api_key"])')
+echo "$API_KEY" > ~/feedling-data/.api_key
+chmod 600 ~/feedling-data/.api_key
+
+# Smoke test with the fresh key.
+curl -s -H "X-API-Key: $API_KEY" http://127.0.0.1:5001/v1/screen/analyze
+EOF
 ```
-**Verify:** response has `"active"` field. If you get `401`, the `.env` didn't load — check `systemctl cat feedling-backend` references `~/feedling-data/.env` via `EnvironmentFile=`.
+**Verify:** response has `"active"` field. If you get `401` after the
+smoke-test step, the key wasn't captured — inspect `~/feedling-data/.api_key`
+and retry with `curl -H "X-API-Key: $(cat ~/feedling-data/.api_key)" …`.
 
 ### 7. (Optional) HTTPS via Caddy
 Only do this if the user points DNS for `api.<their-domain>` and `mcp.<their-domain>` at the VPS first.
@@ -562,7 +582,7 @@ Ask the user to tap Settings → Live Activity → Start, then send a chat messa
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| iOS chat sends but never gets reply | No chat-bridge / Agent running on VPS | Start `feedling-chat-bridge` service, or run your own agent loop against `/v1/chat/poll` |
+| iOS chat sends but never gets reply | No agent is connected via MCP / polling `/v1/chat/poll` | Connect Claude.ai (or your agent of choice) to the MCP SSE endpoint at `https://<host>:5002/sse?key=<api_key>`. The old `feedling-chat-bridge` systemd service was retired on 2026-04-20; MCP's `feedling.chat.post_message` is the replacement. |
 | `tools/call` from MCP returns 401 | MCP server is passing the wrong key | Confirm `FEEDLING_API_KEY` matches on both services; restart `feedling-mcp` after changes |
 | Live Activity never updates | `.p8` key missing or `APNS_SANDBOX=False` on a TestFlight build | Place `AuthKey_<KEY_ID>.p8` in `~/feedling-data/`; flip `APNS_SANDBOX` in `app.py` for App Store builds |
 | Frames not arriving via WebSocket | Port 9998 blocked or WS auth failing | Open port 9998 in the VPS firewall; confirm iOS app's API key matches the server's `FEEDLING_API_KEY` (the broadcast extension forwards it as a Bearer token) |

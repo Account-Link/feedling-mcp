@@ -1,5 +1,13 @@
 # Phase B — Privacy UX + Onboarding (plan, pre-design-review)
 
+> **Historical doc, archived 2026-04-20.** Phase B shipped. Subsequent
+> references to `POST /v1/content/rewrap` in the sections below are
+> stale — the endpoint was retired on 2026-04-20 and replaced with
+> `POST /v1/content/swap` (same request shape, no v0→v1 status codes).
+> The rest of this file is kept as the design-of-record for the shipped
+> UX and is not updated in place.
+
+
 Goal: a first-run user opens Feedling and within ~45 seconds understands
 what lives on their phone, what Feedling can and cannot see, and how to
 exert control (export, delete, self-host). The privacy story stops being

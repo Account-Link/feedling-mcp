@@ -27,19 +27,8 @@ from flask import Flask, abort, g, jsonify, request, Response, send_file
 FEEDLING_DIR = Path(os.environ.get("FEEDLING_DATA_DIR", str(Path.home() / "feedling-data"))).expanduser()
 FEEDLING_DIR.mkdir(parents=True, exist_ok=True)
 
-# SINGLE_USER=true  → flat layout in FEEDLING_DIR, no auth. (Self-hosted / legacy VPS.)
-# SINGLE_USER=false → per-user directories under FEEDLING_DIR/{user_id}, bcrypt-style auth.
-SINGLE_USER = os.environ.get("SINGLE_USER", "true").lower() == "true"
-
-# Single-user mode still needs a user_id for consistent internal paths.
-DEFAULT_USER_ID = "default"
-
-# Optional single-user API key (for self-hosted who want to front the server).
-# If unset in SINGLE_USER mode, auth is skipped entirely (backward-compat).
-SINGLE_USER_API_KEY = os.environ.get("FEEDLING_API_KEY", "").strip()
-
 # ---------------------------------------------------------------------------
-# Users registry (multi-tenant only; harmless in single-user mode)
+# Users registry (multi-tenant). Every request is auth'd by api_key.
 # ---------------------------------------------------------------------------
 
 USERS_FILE = FEEDLING_DIR / "users.json"
@@ -162,11 +151,7 @@ class UserStore:
 
     def __init__(self, user_id: str):
         self.user_id = user_id
-        # Single-user "default" keeps the flat layout so existing VPS data is untouched.
-        if SINGLE_USER and user_id == DEFAULT_USER_ID:
-            self.dir = FEEDLING_DIR
-        else:
-            self.dir = FEEDLING_DIR / user_id
+        self.dir = FEEDLING_DIR / user_id
         self.dir.mkdir(parents=True, exist_ok=True)
 
         self.frames_dir = self.dir / "frames"
@@ -354,46 +339,32 @@ class UserStore:
         except Exception as e:
             print(f"[{self.user_id}/chat] save failed: {e}")
 
-    def append_chat(self, role: str, content: str, source: str = "chat", envelope: dict | None = None) -> dict:
-        """Append a chat message. If `envelope` is provided, the message is
-        stored in v1 ciphertext form (content = "" for server; envelope
-        holds the encrypted payload). If not, v0 plaintext form is used.
+    def append_chat(self, role: str, source: str, envelope: dict) -> dict:
+        """Append a v1 ciphertext chat message. `envelope` holds the AEAD
+        payload. See docs/DESIGN_E2E.md §3.2 for field definitions. Server
+        never decrypts — the envelope is stored verbatim.
 
-        See docs/DESIGN_E2E.md §3.2 for envelope field definitions. Server
-        never decrypts — envelope is stored verbatim.
-
-        For v1: the client may supply an `id` inside the envelope. That id
-        becomes the stored message id so the AEAD additional-data the
-        client baked in (owner||v||id) stays verifiable by the enclave on
-        read-back. If the envelope omits id, we assign a uuid and the
-        client is expected to have used the nonce for its AAD instead.
+        The client supplies the envelope's `id`, which becomes the stored
+        message id so the AEAD additional-data the client baked in
+        (owner||v||id) stays verifiable by the enclave on read-back.
         """
-        msg_id = None
-        if envelope is not None and isinstance(envelope.get("id"), str) and envelope["id"]:
-            msg_id = envelope["id"]
-        if not msg_id:
-            msg_id = uuid.uuid4().hex
+        msg_id = envelope.get("id") if isinstance(envelope.get("id"), str) and envelope["id"] else uuid.uuid4().hex
 
         msg: dict = {
             "id": msg_id,
             "role": role,
             "ts": time.time(),
             "source": source,
+            "v": envelope.get("v", 1),
+            "body_ct": envelope["body_ct"],
+            "nonce": envelope["nonce"],
+            "K_user": envelope["K_user"],
+            "enclave_pk_fpr": envelope.get("enclave_pk_fpr", ""),
+            "visibility": envelope.get("visibility", "shared"),
+            "owner_user_id": envelope.get("owner_user_id", self.user_id),
         }
-        if envelope is not None:
-            msg["v"] = envelope.get("v", 1)
-            msg["body_ct"] = envelope["body_ct"]
-            msg["nonce"] = envelope["nonce"]
-            msg["K_user"] = envelope["K_user"]
-            if envelope.get("K_enclave") is not None:
-                msg["K_enclave"] = envelope["K_enclave"]
-            msg["enclave_pk_fpr"] = envelope.get("enclave_pk_fpr", "")
-            msg["visibility"] = envelope.get("visibility", "shared")
-            msg["owner_user_id"] = envelope.get("owner_user_id", self.user_id)
-            msg["content"] = ""     # empty plaintext slot so legacy readers don't choke
-        else:
-            msg["v"] = 0
-            msg["content"] = content
+        if envelope.get("K_enclave") is not None:
+            msg["K_enclave"] = envelope["K_enclave"]
 
         with self.chat_lock:
             self.chat_messages.append(msg)
@@ -423,11 +394,6 @@ def get_store(user_id: str) -> UserStore:
         return store
 
 
-# Eagerly create the default store so SINGLE_USER mode starts with state loaded.
-if SINGLE_USER:
-    get_store(DEFAULT_USER_ID)
-
-
 # ---------------------------------------------------------------------------
 # Auth middleware
 # ---------------------------------------------------------------------------
@@ -448,15 +414,6 @@ def _extract_api_key() -> str | None:
 
 def require_user() -> UserStore:
     """Return the UserStore for the current request. Aborts 401 on bad auth."""
-    if SINGLE_USER:
-        # If a single-user key is configured, enforce it; otherwise skip auth.
-        if SINGLE_USER_API_KEY:
-            key = _extract_api_key()
-            if key != SINGLE_USER_API_KEY:
-                abort(401)
-        g.user_id = DEFAULT_USER_ID
-        return get_store(DEFAULT_USER_ID)
-
     key = _extract_api_key()
     if not key:
         abort(401)
@@ -479,64 +436,28 @@ def _frame_url(store: UserStore, filename: str) -> str:
             base = request.host_url.rstrip("/")
         except RuntimeError:
             base = ""
-    # Non-default users get a scoped frame URL so the served file resolves under their dir.
-    if SINGLE_USER and store.user_id == DEFAULT_USER_ID:
-        return f"{base}/v1/screen/frames/{filename}"
     return f"{base}/v1/screen/frames/{filename}?user={store.user_id}"
 
 
 def _save_frame(store: UserStore, payload: dict):
-    """Save a frame. Two wire formats:
+    """Save a v1 frame envelope. See docs/DESIGN_E2E.md §3.2.
 
-      v0 (legacy plaintext):
-        {"type":"frame","image":<b64 jpeg>,"ocr_text":...,"app":...,"ts":...}
+    Wire format:
+      {"type":"frame","ts":..., "envelope":{
+          "v":1,"id":...,"body_ct":...,"nonce":...,
+          "K_user":...,"K_enclave":...,
+          "visibility":"shared","owner_user_id":...}}
 
-      v1 (end-to-end envelope — see docs/DESIGN_E2E.md §3.2):
-        {"type":"frame","ts":..., "envelope":{
-            "v":1,"id":...,"body_ct":...,"nonce":...,
-            "K_user":...,"K_enclave":...,
-            "visibility":"shared","owner_user_id":...}}
-
-    For v1 the JPEG + OCR are inside `body_ct` (ChaCha20-Poly1305 AEAD
-    bound to owner|v|id). Server never decrypts — it writes the envelope
-    to <frames_dir>/<id>.env.json and appends the item to frames_meta
-    with `encrypted=True` so the UI+enclave path can distinguish.
+    The JPEG + OCR are inside `body_ct` (ChaCha20-Poly1305 AEAD bound to
+    owner|v|id). Server never decrypts — it writes the envelope to
+    <frames_dir>/<id>.env.json and appends the item to frames_meta with
+    `encrypted=True` so the UI + enclave path can find it.
     """
     env = payload.get("envelope")
-    if isinstance(env, dict) and env.get("v") and env.get("body_ct"):
-        _save_frame_envelope(store, payload, env)
+    if not (isinstance(env, dict) and env.get("v") and env.get("body_ct")):
+        print(f"[ingest:{store.user_id}] rejecting frame without v1 envelope")
         return
-    ts = payload.get("ts", time.time())
-    img_b64 = payload.get("image", "")
-    if not img_b64:
-        return
-    try:
-        img_bytes = base64.b64decode(img_b64)
-    except Exception:
-        return
-
-    filename = f"frame_{int(ts * 1000)}.jpg"
-    fpath = store.frames_dir / filename
-    fpath.write_bytes(img_bytes)
-
-    meta = {
-        "filename": filename,
-        "ts": ts,
-        "app": payload.get("app") or payload.get("bundle"),
-        "ocr_text": payload.get("ocr_text", ""),
-        "w": payload.get("w", 0),
-        "h": payload.get("h", 0),
-    }
-
-    with store.frames_lock:
-        store.frames_meta.append(meta)
-        if len(store.frames_meta) > MAX_FRAMES:
-            removed = store.frames_meta.pop(0)
-            old = store.frames_dir / removed["filename"]
-            if old.exists():
-                old.unlink()
-
-    print(f"[ingest:{store.user_id}] saved {filename} app={meta['app']} ocr={len(meta['ocr_text'])}chars")
+    _save_frame_envelope(store, payload, env)
 
 
 def _save_frame_envelope(store: UserStore, payload: dict, env: dict):
@@ -671,12 +592,8 @@ WS_PORT = int(os.environ.get("FEEDLING_WS_PORT", 9998))
 def _resolve_ws_user(websocket) -> str | None:
     """Resolve user from WS connection. Returns user_id, or None on auth failure.
 
-    Single-user: always returns DEFAULT_USER_ID.
-    Multi-user: reads ?key=... from the path, or "Bearer ..." from the
-    Authorization header (whichever arrives first)."""
-    if SINGLE_USER:
-        return DEFAULT_USER_ID
-
+    Reads ?key=... from the path, or "Bearer ..." from the Authorization
+    header (whichever arrives first)."""
     # websockets lib v12+ uses websocket.request.path and .headers
     path = getattr(websocket, "path", "") or ""
     key = None
@@ -1022,12 +939,6 @@ def _log_bootstrap_event(store: UserStore, event_type: str, success: bool, error
 
 @app.route("/v1/users/register", methods=["POST"])
 def users_register():
-    if SINGLE_USER:
-        return jsonify({
-            "error": "registration_disabled",
-            "reason": "server runs in SINGLE_USER mode — use the pre-configured FEEDLING_API_KEY",
-        }), 403
-
     payload = request.get_json(silent=True) or {}
     public_key = (payload.get("public_key") or "").strip()
     result = _register_user(public_key=public_key or None)
@@ -1039,17 +950,16 @@ def users_whoami():
     """Identify the caller and return the public material needed to wrap
     content for them.
 
-    Adds two fields beyond the legacy shape so v1-envelope writers
-    (MCP tools, iOS, etc.) can seal new items without a second round
-    trip:
+    Returns two fields so v1-envelope writers (MCP tools, iOS, etc.) can
+    seal new items without a second round trip:
       - `public_key` — the caller's own X25519 content pubkey (base64),
-        from the user record. May be empty for pre-v1 users.
+        from the user record.
       - `enclave_content_public_key_hex` — the live enclave's content
         pubkey, fetched from /attestation and cached for 60s. Missing
-        when no enclave is reachable (e.g. single-user bare-VPS).
+        when no enclave is reachable.
     """
     store = require_user()
-    resp: dict = {"user_id": store.user_id, "single_user": SINGLE_USER}
+    resp: dict = {"user_id": store.user_id}
     pk = _get_user_public_key(store.user_id)
     if pk:
         resp["public_key"] = pk
@@ -1082,7 +992,8 @@ _enclave_info_lock = threading.Lock()
 def _get_enclave_info() -> dict | None:
     """Fetch the enclave's (content_pk_hex, compose_hash) with a short
     cache. Returns None if no enclave is configured or reachable — the
-    caller should fall back to plaintext writes in that case."""
+    caller should surface the failure rather than proceed without the
+    enclave's pubkey (v1 writes require it for shared visibility)."""
     url = os.environ.get("FEEDLING_ENCLAVE_URL", "").strip()
     if not url:
         return None
@@ -1244,8 +1155,6 @@ def push_live_activity_inner(store: UserStore, payload: dict):
         _mark_active_token_success(store, entry)
         store.record_successful_push()
         store.record_live_activity_sent(message=body, top_app=top_app)
-        if body:
-            store.append_chat("openclaw", body, source="live_activity")
     else:
         reason_text = str(result.get("reason", ""))
         error_code = result.get("code")
@@ -1580,96 +1489,63 @@ def chat_history():
 
 @app.route("/v1/chat/message", methods=["POST"])
 def chat_message():
-    """User sends a chat message.
+    """User sends a chat message as a v1 ciphertext envelope.
 
-    Accepts either of two body shapes:
-      - v0 plaintext (legacy):  {"content": "hello"}
-      - v1 ciphertext envelope (E2E, see docs/DESIGN_E2E.md §3.2):
-          {"envelope": {"v":1, "body_ct":..., "nonce":..., "K_user":...,
-                        "K_enclave":..., "enclave_pk_fpr":..., "visibility":"shared",
-                        "owner_user_id":"usr_..."}}
-    The server never decrypts the envelope — it is stored verbatim and
-    later surfaced by the enclave's /v1/* (enclave) handlers.
+    See docs/DESIGN_E2E.md §3.2 for envelope field definitions. The
+    server never decrypts the envelope — it is stored verbatim and
+    later surfaced by the enclave's /v1/* handlers.
     """
     store = require_user()
     payload = request.get_json(silent=True) or {}
     envelope = payload.get("envelope")
-    content = (payload.get("content") or "").strip()
-
-    if envelope is not None:
-        # Ciphertext path — validate the minimum fields so we fail loud.
-        required = ["body_ct", "nonce", "K_user", "visibility", "owner_user_id"]
-        missing = [f for f in required if not envelope.get(f)]
-        if missing:
-            return jsonify({"error": f"envelope missing fields: {missing}"}), 400
-        if envelope["visibility"] not in ("shared", "local_only"):
-            return jsonify({"error": "envelope.visibility must be 'shared' or 'local_only'"}), 400
-        # local_only omits K_enclave; shared must have it.
-        if envelope["visibility"] == "shared" and not envelope.get("K_enclave"):
-            return jsonify({"error": "envelope with visibility=shared requires K_enclave"}), 400
-        msg = store.append_chat("user", "", source="chat", envelope=envelope)
-        store.notify_chat_waiters()
-        print(f"[chat:{store.user_id}] user(v1, ciphertext, visibility={envelope['visibility']}) id={msg['id']}")
-        return jsonify({"id": msg["id"], "ts": msg["ts"], "v": msg["v"]})
-
-    if not content:
-        return jsonify({"error": "content or envelope required"}), 400
-    msg = store.append_chat("user", content, source="chat")
+    if envelope is None:
+        return jsonify({"error": "envelope required"}), 400
+    required = ["body_ct", "nonce", "K_user", "visibility", "owner_user_id"]
+    missing = [f for f in required if not envelope.get(f)]
+    if missing:
+        return jsonify({"error": f"envelope missing fields: {missing}"}), 400
+    if envelope["visibility"] not in ("shared", "local_only"):
+        return jsonify({"error": "envelope.visibility must be 'shared' or 'local_only'"}), 400
+    if envelope["visibility"] == "shared" and not envelope.get("K_enclave"):
+        return jsonify({"error": "envelope with visibility=shared requires K_enclave"}), 400
+    msg = store.append_chat("user", "chat", envelope)
     store.notify_chat_waiters()
-    print(f"[chat:{store.user_id}] user: {content[:80]}")
-    return jsonify({"id": msg["id"], "ts": msg["ts"], "v": 0})
+    print(f"[chat:{store.user_id}] user(v1, visibility={envelope['visibility']}) id={msg['id']}")
+    return jsonify({"id": msg["id"], "ts": msg["ts"], "v": msg["v"]})
 
 
 @app.route("/v1/chat/response", methods=["POST"])
 def chat_response():
-    """Agent posts a reply. Phase C part 3: accepts v1 envelopes in
-    addition to legacy plaintext so agent-authored chat can be stored
-    as ciphertext just like user-authored chat. Shape matches
-    /v1/chat/message's envelope branch.
+    """Agent posts a reply as a v1 ciphertext envelope. Shape matches
+    /v1/chat/message. The optional `push_live_activity` / `push_body` /
+    `title` / `subtitle` / `data` fields trigger an APNs Live Activity
+    update; `push_body` is plaintext metadata (user-visible on lockscreen)
+    and is never stored in chat.
     """
     store = require_user()
     payload = request.get_json(silent=True) or {}
     envelope = payload.get("envelope")
-    content = (payload.get("content") or "").strip()
-
-    if envelope is not None:
-        required = ["body_ct", "nonce", "K_user", "visibility", "owner_user_id"]
-        missing = [f for f in required if not envelope.get(f)]
-        if missing:
-            return jsonify({"error": f"envelope missing fields: {missing}"}), 400
-        if envelope["visibility"] not in ("shared", "local_only"):
-            return jsonify({"error": "envelope.visibility must be 'shared' or 'local_only'"}), 400
-        if envelope["visibility"] == "shared" and not envelope.get("K_enclave"):
-            return jsonify({"error": "envelope with visibility=shared requires K_enclave"}), 400
-        msg = store.append_chat("openclaw", "", source="chat", envelope=envelope)
-        # Trigger optional push sidecar if the agent set those fields.
-        if payload.get("push_live_activity"):
-            push_payload = {
-                "title": payload.get("title", ""),
-                "body": payload.get("push_body", ""),  # push body stays plaintext metadata
-                "subtitle": payload.get("subtitle"),
-                "data": payload.get("data", {}),
-            }
-            push_live_activity_inner(store, push_payload)
-        print(f"[chat:{store.user_id}] openclaw(v1, ciphertext) id={msg['id']}")
-        return jsonify({"id": msg["id"], "ts": msg["ts"], "v": msg["v"]})
-
-    if not content:
-        return jsonify({"error": "content or envelope required"}), 400
-
-    msg = store.append_chat("openclaw", content, source="chat")
-    print(f"[chat:{store.user_id}] openclaw: {content[:80]}")
-
+    if envelope is None:
+        return jsonify({"error": "envelope required"}), 400
+    required = ["body_ct", "nonce", "K_user", "visibility", "owner_user_id"]
+    missing = [f for f in required if not envelope.get(f)]
+    if missing:
+        return jsonify({"error": f"envelope missing fields: {missing}"}), 400
+    if envelope["visibility"] not in ("shared", "local_only"):
+        return jsonify({"error": "envelope.visibility must be 'shared' or 'local_only'"}), 400
+    if envelope["visibility"] == "shared" and not envelope.get("K_enclave"):
+        return jsonify({"error": "envelope with visibility=shared requires K_enclave"}), 400
+    msg = store.append_chat("openclaw", "chat", envelope)
     if payload.get("push_live_activity"):
         push_payload = {
             "title": payload.get("title", ""),
-            "body": content,
+            "body": payload.get("push_body", ""),
             "subtitle": payload.get("subtitle"),
             "data": payload.get("data", {}),
         }
         push_live_activity_inner(store, push_payload)
-
-    return jsonify({"id": msg["id"], "ts": msg["ts"]})
+    print(f"[chat:{store.user_id}] openclaw(v1) id={msg['id']}")
+    return jsonify({"id": msg["id"], "ts": msg["ts"], "v": msg["v"]})
 
 
 @app.route("/v1/chat/poll", methods=["GET"])
@@ -1735,10 +1611,9 @@ def identity_get():
 
 @app.route("/v1/identity/init", methods=["POST"])
 def identity_init():
-    """Initialize the identity card. Accepts either v0 plaintext
-    {agent_name, self_introduction, dimensions} or v1 envelope (body_ct
-    wrapping all three fields serialized as JSON). v1 metadata that stays
-    plaintext: created_at, updated_at. See docs/DESIGN_E2E.md §3.2.
+    """Initialize the identity card as a v1 envelope. body_ct wraps
+    {agent_name, self_introduction, dimensions} serialized as JSON.
+    Plaintext metadata: id, created_at, updated_at. See DESIGN_E2E.md §3.2.
     """
     store = require_user()
     existing = _load_identity(store)
@@ -1747,72 +1622,36 @@ def identity_init():
 
     payload = request.get_json(silent=True) or {}
     envelope = payload.get("envelope")
+    if envelope is None:
+        return jsonify({"error": "envelope required"}), 400
+    required = ["body_ct", "nonce", "K_user", "visibility", "owner_user_id"]
+    missing = [f for f in required if not envelope.get(f)]
+    if missing:
+        return jsonify({"error": f"envelope missing fields: {missing}"}), 400
+    if envelope["visibility"] not in ("shared", "local_only"):
+        return jsonify({"error": "envelope.visibility must be 'shared' or 'local_only'"}), 400
+    if envelope["visibility"] == "shared" and not envelope.get("K_enclave"):
+        return jsonify({"error": "envelope with visibility=shared requires K_enclave"}), 400
+
     now = datetime.now().isoformat()
-
-    if envelope is not None:
-        required = ["body_ct", "nonce", "K_user", "visibility", "owner_user_id"]
-        missing = [f for f in required if not envelope.get(f)]
-        if missing:
-            return jsonify({"error": f"envelope missing fields: {missing}"}), 400
-        if envelope["visibility"] not in ("shared", "local_only"):
-            return jsonify({"error": "envelope.visibility must be 'shared' or 'local_only'"}), 400
-        if envelope["visibility"] == "shared" and not envelope.get("K_enclave"):
-            return jsonify({"error": "envelope with visibility=shared requires K_enclave"}), 400
-
-        identity = {
-            "v": 1,
-            "id": envelope.get("id") or uuid.uuid4().hex,
-            "body_ct": envelope["body_ct"],
-            "nonce": envelope["nonce"],
-            "K_user": envelope["K_user"],
-            "enclave_pk_fpr": envelope.get("enclave_pk_fpr", ""),
-            "visibility": envelope["visibility"],
-            "owner_user_id": envelope["owner_user_id"],
-            "created_at": now,
-            "updated_at": now,
-        }
-        if envelope.get("K_enclave"):
-            identity["K_enclave"] = envelope["K_enclave"]
-        _save_identity(store, identity)
-        _log_bootstrap_event(store, "identity_written_v1", success=True)
-        print(f"[identity:{store.user_id}] initialized v1 (ciphertext) visibility={envelope['visibility']}")
-        return jsonify({"status": "created", "identity": identity, "v": 1}), 201
-
-    agent_name = (payload.get("agent_name") or "").strip()
-    self_introduction = (payload.get("self_introduction") or "").strip()
-    dimensions = payload.get("dimensions", [])
-
-    if not agent_name:
-        return jsonify({"error": "agent_name required"}), 400
-    if not self_introduction:
-        return jsonify({"error": "self_introduction required"}), 400
-    if len(dimensions) != 5:
-        return jsonify({"error": "exactly 5 dimensions required"}), 400
-    for d in dimensions:
-        if not isinstance(d, dict) or not d.get("name") or "value" not in d:
-            return jsonify({"error": "each dimension needs name and value"}), 400
-        if not (0 <= int(d["value"]) <= 100):
-            return jsonify({"error": f"dimension value must be 0-100, got {d['value']}"}), 400
-
     identity = {
-        "v": 0,
-        "agent_name": agent_name,
-        "self_introduction": self_introduction,
-        "dimensions": [
-            {
-                "name": str(d["name"]),
-                "value": int(d["value"]),
-                "description": str(d.get("description", "")),
-            }
-            for d in dimensions
-        ],
+        "v": 1,
+        "id": envelope.get("id") or uuid.uuid4().hex,
+        "body_ct": envelope["body_ct"],
+        "nonce": envelope["nonce"],
+        "K_user": envelope["K_user"],
+        "enclave_pk_fpr": envelope.get("enclave_pk_fpr", ""),
+        "visibility": envelope["visibility"],
+        "owner_user_id": envelope["owner_user_id"],
         "created_at": now,
         "updated_at": now,
     }
+    if envelope.get("K_enclave"):
+        identity["K_enclave"] = envelope["K_enclave"]
     _save_identity(store, identity)
-    _log_bootstrap_event(store, "identity_written", success=True)
-    print(f"[identity:{store.user_id}] initialized: agent_name={agent_name}")
-    return jsonify({"status": "created", "identity": identity, "v": 0}), 201
+    _log_bootstrap_event(store, "identity_written_v1", success=True)
+    print(f"[identity:{store.user_id}] initialized v1 visibility={envelope['visibility']}")
+    return jsonify({"status": "created", "identity": identity, "v": 1}), 201
 
 
 @app.route("/v1/identity/replace", methods=["POST"])
@@ -1863,55 +1702,9 @@ def identity_replace():
     return jsonify({"status": "replaced", "identity": identity, "v": 1})
 
 
-@app.route("/v1/identity/nudge", methods=["POST"])
-def identity_nudge():
-    store = require_user()
-    identity = _load_identity(store)
-    if identity is None:
-        return jsonify({"error": "not_initialized"}), 404
-
-    # v1 cards store dimensions inside body_ct; server cannot mutate in
-    # place without decrypting first. The decrypt-mutate-rewrap dance is
-    # Phase C scope (once MCP lives inside the enclave). Surface a clear
-    # error so agents don't see a mystery "dimension not found."
-    if int(identity.get("v", 0)) >= 1:
-        return jsonify({
-            "error": "nudge_not_supported_on_v1_cards_yet",
-            "detail": "The identity card is stored as ciphertext; server-side"
-                      " mutation requires the decrypt-mutate-rewrap flow that"
-                      " ships with Phase C (MCP in TEE). Until then, agents"
-                      " should call identity.init with the full updated card"
-                      " to replace it atomically.",
-            "phase_reference": "docs/NEXT.md §Phase C",
-        }), 409
-
-    payload = request.get_json(silent=True) or {}
-    dimension_name = (payload.get("dimension_name") or "").strip()
-    delta = payload.get("delta")
-    reason = (payload.get("reason") or "").strip()
-
-    if not dimension_name:
-        return jsonify({"error": "dimension_name required"}), 400
-    if delta is None:
-        return jsonify({"error": "delta required"}), 400
-
-    dims = identity.get("dimensions", [])
-    matched = None
-    for d in dims:
-        if d["name"] == dimension_name:
-            matched = d
-            break
-    if matched is None:
-        return jsonify({"error": f"dimension '{dimension_name}' not found"}), 404
-
-    new_value = max(0, min(100, int(matched["value"]) + int(delta)))
-    matched["value"] = new_value
-    if reason:
-        matched["last_nudge_reason"] = reason
-    identity["updated_at"] = datetime.now().isoformat()
-    _save_identity(store, identity)
-    print(f"[identity:{store.user_id}] nudge: {dimension_name} {delta:+d} → {new_value} reason={reason[:60]}")
-    return jsonify({"status": "updated", "dimension": matched})
+# Note: /v1/identity/nudge no longer exists on the backend. Identity cards
+# are v1 ciphertext; mutation happens inside the enclave via MCP's
+# decrypt-mutate-rewrap flow (see backend/mcp_server.py `_identity_nudge_v1`).
 
 
 # ---------------------------------------------------------------------------
@@ -1964,12 +1757,10 @@ def memory_get():
 
 @app.route("/v1/memory/add", methods=["POST"])
 def memory_add():
-    """Add a memory moment.
+    """Add a memory moment as a v1 envelope.
 
-    Accepts either v0 plaintext {title, description, type, occurred_at, source}
-    or v1 envelope where body_ct wraps {title, description, type} as JSON.
-    Plaintext metadata in v1: id, occurred_at, created_at, source
-    (these are kept unencrypted so the server can sort + index).
+    body_ct wraps {title, description, type} as JSON; id/occurred_at/
+    created_at/source stay plaintext so the server can sort + index.
     See docs/DESIGN_E2E.md §3.2.
     """
     store = require_user()
@@ -1977,68 +1768,44 @@ def memory_add():
     envelope = payload.get("envelope")
     now = datetime.now().isoformat()
 
-    if envelope is not None:
-        required = ["body_ct", "nonce", "K_user", "visibility", "owner_user_id"]
-        missing = [f for f in required if not envelope.get(f)]
-        if missing:
-            return jsonify({"error": f"envelope missing fields: {missing}"}), 400
-        if envelope["visibility"] not in ("shared", "local_only"):
-            return jsonify({"error": "envelope.visibility must be 'shared' or 'local_only'"}), 400
-        if envelope["visibility"] == "shared" and not envelope.get("K_enclave"):
-            return jsonify({"error": "envelope with visibility=shared requires K_enclave"}), 400
-        occurred_at = (envelope.get("occurred_at") or "").strip()
-        if not occurred_at:
-            return jsonify({"error": "occurred_at required (plaintext metadata for ordering)"}), 400
+    if envelope is None:
+        return jsonify({"error": "envelope required (v1 encryption is mandatory)"}), 400
 
-        moment = {
-            "v": 1,
-            "id": envelope.get("id") or f"mom_{uuid.uuid4().hex[:12]}",
-            "occurred_at": occurred_at,
-            "created_at": now,
-            "source": (envelope.get("source") or "live_conversation").strip(),
-            "body_ct": envelope["body_ct"],
-            "nonce": envelope["nonce"],
-            "K_user": envelope["K_user"],
-            "enclave_pk_fpr": envelope.get("enclave_pk_fpr", ""),
-            "visibility": envelope["visibility"],
-            "owner_user_id": envelope["owner_user_id"],
-        }
-        if envelope.get("K_enclave"):
-            moment["K_enclave"] = envelope["K_enclave"]
-        moments = _load_moments(store)
-        moments.append(moment)
-        _save_moments(store, moments)
-        _log_bootstrap_event(store, "memory_moment_added_v1", success=True)
-        print(f"[memory:{store.user_id}] added v1 id={moment['id']} visibility={envelope['visibility']}")
-        return jsonify({"status": "created", "moment": moment, "v": 1}), 201
-
-    title = (payload.get("title") or "").strip()
-    description = (payload.get("description") or "").strip()
-    occurred_at = (payload.get("occurred_at") or "").strip()
-    moment_type = (payload.get("type") or "").strip()
-    source = (payload.get("source") or "live_conversation").strip()
-
-    if not title:
-        return jsonify({"error": "title required"}), 400
+    required = ["body_ct", "nonce", "K_user", "visibility", "owner_user_id"]
+    missing = [f for f in required if not envelope.get(f)]
+    if missing:
+        return jsonify({"error": f"envelope missing fields: {missing}"}), 400
+    if envelope["visibility"] not in ("shared", "local_only"):
+        return jsonify({"error": "envelope.visibility must be 'shared' or 'local_only'"}), 400
+    if envelope["visibility"] == "shared" and not envelope.get("K_enclave"):
+        return jsonify({"error": "envelope with visibility=shared requires K_enclave"}), 400
+    occurred_at = (envelope.get("occurred_at") or "").strip()
     if not occurred_at:
-        return jsonify({"error": "occurred_at required"}), 400
+        return jsonify({"error": "occurred_at required (plaintext metadata for ordering)"}), 400
+    if envelope["owner_user_id"] != store.user_id:
+        return jsonify({"error": "envelope.owner_user_id does not match caller"}), 403
 
     moment = {
-        "v": 0,
-        "id": f"mom_{uuid.uuid4().hex[:12]}",
-        "type": moment_type,
-        "title": title,
-        "description": description,
+        "v": 1,
+        "id": envelope.get("id") or f"mom_{uuid.uuid4().hex[:12]}",
         "occurred_at": occurred_at,
         "created_at": now,
-        "source": source,
+        "source": (envelope.get("source") or "live_conversation").strip(),
+        "body_ct": envelope["body_ct"],
+        "nonce": envelope["nonce"],
+        "K_user": envelope["K_user"],
+        "enclave_pk_fpr": envelope.get("enclave_pk_fpr", ""),
+        "visibility": envelope["visibility"],
+        "owner_user_id": envelope["owner_user_id"],
     }
+    if envelope.get("K_enclave"):
+        moment["K_enclave"] = envelope["K_enclave"]
     moments = _load_moments(store)
     moments.append(moment)
     _save_moments(store, moments)
-    _log_bootstrap_event(store, "memory_moment_added", success=True)
-    print(f"[memory:{store.user_id}] added: {title[:60]} occurred_at={occurred_at}")
-    return jsonify({"status": "created", "moment": moment, "v": 0}), 201
+    _log_bootstrap_event(store, "memory_moment_added_v1", success=True)
+    print(f"[memory:{store.user_id}] added v1 id={moment['id']} visibility={envelope['visibility']}")
+    return jsonify({"status": "created", "moment": moment, "v": 1}), 201
 
 
 @app.route("/v1/memory/delete", methods=["DELETE"])
@@ -2114,43 +1881,92 @@ def bootstrap():
 
 
 # ---------------------------------------------------------------------------
-# Error handlers
+# Envelope swap: replace an existing chat/memory item's ciphertext in place.
+#
+# Used by the per-item visibility toggle in iOS Settings. The client
+# re-wraps its own plaintext with a new envelope (either including
+# K_enclave for `shared` or omitting it for `local_only`) and POSTs
+# {items: [{type, id, envelope}]}. Server swaps in place, preserving
+# plaintext metadata (id/role/ts/source/occurred_at/created_at).
+#
+# NOT a migration endpoint — all stored items are already v1 — so
+# there is no "already_v1" short-circuit. A v0 item (ancient data
+# from before the strip) will fail with "not_found" if its v is < 1.
 # ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# Content migration: v0 → v1 envelope rewrap.
-#
-# Used by iOS's first-launch-post-update migration to upgrade pre-existing
-# plaintext rows (chat messages + memory moments) into v1 envelopes without
-# the user ever noticing. Idempotent — already-v1 items are a no-op.
-#
-# Identity is *not* supported in this pass: identity.nudge can't currently
-# mutate a v1 card (decrypt-mutate-rewrap requires Phase C), and migrating a
-# card without a working nudge would trap the user. Phase C will add both at
-# once. See docs/NEXT.md.
-#
-# The endpoint is client-driven: iOS holds both user_sk (to decrypt any pre-
-# existing v1 blobs, which it doesn't need here) and the fresh v1 envelope
-# for each item. Server just swaps ciphertext fields in place, preserving
-# plaintext metadata (ts, role, source, occurred_at, created_at).
-# ---------------------------------------------------------------------------
+def _swap_envelope_missing(env) -> list:
+    if not isinstance(env, dict):
+        return ["envelope"]
+    return [f for f in ("body_ct", "nonce", "K_user", "visibility", "owner_user_id") if not env.get(f)]
 
 
-@app.route("/v1/content/rewrap", methods=["POST"])
-def content_rewrap():
+def _swap_summary(results: list) -> dict:
+    summary = {"ok": 0, "not_found": 0, "error": 0, "total": len(results)}
+    for r in results:
+        status = r.get("status", "")
+        if status == "ok":
+            summary["ok"] += 1
+        elif status == "not_found":
+            summary["not_found"] += 1
+        else:
+            summary["error"] += 1
+    return summary
+
+
+def _swap_chat(store: "UserStore", msg_id: str, env: dict) -> str:
+    with store.chat_lock:
+        for msg in store.chat_messages:
+            if msg.get("id") != msg_id:
+                continue
+            msg["v"] = int(env.get("v", 1))
+            msg["body_ct"] = env["body_ct"]
+            msg["nonce"] = env["nonce"]
+            msg["K_user"] = env["K_user"]
+            if env.get("K_enclave"):
+                msg["K_enclave"] = env["K_enclave"]
+            else:
+                msg.pop("K_enclave", None)
+            msg["enclave_pk_fpr"] = env.get("enclave_pk_fpr", "")
+            msg["visibility"] = env["visibility"]
+            msg["owner_user_id"] = env["owner_user_id"]
+            return "ok"
+    return "not_found"
+
+
+def _swap_memory_inplace(moments: list, mom_id: str, env: dict) -> str:
+    for m in moments:
+        if m.get("id") != mom_id:
+            continue
+        m["v"] = int(env.get("v", 1))
+        m["body_ct"] = env["body_ct"]
+        m["nonce"] = env["nonce"]
+        m["K_user"] = env["K_user"]
+        if env.get("K_enclave"):
+            m["K_enclave"] = env["K_enclave"]
+        else:
+            m.pop("K_enclave", None)
+        m["enclave_pk_fpr"] = env.get("enclave_pk_fpr", "")
+        m["visibility"] = env["visibility"]
+        m["owner_user_id"] = env["owner_user_id"]
+        return "ok"
+    return "not_found"
+
+
+@app.route("/v1/content/swap", methods=["POST"])
+def content_swap():
     store = require_user()
     payload = request.get_json(silent=True) or {}
     items = payload.get("items")
     if not isinstance(items, list):
         return jsonify({"error": "items must be a list"}), 400
     if not items:
-        return jsonify({"results": [], "summary": _rewrap_summary([])})
+        return jsonify({"results": [], "summary": _swap_summary([])})
 
     results: list[dict] = []
     chat_dirty = False
     memory_dirty = False
-    moments = None  # lazy-load; only one read per request
+    moments = None
 
     for item in items:
         if not isinstance(item, dict):
@@ -2165,7 +1981,7 @@ def content_rewrap():
         if not iid:
             results.append({"type": itype, "id": None, "status": "error: id required"})
             continue
-        missing = _rewrap_envelope_missing(env)
+        missing = _swap_envelope_missing(env)
         if missing:
             results.append({"type": itype, "id": iid, "status": f"error: envelope missing {missing}"})
             continue
@@ -2175,22 +1991,19 @@ def content_rewrap():
         if env["visibility"] == "shared" and not env.get("K_enclave"):
             results.append({"type": itype, "id": iid, "status": "error: shared visibility requires K_enclave"})
             continue
-        # Enforce AEAD binding: the envelope's owner_user_id must match the
-        # resolved caller. If it doesn't, the enclave would fail AEAD on
-        # read-back anyway — reject here to fail loud.
         if env["owner_user_id"] != store.user_id:
             results.append({"type": itype, "id": iid, "status": "error: owner_user_id does not match caller"})
             continue
 
         if itype == "chat":
-            status = _rewrap_chat(store, iid, env)
+            status = _swap_chat(store, iid, env)
             if status == "ok":
                 chat_dirty = True
             results.append({"type": "chat", "id": iid, "status": status})
-        else:  # memory
+        else:
             if moments is None:
                 moments = _load_moments(store)
-            status = _rewrap_memory_inplace(moments, iid, env)
+            status = _swap_memory_inplace(moments, iid, env)
             if status == "ok":
                 memory_dirty = True
             results.append({"type": "memory", "id": iid, "status": status})
@@ -2201,78 +2014,7 @@ def content_rewrap():
     if memory_dirty and moments is not None:
         _save_moments(store, moments)
 
-    return jsonify({"results": results, "summary": _rewrap_summary(results)})
-
-
-def _rewrap_envelope_missing(env) -> list:
-    if not isinstance(env, dict):
-        return ["envelope"]
-    return [f for f in ("body_ct", "nonce", "K_user", "visibility", "owner_user_id") if not env.get(f)]
-
-
-def _rewrap_summary(results: list) -> dict:
-    summary = {"ok": 0, "already_v1": 0, "not_found": 0, "error": 0, "total": len(results)}
-    for r in results:
-        status = r.get("status", "")
-        if status == "ok":
-            summary["ok"] += 1
-        elif status == "already_v1":
-            summary["already_v1"] += 1
-        elif status == "not_found":
-            summary["not_found"] += 1
-        else:
-            summary["error"] += 1
-    return summary
-
-
-def _rewrap_chat(store: "UserStore", msg_id: str, env: dict) -> str:
-    """Replace a chat message's v0 plaintext with v1 envelope fields.
-    Preserves id/role/ts/source. Idempotent when message is already v1.
-    """
-    with store.chat_lock:
-        for msg in store.chat_messages:
-            if msg.get("id") != msg_id:
-                continue
-            if int(msg.get("v", 0)) >= 1:
-                return "already_v1"
-            # Strip the old plaintext field and swap in envelope fields.
-            msg.pop("content", None)
-            msg["v"] = int(env.get("v", 1))
-            msg["body_ct"] = env["body_ct"]
-            msg["nonce"] = env["nonce"]
-            msg["K_user"] = env["K_user"]
-            if env.get("K_enclave"):
-                msg["K_enclave"] = env["K_enclave"]
-            msg["enclave_pk_fpr"] = env.get("enclave_pk_fpr", "")
-            msg["visibility"] = env["visibility"]
-            msg["owner_user_id"] = env["owner_user_id"]
-            return "ok"
-    return "not_found"
-
-
-def _rewrap_memory_inplace(moments: list, mom_id: str, env: dict) -> str:
-    """Replace a memory moment's v0 plaintext with v1 envelope fields.
-    Preserves id/occurred_at/created_at/source. Idempotent on v1 items.
-    """
-    for m in moments:
-        if m.get("id") != mom_id:
-            continue
-        if int(m.get("v", 0)) >= 1:
-            return "already_v1"
-        m.pop("title", None)
-        m.pop("description", None)
-        m.pop("type", None)
-        m["v"] = int(env.get("v", 1))
-        m["body_ct"] = env["body_ct"]
-        m["nonce"] = env["nonce"]
-        m["K_user"] = env["K_user"]
-        if env.get("K_enclave"):
-            m["K_enclave"] = env["K_enclave"]
-        m["enclave_pk_fpr"] = env.get("enclave_pk_fpr", "")
-        m["visibility"] = env["visibility"]
-        m["owner_user_id"] = env["owner_user_id"]
-        return "ok"
-    return "not_found"
+    return jsonify({"results": results, "summary": _swap_summary(results)})
 
 
 # ---------------------------------------------------------------------------
@@ -2286,36 +2028,59 @@ def _rewrap_memory_inplace(moments: list, mom_id: str, env: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
-# Cap single-shot export response size. Heavy users with many frames would
-# blow past this; Phase B excludes frames from export on purpose (they're
-# large and low-continuity). If this limit is ever hit in production,
-# stream the export per-type as a multi-part response (TODO).
-_EXPORT_MAX_BYTES = 50 * 1024 * 1024  # 50 MiB
+# Cap single-shot export response size. With frames bounded to MAX_FRAMES
+# (200) and each body_ct at ~200 KiB, worst-case frame payload is ~40 MiB —
+# so the 80 MiB ceiling covers frames + chat + memory + identity with
+# headroom. If this ever trips, switch to a streaming multipart response.
+_EXPORT_MAX_BYTES = 80 * 1024 * 1024  # 80 MiB
 
 
 @app.route("/v1/content/export", methods=["GET"])
 def content_export():
-    """Return the caller's chat, memory, and identity as one JSON blob.
+    """Return the caller's chat, memory, identity, and frames as one JSON blob.
 
     Ciphertext is returned verbatim — iOS decrypts client-side using
     the user's content_sk from Keychain. No decryption happens server-
     side, so there is no additional trust boundary crossed by this
     endpoint beyond the existing auth check.
 
-    Frames are intentionally excluded: the JPEG payloads alone can
-    exceed the export budget for one active user. Add a separate
-    streaming frame-export endpoint later if demand surfaces.
+    Frames are included as v1 envelopes (same shape as chat/memory) with
+    their stored body_ct inline, so the user can walk away with the full
+    screen-recording dataset decryptable only on their devices.
     """
     store = require_user()
     hist = store.chat_messages
     moments = _load_moments(store)
     identity = _load_identity(store)
 
+    # Inline each frame's on-disk envelope. frames_meta is the index; the
+    # ciphertext lives in <frames_dir>/<id>.env.json. A missing env file
+    # just means the frame was evicted mid-read — skip it rather than 500.
+    frames_out: list[dict] = []
+    with store.frames_lock:
+        frame_index = [f.copy() for f in store.frames_meta]
+    for meta in frame_index:
+        env_path = store.frames_dir / meta["filename"]
+        if not env_path.exists():
+            continue
+        try:
+            envelope = json.loads(env_path.read_text())
+        except Exception as e:
+            print(f"[export:{store.user_id}] skipping frame {meta.get('id')}: {e}")
+            continue
+        frames_out.append({
+            "id": meta.get("id"),
+            "ts": meta.get("ts"),
+            "w": meta.get("w", 0),
+            "h": meta.get("h", 0),
+            "envelope": envelope,
+        })
+
     exported_at = datetime.now().isoformat()
     enclave_info = _get_enclave_info() or {}
 
     export = {
-        "schema_version": 1,
+        "schema_version": 2,
         "user_id": store.user_id,
         "exported_at": exported_at,
         "attestation_snapshot": {
@@ -2325,11 +2090,13 @@ def content_export():
         "chat": hist,
         "memory": moments,
         "identity": identity,
+        "frames": frames_out,
         "notes": (
             "Ciphertext included verbatim; decrypt client-side using your"
             " content private key (iCloud Keychain). The attestation_snapshot"
             " records which enclave version was live at export time so you"
-            " can verify origin later."
+            " can verify origin later. Frames are v1 envelopes — their JPEG"
+            " + OCR live inside body_ct."
         ),
     }
 
@@ -2337,7 +2104,7 @@ def content_export():
     if len(body.encode("utf-8")) > _EXPORT_MAX_BYTES:
         return jsonify({
             "error": "export_too_large",
-            "detail": "One-shot export exceeds the 50 MiB budget. Streaming"
+            "detail": "One-shot export exceeds the 80 MiB budget. Streaming"
                       " export is planned (TODO). Contact support / open an issue."
         }), 413
 
@@ -2390,21 +2157,14 @@ def account_reset():
     deleted_dir = False
     try:
         import shutil
-        if store.dir.exists() and store.dir != FEEDLING_DIR:
-            # Extra guard: never recursively delete the flat single-user
-            # data root. SINGLE_USER=true's "default" user lives at
-            # FEEDLING_DIR itself; resetting that would wipe other state.
-            # For that case we wipe individual files, not the whole dir.
+        # Defense in depth: make sure we're about to delete a per-user dir
+        # under FEEDLING_DIR, not FEEDLING_DIR itself or something above it.
+        if (
+            store.dir.exists()
+            and store.dir != FEEDLING_DIR
+            and store.dir.parent == FEEDLING_DIR
+        ):
             shutil.rmtree(store.dir)
-            deleted_dir = True
-        elif store.dir == FEEDLING_DIR:
-            # Single-user flat layout: remove specific content files,
-            # leave frames + config alone.
-            for fname in ("chat.json", "memory.json", "identity.json",
-                          "bootstrap.json", "bootstrap_events.jsonl"):
-                fp = FEEDLING_DIR / fname
-                if fp.exists():
-                    fp.unlink()
             deleted_dir = True
     except Exception as e:
         print(f"[reset:{user_id}] rmtree failed: {e}")
@@ -2416,7 +2176,7 @@ def account_reset():
 @app.route("/healthz", methods=["GET"])
 def healthz():
     """Liveness + readiness probe. Public, no auth — used by Docker/compose."""
-    return jsonify({"ok": True, "mode": "single_user" if SINGLE_USER else "multi_tenant"})
+    return jsonify({"ok": True, "mode": "multi_tenant"})
 
 
 @app.errorhandler(401)
@@ -2430,7 +2190,5 @@ def _forbidden(e):
 
 
 if __name__ == "__main__":
-    mode = "single-user" if SINGLE_USER else "multi-tenant"
-    auth = "api-key" if (SINGLE_USER and SINGLE_USER_API_KEY) or not SINGLE_USER else "none"
-    print(f"Feedling server running at http://0.0.0.0:5001 (mode={mode}, auth={auth})")
+    print("Feedling server running at http://0.0.0.0:5001 (mode=multi-tenant, auth=api-key)")
     app.run(host="0.0.0.0", port=5001, debug=False)

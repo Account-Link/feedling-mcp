@@ -73,17 +73,6 @@ final class WebSocketManager: NSObject {
         }
     }
 
-    @discardableResult
-    func sendFrame(_ payload: IngestFramePayload) -> Bool {
-        queue.sync {
-            guard isConnected, let task = webSocketTask,
-                  let data = try? encoder.encode(payload),
-                  let text = String(data: data, encoding: .utf8) else { return false }
-            task.send(.string(text)) { _ in }
-            return true
-        }
-    }
-
     /// Send an arbitrary JSON-encodable dictionary. Used by the v1
     /// envelope path — the envelope is assembled in FrameEnvelope and
     /// doesn't fit into IngestFramePayload's schema.

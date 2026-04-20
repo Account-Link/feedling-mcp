@@ -33,8 +33,8 @@ enum FrameEnvelope {
 
     /// Read the three inputs we need from the App Group UserDefaults
     /// (written by the main app via FeedlingAPI.publishEnclaveKeysToAppGroup).
-    /// Returns nil if any input is missing — caller should fall back to
-    /// legacy plaintext frame ingest in that case.
+    /// Returns nil if any input is missing — caller should drop the
+    /// frame in that case (backend rejects non-v1 ingest).
     struct Context {
         let userID: String
         let userContentPK: Curve25519.KeyAgreement.PublicKey

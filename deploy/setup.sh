@@ -6,9 +6,8 @@
 # By default this script:
 #   1. Creates a Python venv
 #   2. Installs deps
-#   3. Generates a fresh API key (if feedling.env is missing)
-#   4. Writes ~/feedling.env in single-user mode
-#   5. Installs + starts feedling-backend and feedling-mcp systemd units
+#   3. Writes ~/feedling.env (multi-tenant mode — no shared API key)
+#   4. Installs + starts feedling-backend and feedling-mcp systemd units
 # Pass --install-caddy to also install Caddy and enable HTTPS.
 
 set -e
@@ -34,28 +33,21 @@ mkdir -p "$DATA_DIR"
 
 echo "=== 3. Ensure env file exists ==="
 if [ ! -f "$ENV_FILE" ]; then
-    API_KEY=$(openssl rand -hex 32)
     cat > "$ENV_FILE" <<EOF
-SINGLE_USER=true
-FEEDLING_API_KEY=$API_KEY
 FEEDLING_DATA_DIR=$DATA_DIR
 FEEDLING_FLASK_URL=http://127.0.0.1:5001
 FEEDLING_MCP_PORT=5002
 FEEDLING_MCP_TRANSPORT=sse
 EOF
     chmod 600 "$ENV_FILE"
-    echo "    wrote $ENV_FILE (single-user mode, fresh API key)"
-    echo "    ---- GIVE THIS KEY TO THE USER ----"
-    echo "    API_KEY=$API_KEY"
-    echo "    -----------------------------------"
+    echo "    wrote $ENV_FILE (multi-tenant — users register via iOS and receive per-user api_keys)"
 else
     echo "    $ENV_FILE already exists — leaving alone"
 fi
 
 echo "=== 4. Install systemd services ==="
-sudo cp "$REPO_DIR/deploy/feedling-backend.service"     /etc/systemd/system/
-sudo cp "$REPO_DIR/deploy/feedling-mcp.service"         /etc/systemd/system/
-sudo cp "$REPO_DIR/deploy/feedling-chat-bridge.service" /etc/systemd/system/
+sudo cp "$REPO_DIR/deploy/feedling-backend.service" /etc/systemd/system/
+sudo cp "$REPO_DIR/deploy/feedling-mcp.service"     /etc/systemd/system/
 sudo systemctl daemon-reload
 
 echo "=== 5. Enable and start backend + MCP ==="
@@ -79,9 +71,9 @@ fi
 
 echo ""
 echo "=== Done ==="
-echo "feedling-chat-bridge is installed but NOT enabled by default."
-echo "Hermes users: sudo systemctl enable --now feedling-chat-bridge"
+echo "Multi-tenant mode: users register via iOS (POST /v1/users/register) and"
+echo "receive a per-user api_key. There is no shared server-side API key."
 echo ""
 echo "Check status:"
 echo "  sudo systemctl status feedling-backend feedling-mcp"
-echo "  curl -s -H \"X-API-Key: \$(grep FEEDLING_API_KEY $ENV_FILE | cut -d= -f2)\" http://127.0.0.1:5001/v1/screen/analyze"
+echo "  curl -s http://127.0.0.1:5001/healthz"

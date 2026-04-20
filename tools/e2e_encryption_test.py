@@ -216,7 +216,6 @@ def main():
         "backend",
         ["python3", "backend/app.py"],
         {
-            "SINGLE_USER": "false",
             "FEEDLING_DATA_DIR": data_dir,
             "FEEDLING_WS_PORT": "29998",
         },

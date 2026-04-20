@@ -6,28 +6,27 @@ phases.
 
 ## Live services
 
-### Prod VPS (single-user, pre-E2E)
+### Prod VPS (multi-tenant)
 
 | | |
 |---|---|
 | Host | `ubuntu@54.209.126.4` (login), services run as `openclaw` |
 | Install root | `/home/openclaw/feedling-mcp-v1` |
-| Data dir | `/home/openclaw/feedling-data` (~409 MB incl. frames) |
-| Services | `feedling-backend.service`, `feedling-mcp.service`, `feedling-chat-bridge.service` — all user-level systemd units under `/home/openclaw/.config/systemd/user/` |
-| Mode | `SINGLE_USER=true`, `FEEDLING_API_KEY=` (empty → no auth) |
+| Data dir | `/home/openclaw/feedling-data` (wiped + re-seeded on 2026-04-20) |
+| Services | `feedling-backend.service`, `feedling-mcp.service` — user-level systemd units under `/home/openclaw/.config/systemd/user/`. (The old `feedling-chat-bridge.service` was retired on 2026-04-20 when MCP's `feedling.chat.post_message` took over agent replies.) |
+| Mode | Multi-tenant only. Per-user HMAC-peppered api_keys issued by `POST /v1/users/register`; no shared key, no `SINGLE_USER` env var anymore. |
 | Ports | Flask `:5001`, MCP SSE `:5002`, WebSocket ingest `:9998` |
 | APNs key | `/home/openclaw/feedling-data/AuthKey_5TH55X5U7T.p8` |
-| Current commit | `5408c62` (upgraded 2026-04-19) |
+| Current commit | (pending — updated when the v0-strip commit lands) |
 | Backups | `/home/openclaw/feedling-data.bak.YYYYMMDD-HHMMSS` — created automatically on each upgrade |
 
-Flip-to-multi-tenant plan (when iOS app with registration client ships):
-
-1. Stop services.
-2. Set `SINGLE_USER=false` in the unit file environment blocks.
-3. `POST /v1/users/register` locally on the box → get `{user_id, api_key}`.
-4. `mv ~/feedling-data/{chat,identity,memory,tokens,…}.json ~/feedling-data/<user_id>/` and same for `frames/`.
-5. Restart services.
-6. Paste the returned `api_key` into the iOS app's Settings → Storage → Self-hosted (until DNS+HTTPS for `api.feedling.app` is live).
+Flip history: The VPS originally ran in `SINGLE_USER=true` mode with
+a shared `FEEDLING_API_KEY`. Prod user's data was silently migrated v0→v1
+on 2026-04-20 (task #32), and the same day the SINGLE_USER/v0 stack was
+stripped entirely (tasks #23/#33). After the strip, the data directory
+was wiped (keeping `.pepper` + `AuthKey_5TH55X5U7T.p8`) and the user
+reinstalled fresh against a multi-tenant backend via the normal
+`POST /v1/users/register` flow from iOS.
 
 ## On-chain
 

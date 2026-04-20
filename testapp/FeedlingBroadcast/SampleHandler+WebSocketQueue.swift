@@ -87,21 +87,21 @@ final class WebSocketFrameQueue {
             )
         )
 
-        // Wrap in a v1 envelope when the main app has published keys to
-        // the App Group; otherwise fall through to legacy plaintext
-        // (backend accepts both — see backend/app.py:_save_frame).
-        if let ctx = FrameEnvelope.loadContext(),
-           let inner = try? JSONEncoder().encode(payload),
-           let env = FrameEnvelope.wrap(plaintext: inner, ctx: ctx) {
-            var wire = env
-            wire["type"] = "frame"            // backend WS handler routes on this
-            wire["ts"] = frame.enqueueTs      // index field — server stores in frames_meta
-            WebSocketManager.shared.sendJSON(wire)
-            print("[ws] sent v1 frame envelope body_ct_len=\(((env["envelope"] as? [String:Any])?["body_ct"] as? String ?? "").count)")
-        } else {
-            WebSocketManager.shared.sendFrame(payload)
-            print("[ws] sent legacy frame \(Int(resized.size.width))x\(Int(resized.size.height)) ocr=\(ocrText.count)chars")
+        // All frames are v1 envelopes — backend drops anything else at
+        // _save_frame. If the App Group ctx is missing, the main app
+        // hasn't published keys yet; skip the frame rather than firing
+        // plaintext the server will throw away.
+        guard let ctx = FrameEnvelope.loadContext(),
+              let inner = try? JSONEncoder().encode(payload),
+              let env = FrameEnvelope.wrap(plaintext: inner, ctx: ctx) else {
+            print("[ws] skipping frame — v1 envelope context unavailable")
+            return
         }
+        var wire = env
+        wire["type"] = "frame"            // backend WS handler routes on this
+        wire["ts"] = frame.enqueueTs      // index field — server stores in frames_meta
+        WebSocketManager.shared.sendJSON(wire)
+        print("[ws] sent v1 frame envelope body_ct_len=\(((env["envelope"] as? [String:Any])?["body_ct"] as? String ?? "").count)")
     }
 
     private func resizeIfNeeded(_ image: UIImage, maxEdge: CGFloat) -> UIImage {

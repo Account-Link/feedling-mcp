@@ -156,12 +156,6 @@ final class FeedlingAPI: ObservableObject {
             let (respData, resp) = try await URLSession.shared.data(for: req)
             guard let http = resp as? HTTPURLResponse else { return }
 
-            if http.statusCode == 403 {
-                // Single-user backend — no registration needed. Treat empty apiKey as OK.
-                print("[register] backend is single-user; skipping registration")
-                UserDefaults.standard.set(true, forKey: Keys.hasRegistered)
-                return
-            }
             guard (200..<300).contains(http.statusCode) else {
                 print("[register] HTTP \(http.statusCode): \(String(data: respData, encoding: .utf8) ?? "")")
                 UserDefaults.standard.set(true, forKey: Keys.registrationFailed)
@@ -250,15 +244,11 @@ final class FeedlingAPI: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: PhaseBKeys.onboardingCompletedV1) }
     }
 
-    // MARK: - Phase B wave-2: inline migration progress
-
-    @Published var migrationProgress: (done: Int, total: Int)? = nil
-
     // MARK: - Phase B wave-2: per-item visibility flip
 
     /// Flip the visibility of a single memory moment by re-wrapping its
     /// plaintext with a fresh envelope that either includes or omits
-    /// `K_enclave`, then POSTing to `/v1/content/rewrap`. iOS holds the
+    /// `K_enclave`, then POSTing to `/v1/content/swap`. iOS holds the
     /// plaintext already (it's displayed in the UI), so no server trip
     /// for decryption is needed.
     ///
@@ -307,7 +297,7 @@ final class FeedlingAPI: ObservableObject {
             "envelope": envelope.jsonBody()["envelope"] as Any
         ]]
         let body = try JSONSerialization.data(withJSONObject: ["items": items])
-        guard let req = authorizedRequest(path: "/v1/content/rewrap",
+        guard let req = authorizedRequest(path: "/v1/content/swap",
                                           method: "POST", body: body) else {
             throw NSError(domain: "VisibilityFlip", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "could not build request"])
@@ -512,196 +502,6 @@ final class FeedlingAPI: ObservableObject {
         if let pk = enclaveContentPublicKey {
             shared.set(pk.rawRepresentation.base64EncodedString(),
                        forKey: "feedling.enclaveContentPublicKey")
-        }
-    }
-
-    /// Silently migrate any pre-existing v0 plaintext chat messages +
-    /// memory moments into v1 envelopes. Runs on the first app launch
-    /// after the Phase A update. Idempotent: the UserDefaults flag
-    /// prevents re-runs, and the server-side endpoint no-ops items
-    /// already in v1 state.
-    ///
-    /// Identity is intentionally skipped — `identity.nudge` can't
-    /// mutate a v1 card until Phase C (MCP in TEE adds
-    /// decrypt-mutate-rewrap). Migrating identity before nudge supports
-    /// v1 would trap users who already ran `feedling.identity.init`.
-    ///
-    /// Non-blocking: called from the app-startup `.task`; nothing on
-    /// the UI depends on its completion. If it fails transiently, the
-    /// flag stays false and the next launch retries.
-    func runSilentV1MigrationIfNeeded() async {
-        let defaultsKey = "feedling.migrationV0toV1Done.2026-04-20"
-        guard !UserDefaults.standard.bool(forKey: defaultsKey) else { return }
-        // Need all three to build envelopes for other-authored v0 items.
-        guard let userPK = userContentPublicKey,
-              let enclavePK = enclaveContentPublicKey,
-              !userId.isEmpty else {
-            print("[migration] skipping: crypto material not ready yet")
-            return
-        }
-
-        var items: [[String: Any]] = []
-        do {
-            items.append(contentsOf: try await collectV0ChatEnvelopes(userPK: userPK, enclavePK: enclavePK))
-            items.append(contentsOf: try await collectV0MemoryEnvelopes(userPK: userPK, enclavePK: enclavePK))
-        } catch {
-            print("[migration] collection failed: \(error)")
-            return
-        }
-        if items.isEmpty {
-            // Nothing to migrate — set flag so future launches skip immediately.
-            UserDefaults.standard.set(true, forKey: defaultsKey)
-            print("[migration] no v0 items to re-wrap; marked done")
-            return
-        }
-
-        // Surface progress to the Privacy hero row so the user can see
-        // "Upgrading 3 of 12" inline while the migration runs.
-        migrationProgress = (done: 0, total: items.count)
-
-        // Send in batches of 100 so servers + clients don't hold giant bodies.
-        let batchSize = 100
-        var allOk = true
-        var totals = (ok: 0, alreadyV1: 0, notFound: 0, error: 0)
-        for batchStart in stride(from: 0, to: items.count, by: batchSize) {
-            let batch = Array(items[batchStart..<min(batchStart + batchSize, items.count)])
-            let result = await postRewrap(items: batch)
-            switch result {
-            case .failure(let err):
-                print("[migration] batch \(batchStart) failed: \(err)")
-                allOk = false
-            case .success(let summary):
-                totals.ok += summary.ok
-                totals.alreadyV1 += summary.alreadyV1
-                totals.notFound += summary.notFound
-                totals.error += summary.error
-                if summary.error > 0 { allOk = false }
-            }
-            migrationProgress = (
-                done: min(batchStart + batchSize, items.count),
-                total: items.count
-            )
-        }
-        print("[migration] done ok=\(totals.ok) already_v1=\(totals.alreadyV1) not_found=\(totals.notFound) error=\(totals.error)")
-        if allOk {
-            UserDefaults.standard.set(true, forKey: defaultsKey)
-        }
-        // Clear progress either way — if it failed, the row switches to
-        // an "error, retry" state (surfaced elsewhere). If it succeeded,
-        // the row disappears and the hero flips to the all-green state.
-        migrationProgress = nil
-    }
-
-    private struct RewrapSummary { let ok, alreadyV1, notFound, error: Int }
-
-    private func collectV0ChatEnvelopes(
-        userPK: Curve25519.KeyAgreement.PublicKey,
-        enclavePK: Curve25519.KeyAgreement.PublicKey
-    ) async throws -> [[String: Any]] {
-        guard let req = authorizedRequest(
-            path: "/v1/chat/history",
-            queryItems: [URLQueryItem(name: "since", value: "0"), URLQueryItem(name: "limit", value: "500")])
-        else { return [] }
-        let (data, _) = try await URLSession.shared.data(for: req)
-        struct History: Decodable {
-            let messages: [Row]
-            struct Row: Decodable {
-                let id: String
-                let content: String?
-                let v: Int?
-            }
-        }
-        let hist = try JSONDecoder().decode(History.self, from: data)
-        var out: [[String: Any]] = []
-        for row in hist.messages {
-            let version = row.v ?? 0
-            guard version == 0, let content = row.content, !content.isEmpty else { continue }
-            do {
-                let env = try ContentEncryption.envelope(
-                    plaintext: Data(content.utf8),
-                    ownerUserID: userId,
-                    userContentPK: userPK,
-                    enclaveContentPK: enclavePK,
-                    visibility: .shared,
-                    itemID: row.id)
-                out.append(["type": "chat", "id": row.id, "envelope": env.jsonBody()["envelope"] as Any])
-            } catch {
-                print("[migration] skip chat id=\(row.id): \(error)")
-            }
-        }
-        return out
-    }
-
-    private func collectV0MemoryEnvelopes(
-        userPK: Curve25519.KeyAgreement.PublicKey,
-        enclavePK: Curve25519.KeyAgreement.PublicKey
-    ) async throws -> [[String: Any]] {
-        guard let req = authorizedRequest(
-            path: "/v1/memory/list",
-            queryItems: [URLQueryItem(name: "limit", value: "200")])
-        else { return [] }
-        let (data, _) = try await URLSession.shared.data(for: req)
-        struct MemList: Decodable {
-            let moments: [Row]
-            struct Row: Decodable {
-                let id: String
-                let title: String?
-                let description: String?
-                let type: String?
-                let v: Int?
-            }
-        }
-        let list = try JSONDecoder().decode(MemList.self, from: data)
-        var out: [[String: Any]] = []
-        for row in list.moments {
-            let version = row.v ?? 0
-            guard version == 0 else { continue }
-            let inner: [String: String] = [
-                "title": row.title ?? "",
-                "description": row.description ?? "",
-                "type": row.type ?? "",
-            ]
-            guard let innerData = try? JSONSerialization.data(withJSONObject: inner) else { continue }
-            do {
-                let env = try ContentEncryption.envelope(
-                    plaintext: innerData,
-                    ownerUserID: userId,
-                    userContentPK: userPK,
-                    enclaveContentPK: enclavePK,
-                    visibility: .shared,
-                    itemID: row.id)
-                out.append(["type": "memory", "id": row.id, "envelope": env.jsonBody()["envelope"] as Any])
-            } catch {
-                print("[migration] skip memory id=\(row.id): \(error)")
-            }
-        }
-        return out
-    }
-
-    private func postRewrap(items: [[String: Any]]) async -> Result<RewrapSummary, Error> {
-        do {
-            let body = try JSONSerialization.data(withJSONObject: ["items": items])
-            guard let req = authorizedRequest(path: "/v1/content/rewrap", method: "POST", body: body) else {
-                return .failure(NSError(domain: "Migration", code: -1,
-                                        userInfo: [NSLocalizedDescriptionKey: "could not build request"]))
-            }
-            let (data, resp) = try await URLSession.shared.data(for: req)
-            guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-                return .failure(NSError(domain: "Migration", code: (resp as? HTTPURLResponse)?.statusCode ?? 0,
-                                        userInfo: [NSLocalizedDescriptionKey: "rewrap HTTP error"]))
-            }
-            struct Resp: Decodable {
-                let summary: Summary
-                struct Summary: Decodable { let ok: Int; let already_v1: Int; let not_found: Int; let error: Int }
-            }
-            let decoded = try JSONDecoder().decode(Resp.self, from: data)
-            return .success(RewrapSummary(
-                ok: decoded.summary.ok,
-                alreadyV1: decoded.summary.already_v1,
-                notFound: decoded.summary.not_found,
-                error: decoded.summary.error))
-        } catch {
-            return .failure(error)
         }
     }
 
