@@ -198,24 +198,16 @@ Read this section carefully — it's the list of claims we
 
 ### We're working on
 
-Tracked in `docs/NEXT.md`:
+Tracked in `HANDOFF.md` → "What's next":
 
-- **Phase C part 2**: ACME-DNS-01 inside the enclave so
-  `mcp.feedling.app` can move to layer4 SNI passthrough (right now
-  Caddy on a VPS terminates that TLS; attackers with VPS root
-  could see MCP traffic). The `-5002s.` URL already has the full
-  in-enclave TLS property; `mcp.feedling.app` is a migration.
-- **Phase C part 3**: `identity.nudge` + agent chat-reply
-  encryption. Both are currently plaintext on the wire; an
-  operator observing the MCP POST body can read the nudge delta
-  and reason, or the agent's chat reply. Content already stored
-  to disk is ciphertext; this is about the in-flight message.
-  These require MCP in the enclave (now shipped) + a small
-  protocol change. On the list.
-- **Mainnet migration**: the on-chain contract lives on Ethereum
-  Sepolia today. Moving to Ethereum / Base mainnet is the last
-  step of the roadmap. Sepolia is a testnet — the release log
-  could technically reorg, though it hasn't.
+- **Mainnet migration (Phase E)**: the on-chain contract lives on
+  Ethereum Sepolia today. Moving to Ethereum / Base mainnet is
+  the last step of the roadmap. Sepolia is a testnet — the
+  release log could technically reorg, though it hasn't.
+
+Phases C.2 (ACME-DNS-01 inside the enclave) and C.3 (identity.nudge +
+chat-reply encryption) shipped on 2026-04-20 alongside the v0/SINGLE_USER
+strip. See `docs/CHANGELOG.md` for the landmark diffs.
 
 ---
 

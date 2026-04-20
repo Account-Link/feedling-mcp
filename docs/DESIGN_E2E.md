@@ -1,18 +1,20 @@
 # Feedling End-to-End Encryption — Design Doc (v0.4)
 
-Status: **v0.4 — decisions locked, pre-implementation**
+Status: **v0.4 — shipped through Phase D (2026-04-20)**
 Owner: @sxysun
-Target ship: after `NEXT.md` Steps 1–5 land in prod and multi-tenant is stable.
-Companion doc: `docs/NEXT.md` (the plaintext multi-tenant backend this layers on top of).
+Historical framing: this doc was written against the multi-tenant backend
+introduced before E2E encryption. See `HANDOFF.md` for the current
+shipped state and `docs/CHANGELOG.md` for landmark diffs.
 
 ---
 
 ## 1. Context & goals
 
-Feedling now supports multi-tenant cloud hosting (see `NEXT.md`), but content
-at rest is plaintext JSON. For the cloud product to be something users can
-honestly feel safe handing personal chat / memories / screen frames to, we need
-a privacy model that matches the claim *"Feedling cannot read your data."*
+At the time this doc was drafted, Feedling had just added multi-tenant cloud
+hosting but content at rest was plaintext JSON. For the cloud product to be
+something users can honestly feel safe handing personal chat / memories /
+screen frames to, we needed a privacy model that matches the claim
+*"Feedling cannot read your data."*
 
 ### 1.1 Goals
 
@@ -1479,7 +1481,7 @@ not promise.
 
 ## 15. References
 
-- `docs/NEXT.md` — prerequisite multi-tenant backend this layers on top of.
+- `HANDOFF.md` — current shipped state + forward roadmap.
 - `skill/SKILL.md` — self-hosted runbook for users who prefer that over TEE.
 - `deploy/BUILD.md` (to be written in Phase 1) — reproducible build recipe
   for the enclave container image.

@@ -1,7 +1,7 @@
 # Feedling — Handoff
 
-Snapshot of the project at the end of the autonomous build sprint that
-closed NEXT.md Phase 2 **and** the Phase 3 TLS-in-enclave follow-up.
+Snapshot of the project as of 2026-04-20, end of the autonomous build
+sprint that shipped Phases A–D + the v0/SINGLE_USER strip.
 Whoever picks this up next — start here.
 
 ## TL;DR
@@ -115,8 +115,8 @@ Whoever picks this up next — start here.
     existing rewrap, just needs the list+toggle UI) and the inline
     migration-progress row in the Privacy hero.
 - *Pending copy review by @sxysun*: onboarding microcopy, audit-card
-    mechanism reveals, compose-hash consent modal copy. Flagged in
-    `docs/PHASE_B_PLAN.md` §4.
+    mechanism reveals, compose-hash consent modal copy. Source-of-truth
+    files listed in "Before next agent picks this up" below.
 - **Key rotation observation worth knowing**: Phala dstack-KMS derives
   per-app keys from `(kms_root, app_id, path)`, not from `compose_hash`.
   That means `enclave_content_pk` and the enclave-TLS cert stay stable
@@ -357,6 +357,44 @@ endpoint. See `docs/screenshots/audit_card_phase3_tls_pinned.png`.
   `0xa0eBcd26D7816D68a74b0CdC8037C16F8fcbF9C0` was the throwaway key
   used for Sepolia bring-up. Rotate before Base mainnet per
   `DEPLOYMENTS.md`.
+
+## What's next (forward-looking)
+
+### Phase E — Eth Sepolia → Ethereum mainnet  ← DEFERRED (do last)
+
+**Status: DEFERRED** — per user direction 2026-04-20 ("Eth mainnet migration last").
+**Pre-reqs:** Phase C part 2 stable ≥ 1 week; v0 strip done ✓; hardware wallet in hand; no open security bugs.
+
+**Decision to confirm before starting:** Base mainnet (L2, ~100× cheaper gas, faster finality) vs Ethereum L1 mainnet (higher perceived trust). User said "Eth mainnet" — verify L1 vs L2 before spending gas.
+
+**Steps (ready when pre-reqs met):**
+1. Fresh deployer keypair on hardware wallet — current `0xa0eBcd…` is a throwaway (pasted in chat Apr 19 per `DEPLOYMENTS.md`).
+2. Redeploy `FeedlingAppAuth.sol` to chosen mainnet; `forge verify-contract` on Etherscan/Basescan.
+3. `addComposeHash` batch for all historical hashes (so old iOS builds still pass audit).
+4. Update `backend/enclave_app.py` APP_AUTH defaults + iOS pinned contract address + chain_id.
+5. Ship iOS release with new pinned address ~1 week before cutover.
+6. Update `deploy/DEPLOYMENTS.md` with mainnet entry.
+
+## Guardrails — don't touch without a plan
+
+- WebSocket frame ingest (`/ws` in `backend/app.py`) — working, don't touch.
+- APNs push (JWT + `.p8` key) — working, don't touch.
+- `ScreenActivityAttributes.ContentState` fields — changing breaks live activities on installed builds.
+- Phase 3 TLS derivation path (`feedling-tls-v1`) in `dstack_tls.py` — changing breaks existing pinned attestations.
+- `/v1/content/swap` endpoint — used by iOS `flipMemoryVisibility`; don't rename.
+- Any endpoint URL or response shape used by existing released builds — add new endpoints instead.
+- VPS prod (`ubuntu@54.209.126.4`, `openclaw`) — coordinate changes with user; one real user's data lives here.
+
+## Key reference files
+
+| File | Purpose |
+|---|---|
+| `docs/DESIGN_E2E.md` | Master architecture doc (v0.3) |
+| `docs/CHANGELOG.md` | Landmark diffs with dates |
+| `deploy/DEPLOYMENTS.md` | Every deployed artifact on VPS + CVM + chain |
+| `tools/audit_live_cvm.py` | Run after any enclave change — must be 8/8 before shipping |
+| `docs/AUDIT.md` | Agent-consumable "is this safe?" guide |
+| `DESIGN.md` | Design tokens + aesthetic — read before any UI change |
 
 ## Things that would surprise you
 

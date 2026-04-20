@@ -17,7 +17,7 @@ feedling-mcp-v1/
 ├── skill/          ← SKILL.md for OpenClaw (HTTP mode)
 ├── backend/        ← Flask API (port 5001) + FastMCP server (port 5002)
 ├── deploy/         ← Caddyfile, systemd services, setup.sh
-├── docs/           ← PROJECT_BRIEF.md, ROADMAP.md, CHANGELOG.md
+├── docs/           ← DESIGN_E2E.md, CHANGELOG.md, AUDIT.md
 └── testapp/        ← iOS SwiftUI app + Widget + Broadcast Extension
 ```
 

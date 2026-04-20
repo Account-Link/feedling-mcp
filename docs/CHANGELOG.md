@@ -1,17 +1,19 @@
 # Feedling MCP — Changelog
 
-> 这份文档记录 `PROJECT_BRIEF.md` 和 `ROADMAP.md` 的所有实质性变化。
+> Landmark diffs over time. Two months from now, this is how we remember
+> when a decision was made and why.
 >
-> **目的**：两个月后回头看，能清楚知道某条原则、某个决定是什么时候、因为什么改的。
+> Source-of-truth for "where we are now" is `HANDOFF.md`.
+> `PROJECT_BRIEF.md` and `ROADMAP.md` were retired 2026-04-20 — historical
+> references to them below are preserved verbatim.
 
 ---
 
 ## 给 Claude Code 的说明
 
 **每次开新对话时**，请按顺序读：
-1. `PROJECT_BRIEF.md`（长期上下文）
-2. `ROADMAP.md`（当前任务）
-3. `CHANGELOG.md`（最近的变化——尤其是最上面 3-5 条）
+1. `HANDOFF.md`（当前状态 + 下一步 + guardrails）
+2. `CHANGELOG.md`（最近的变化——尤其是最上面 3-5 条）
 
 **每次完成一个 task 或做出决策时**，在文档顶部追加一条记录。格式见下面。
 
@@ -34,8 +36,6 @@
 
 | Tag | 用在 |
 |-----|------|
-| `[BRIEF]` | PROJECT_BRIEF.md 的变化 |
-| `[ROADMAP]` | ROADMAP.md 的变化 |
 | `[DECISION]` | Open Decision 被拍板（记录拍了什么、为什么） |
 | `[DONE]` | Task 完成标记 |
 | `[BLOCKER]` | 遇到卡住的问题（不是普通 bug，是影响方向的） |

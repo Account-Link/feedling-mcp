@@ -14,11 +14,10 @@ tokens defined at the bottom of `DESIGN.md`.
 
 ## Reading order on session start
 
-1. `HANDOFF.md` — where we are right now.
-2. `docs/NEXT.md` — the forward roadmap (A → B → C → D).
-3. `docs/CHANGELOG.md` — landmark diffs from recent sessions.
-4. `DESIGN.md` — if doing any UI work.
-5. `deploy/DEPLOYMENTS.md` — if doing any enclave/CVM/on-chain work.
+1. `HANDOFF.md` — current state + what's next + guardrails.
+2. `docs/CHANGELOG.md` — landmark diffs from recent sessions.
+3. `DESIGN.md` — if doing any UI work.
+4. `deploy/DEPLOYMENTS.md` — if doing any enclave/CVM/on-chain work.
 
 ## Other repo conventions
 
