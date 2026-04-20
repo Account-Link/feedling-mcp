@@ -134,14 +134,36 @@ final class FeedlingAPI: ObservableObject {
 
     // MARK: - Registration
 
+    // Serializes concurrent callers. The `apiKey.isEmpty` guard passes
+    // instantly but `setCredentials` only runs after the network round-trip,
+    // so N parallel callers would all pass the guard and create N orphan
+    // user_ids. Observed 2026-04-20: prod user's first launch post-wipe
+    // fired 7 registers in 18 s during an onboarding retry, leaving 6
+    // unreachable users on the backend.
+    private var registrationTask: Task<Void, Never>?
+
     /// Multi-tenant cloud registration. Generates a P-256 keypair, stores the
     /// private key in Keychain, uploads the public key, and captures the
     /// returned (user_id, api_key). Idempotent: if already registered, no-ops.
+    /// Concurrent callers await the same in-flight request.
     func ensureRegisteredIfCloud() async {
         guard storageMode == .cloud else { return }
         guard apiKey.isEmpty else { return }                                  // already have creds
         if UserDefaults.standard.bool(forKey: Keys.registrationFailed) { return }  // backoff: try again on next manual toggle
 
+        if let existing = registrationTask {
+            await existing.value
+            return
+        }
+        let task = Task { [weak self] in
+            await self?.performRegistration()
+        }
+        registrationTask = task
+        await task.value
+        registrationTask = nil
+    }
+
+    private func performRegistration() async {
         do {
             let pubB64 = try KeyStore.shared.ensureKeypairAndReturnPublicKeyBase64()
             let body: [String: Any] = ["public_key": pubB64]
