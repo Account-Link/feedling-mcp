@@ -51,6 +51,91 @@
 
 ## 2026-04-20
 
+### [DONE] Phase C.3 — encrypted identity.nudge + encrypted agent chat reply + UX fixes
+
+Closes the last two plaintext-at-rest write paths. Also applies the
+user's last-round UX feedback (privacy hero tap, audit-card on-chain
+copy, GitHub + agent-audit-guide links).
+
+**Backend (backend/app.py)**
+- New `POST /v1/identity/replace` — accepts a v1 envelope and replaces
+  the existing card in place, preserving `created_at`. Used by MCP
+  to implement nudge on v1 cards. Same envelope field validation as
+  `/v1/identity/init`.
+- `POST /v1/chat/response` now accepts `envelope` in addition to
+  `content`. Mirrors what `/v1/chat/message` does for user-authored
+  chat. Push-live-activity sidecar still works via a `push_body`
+  companion field (the push payload is plaintext metadata by
+  necessity — APNs doesn't see inside the envelope).
+
+**MCP (backend/mcp_server.py)**
+- `feedling.chat.post_message`: wraps `content` in a v1 envelope
+  before POSTing when pubkeys are available. Same fallback rule
+  as `memory.add_moment` (v0 plaintext when no enclave reachable).
+- `feedling.identity.nudge`: new orchestration. Tries legacy v0
+  endpoint first; if server responds 409 with
+  `error="nudge_not_supported_on_v1_cards_yet"`, catches and falls
+  through to the new `_identity_nudge_v1` helper which: fetches
+  the decrypted card from the enclave's `/v1/identity/get`,
+  mutates the named dimension (clamped [0,100], records
+  `last_nudge_reason`), re-wraps the whole card via
+  `build_envelope`, POSTs to `/v1/identity/replace`. Plaintext
+  lives inside the MCP process only — inside the TDX-attested
+  container boundary — for the duration of one RPC.
+
+**iOS (testapp/FeedlingTest/ContentView.swift)**
+- Privacy hero row in Settings → Privacy wrapped in a
+  `NavigationLink` to `AuditCardPage`. Previously the tap did
+  nothing (the user caught this).
+- Dropped the hand-drawn chevron from the row since the
+  NavigationLink adds its own.
+
+**iOS (testapp/FeedlingTest/AuditCardView.swift)**
+- Divider label "On-chain audit (public transparency, not security)"
+  → "Public release log" — the parenthetical was confusing and
+  undersold what the log is.
+- Etherscan link label "View AppAuth deploy on Etherscan" →
+  "View on Etherscan".
+- Rewrote `AuditMechanismCopy.onChainAudit` to describe what the
+  release log *is* rather than inventing a cryptographic
+  guarantee it doesn't provide. Previous copy implied the
+  on-chain log gates key release, which is future work.
+- Two new footer links: "Read the audit guide (for your agent)"
+  → `docs/AUDIT.md` on GitHub, and "Browse the source on GitHub"
+  → the repo root. Closes the "user hands their agent a repo and
+  asks 'is this safe'" gap.
+
+**docs/AUDIT.md (new)**
+- Agent-consumable "is this safe?" guide, ~260 lines, 7 sections:
+  plain-English trust model; a 10-item mechanical-verification
+  checklist with effort estimates per item; key files to read by
+  concern; known caveats (things we DO claim vs things we DON'T);
+  runnable verifier snippet; an honest-asterisk section about iOS
+  binary provenance we don't currently solve for; responsible-
+  disclosure pointer. Written so an agent can walk through it end
+  to end without needing external context.
+
+**Live verification (Phala CVM)**
+- Running: git_commit `cc329a8`, compose_hash
+  `0xa04608c72639c66a625706b7ac4b9f1ac8dd449c690a0544b173ecede265e83e`,
+  Sepolia tx `0x7873c5dd4c9b6636994d9a3adda7ded8618394ce1a9f577a1ba9c74dc5acf7b0`.
+- CLI auditor **8/8 green**.
+- `TLS fingerprint` now stable across **six** compose rotations —
+  `5698f0ade4bb412d…` unchanged from Phase 3 through Phase C.3.
+  Phala dstack-KMS per-app derivation confirmed load-bearing.
+- Live E2E: `/v1/identity/replace` correctly rejects missing
+  envelope (400), `/v1/chat/response` envelope-branch field-
+  validates (400 on malformed), plaintext content path still
+  works (200, back-compat preserved). Full decrypt-mutate-rewrap
+  flow validated against dstack simulator before deploy.
+
+**What's left on Phase C**
+- Phase C part 2: ACME-DNS-01 for `mcp.feedling.app` so
+  Claude.ai sees a CA-signed cert issued inside the enclave.
+  Needs a DNS API token + renewal scheduler. Task #30.
+
+---
+
 ### [DONE] Phase C (part 1) — MCP in-enclave TLS + audit card Row 8
 
 Closes the last plaintext-metadata gap at the TLS layer on the

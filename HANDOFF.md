@@ -36,10 +36,22 @@ Whoever picks this up next — start here.
     terminates TLS inside the enclave with the same dstack-KMS-bound
     cert as the attestation port. `-5002s.` URL is pinnable; CLI
     auditor Row 8 + iOS audit card "MCP port TLS bound to
-    attestation" row added. `mcp.feedling.app` routing through
-    Caddy is unchanged so Claude.ai MCP connections keep working;
-    moving that hostname to layer4 SNI passthrough + ACME-DNS-01
-    in-enclave is the next Phase C sub-ship.
+    attestation" row added.
+- *Phase C.3*: shipped 2026-04-20. `identity.nudge` on v1 cards
+    goes through MCP-orchestrated decrypt-mutate-rewrap (enclave
+    decrypts, MCP mutates inside its TDX-container process, POSTs
+    to new `/v1/identity/replace`). `feedling.chat.post_message`
+    (agent replies) now wraps to v1 envelope before POSTing.
+    Server disk stays ciphertext for both write paths. iOS UX fixes
+    from user feedback: privacy hero row now actually taps through
+    to the audit card; "On-chain audit (public transparency, not
+    security)" copy → "Public release log"; new in-app links to
+    `docs/AUDIT.md` (the agent-consumable "is this safe?" guide)
+    and the public GitHub repo.
+- *Phase C part 2 open*: ACME-DNS-01 inside the enclave so
+    `mcp.feedling.app` (what Claude.ai hits) can move to layer4
+    SNI passthrough and drop the "trust Caddy on the VPS" step.
+    Needs a DNS API token + renewal scheduler. Task #30.
 - *Phase B UX*: shipped 2026-04-20. Onboarding (3-slide),
     Settings → Privacy (hero + export / delete / reset / runbook),
     audit card promoted with tap-to-expand mechanism reveals + raw
