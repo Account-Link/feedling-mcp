@@ -12,11 +12,13 @@ Whoever picks this up next — start here.
   backend on `api.feedling.app`/`mcp.feedling.app`, plus a real Intel-TDX
   enclave on Phala Cloud that attests itself, terminates its own TLS on
   the attestation port, and hosts a decrypt proxy for agent reads.
-- **CLI audit**: `tools/audit_live_cvm.py` → **7/7 green** against the live
+- **CLI audit**: `tools/audit_live_cvm.py` → **8/8 green** against the live
   CVM. Checks `/attestation` parses, DCAP chain to Intel SGX Root CA,
   measurements non-zero + `mr_config_id[0]=0x01`, `compose_hash` authorized
   on FeedlingAppAuth (Eth Sepolia), RTMR3 event log + mr_config_id binding,
-  and live TLS-cert-DER pinned to the attested fingerprint.
+  live attestation-port TLS-cert-DER pinned to the attested fingerprint,
+  and (Phase C) live MCP-port TLS-cert-DER also pinned to the same
+  attested fingerprint.
 - **iOS audit card**: **6/6 green**. Screenshot:
   `docs/screenshots/audit_card_phase3_tls_pinned.png`.
 - **Content-plaintext status**:
@@ -30,6 +32,14 @@ Whoever picks this up next — start here.
     batched). Exactly one production user to verify against (noted in
     task #23); once her migration completes, v0 accept paths + the
     rewrap endpoint itself get stripped.
+- *Phase C (part 1)*: shipped 2026-04-20. MCP port 5002 now
+    terminates TLS inside the enclave with the same dstack-KMS-bound
+    cert as the attestation port. `-5002s.` URL is pinnable; CLI
+    auditor Row 8 + iOS audit card "MCP port TLS bound to
+    attestation" row added. `mcp.feedling.app` routing through
+    Caddy is unchanged so Claude.ai MCP connections keep working;
+    moving that hostname to layer4 SNI passthrough + ACME-DNS-01
+    in-enclave is the next Phase C sub-ship.
 - *Phase B UX*: shipped 2026-04-20. Onboarding (3-slide),
     Settings → Privacy (hero + export / delete / reset / runbook),
     audit card promoted with tap-to-expand mechanism reveals + raw

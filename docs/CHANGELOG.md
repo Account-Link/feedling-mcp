@@ -51,6 +51,82 @@
 
 ## 2026-04-20
 
+### [DONE] Phase C (part 1) — MCP in-enclave TLS + audit card Row 8
+
+Closes the last plaintext-metadata gap at the TLS layer on the
+pinnable path: MCP port 5002 now terminates TLS inside the enclave
+with the same dstack-KMS-derived cert that port 5003 uses. The
+`-5002s.` passthrough URL becomes pinnable end-to-end.
+
+**Backend**
+- New shared `backend/dstack_tls.py` — pulls `derive_tls_cert_and_key`
+  and `TLS_KEY_PATH` out of `enclave_app.py` so both services use
+  one source of truth for the cert (deterministic ECDSA-P256 derived
+  from dstack-KMS at path `feedling-tls-v1`). Cert DER byte-stable
+  across reboots of the same compose; matches across ports.
+- `backend/enclave_app.py` — dropped inline derivation + a pile of
+  crypto imports; imports from `dstack_tls` now. Behavior identical.
+- `backend/mcp_server.py` — new `_materialize_tls_cert()`: when
+  `FEEDLING_MCP_TLS=true`, derive the cert via dstack-KMS at boot,
+  write cert + key to tempfiles, hand paths to uvicorn via
+  `ssl_certfile` / `ssl_keyfile`. Plain HTTP otherwise so local
+  dev stays simple. Logs the scheme on boot.
+
+**Compose (deploy/docker-compose.phala.yaml)**
+- `mcp` service: `FEEDLING_MCP_TLS=true` + mounts
+  `/var/run/dstack.sock` so it can derive via dstack-sdk at boot.
+
+**Audit (tools/audit_live_cvm.py)**
+- Row 8 (new): MCP TLS cert bound to attestation. Raw TLS handshake
+  against `-5002s.*`, compare `sha256(peer cert DER)` to the
+  bundle's `enclave_tls_cert_fingerprint_hex`. Skipped with
+  disclosure when attestation-side is still pre-Phase-3.
+- Docstring refreshed "7-row" → "8-row".
+
+**iOS (testapp/FeedlingTest/AuditCardView.swift)**
+- `AuditReport` gains `mcpTlsCertBindingChecked` +
+  `mcpTlsDisclosure`.
+- After the attestation-port pin, a second `PinningCaptureDelegate`
+  session opens a TLS handshake against the MCP URL and compares
+  its captured `sha256(cert.DER)` to the same attested fingerprint.
+- New "MCP port TLS bound to attestation" row with its own
+  tap-to-expand mechanism copy explaining that the MCP port is the
+  one the agent connects to, and that this second pin catches a
+  middleman sitting between agent and enclave.
+
+**Live verification (Phala CVM)**
+- Running: git_commit `60014a7`, compose_hash
+  `0x14cd6edb382b3229ebe36bf030f1bdc087765a9004d1ad323af58904c72df38f`,
+  Sepolia tx
+  `0xa6e0282c698cbe8e925c968624a2f2315bad5cc868568053598ccb6071984252`.
+- CLI auditor **8/8 green** against the live CVM — MCP port
+  fingerprint `5698f0ade4bb412d…` === attested fingerprint
+  `5698f0ade4bb412d…` === attestation-port handshake fingerprint.
+- `enclave_content_pk` + `enclave_tls_cert_fingerprint` unchanged
+  across FIVE compose rotations now (Phase 3 → A.1 → A.1 fixed →
+  A.6 → B → C). Phala dstack-KMS derivation is stable per app_id,
+  confirmed once more.
+
+**mcp.feedling.app unchanged**
+- The `mcp.feedling.app` hostname (what Claude.ai uses) still
+  terminates TLS at Caddy on the VPS for now, so no existing MCP
+  connection breaks. The pinnable path is the
+  `-5002s.dstack-pha-prod5.phala.network` URL.
+- Moving `mcp.feedling.app` to layer4 SNI passthrough + ACME-DNS-01
+  inside the enclave is the next Phase C sub-ship (requires a DNS
+  API token + renewal logic; flagged in `docs/NEXT.md` §Phase C).
+
+**Still pending for Phase C**
+- ACME-in-enclave for `mcp.feedling.app`.
+- Identity nudge decrypt-mutate-rewrap (MCP now runs inside the
+  TDX boundary; can orchestrate the dance now — need a new
+  `/v1/identity/replace` endpoint).
+- Agent-authored chat reply encryption (`feedling.chat.post_message`
+  — wrap plaintext before `/v1/chat/response` POST, extend endpoint
+  to accept envelopes like `/v1/chat/message` does).
+
+---
+
 ### [DONE] Phase B — Privacy UX + onboarding + audit card expansion
 
 After `/plan-design-review` (9/10 overall) and `/plan-eng-review`
