@@ -159,3 +159,170 @@ jobs:
       - uses: actions/checkout@v4
       - name: swift test
         run: cd ios/FeedlingDCAP && swift test --parallel
+
+  # =========================================================================
+  # DEPLOY — VPS (Flask + MCP systemd units on api.feedling.app)
+  #
+  # SSHes to the prod VPS, pulls main, restarts user-level systemd services.
+  # Only runs on push to main AFTER every test job is green.
+  # =========================================================================
+  deploy-vps:
+    name: deploy VPS
+    needs: [forge-test, python-tests, docker-build, lint, dcap-python]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: deploy-vps
+      cancel-in-progress: false
+    steps:
+      - name: Deploy over SSH
+        env:
+          SSH_KEY:  ${{ secrets.VPS_DEPLOY_KEY }}
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_USER: ${{ vars.VPS_USER }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes \
+              "$VPS_USER@$VPS_HOST" bash -s <<'REMOTE'
+            set -euo pipefail
+            cd "$HOME/feedling-mcp"
+            git fetch origin main
+            git reset --hard origin/main
+            export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+            systemctl --user restart feedling-backend.service feedling-mcp.service
+            sleep 3
+            systemctl --user is-active feedling-backend.service feedling-mcp.service
+            echo "deployed $(git rev-parse --short HEAD)"
+          REMOTE
+          echo "--- healthz ---"
+          curl -fsS --max-time 10 https://api.feedling.app/healthz
+
+  # =========================================================================
+  # DEPLOY — detect whether this push affects CVM image or compose
+  #
+  # The CVM is expensive to redeploy (on-chain tx + iOS consent modal) so
+  # we skip it for docs-only / ci-only commits.
+  # =========================================================================
+  detect-cvm-changes:
+    name: detect CVM changes
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    outputs:
+      cvm: ${{ steps.filter.outputs.cvm }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            cvm:
+              - 'backend/**'
+              - 'deploy/Dockerfile'
+              - 'deploy/docker-compose.phala.yaml'
+
+  # =========================================================================
+  # DEPLOY — CVM (compose_hash on-chain + phala deploy)
+  #
+  # Chain:  (1) wait for ghcr.io/.../feedling:<sha> image published by
+  #             docker-publish.yml
+  #         (2) pin that tag into deploy/docker-compose.phala.yaml, commit
+  #             with [skip ci] (idempotent — no-ops if already pinned)
+  #         (3) compute compose_hash from the pinned compose, authorize it
+  #             on-chain via FeedlingAppAuth.addComposeHash (idempotent)
+  #         (4) phala deploy --cvm-id <uuid> --wait
+  #
+  # iOS side: audit card sees new compose_hash and prompts consent. By
+  # design — this is the trust boundary the user explicitly accepts.
+  # =========================================================================
+  deploy-cvm:
+    name: deploy CVM
+    needs: [deploy-vps, detect-cvm-changes]
+    if: |
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'push' &&
+      needs.detect-cvm-changes.outputs.cvm == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: read
+    concurrency:
+      group: deploy-cvm
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Wait for ghcr.io image :<sha>
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHA_SHORT=$(git rev-parse --short HEAD)
+          echo "waiting for ghcr.io/account-link/feedling:$SHA_SHORT"
+          for i in $(seq 1 60); do
+            if gh api "/orgs/account-link/packages/container/feedling/versions?per_page=100" 2>/dev/null \
+                 | jq -e --arg t "$SHA_SHORT" '[.[].metadata.container.tags[]] | index($t)' >/dev/null; then
+              echo "image :$SHA_SHORT available"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::image :$SHA_SHORT did not appear in 10 min — docker-publish.yml likely failed"
+          exit 1
+
+      - name: Pin image tag in deploy/docker-compose.phala.yaml
+        id: pin
+        run: |
+          SHA_SHORT=$(git rev-parse --short HEAD)
+          sed -i -E "s|(ghcr\.io/account-link/feedling:)[a-f0-9]+|\1${SHA_SHORT}|g" \
+            deploy/docker-compose.phala.yaml
+          if git diff --quiet -- deploy/docker-compose.phala.yaml; then
+            echo "tag already pinned to :$SHA_SHORT — no-op bump"
+          else
+            git config user.name  'feedling-ci'
+            git config user.email 'ci@feedling.app'
+            git add deploy/docker-compose.phala.yaml
+            git commit -m "deploy: bump CVM image to :$SHA_SHORT [skip ci]"
+            git push origin HEAD:main
+          fi
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Publish compose_hash on Sepolia
+        env:
+          PRIVATE_KEY:                ${{ secrets.ETH_DEPLOYER_KEY }}
+          ETH_SEPOLIA_RPC_URL:        ${{ vars.ETH_SEPOLIA_RPC_URL }}
+          FEEDLING_APP_AUTH_CONTRACT: ${{ vars.FEEDLING_APP_AUTH_CONTRACT }}
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pyyaml
+          ./deploy/publish-compose-hash.sh eth_sepolia
+
+      - name: Install phala CLI
+        run: npm install -g phala
+
+      - name: Deploy CVM via phala
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+          CF_ZONE_ID:          ${{ secrets.CF_ZONE_ID }}
+          CF_API_TOKEN:        ${{ secrets.CF_API_TOKEN }}
+          CVM_ID:              ${{ vars.CVM_ID }}
+        run: |
+          phala deploy \
+            --api-token "$PHALA_CLOUD_API_KEY" \
+            --cvm-id "$CVM_ID" \
+            -c deploy/docker-compose.phala.yaml \
+            -e "CF_ZONE_ID=$CF_ZONE_ID" \
+            -e "CF_API_TOKEN=$CF_API_TOKEN" \
+            --wait
