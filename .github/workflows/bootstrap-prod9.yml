@@ -115,8 +115,18 @@ jobs:
           # Strip any whitespace (incl. trailing newlines) that might have
           # slipped into the GitHub secret when it was pasted in the UI.
           # `Authorization: Bearer <token>\n` silently fails auth.
-          CF_API_TOKEN=$(printf '%s' "$CF_API_TOKEN_RAW" | tr -d '[:space:]')
-          CF_ZONE_ID=$(printf '%s' "$CF_ZONE_ID_RAW" | tr -d '[:space:]')
+          # Strip any non-[A-Za-z0-9_-] chars — CF tokens are URL-safe
+          # base64. Handles paste artifacts like smart quotes, Bearer prefix,
+          # trailing \r on Windows clipboards, stray whitespace.
+          CF_API_TOKEN=$(printf '%s' "$CF_API_TOKEN_RAW" | LC_ALL=C tr -cd 'A-Za-z0-9_-')
+          CF_ZONE_ID=$(printf '%s' "$CF_ZONE_ID_RAW" | LC_ALL=C tr -cd 'A-Za-z0-9')
+
+          # Safe diagnostics — print length + first/last 2 chars only (this
+          # is 40-char URL-safe base64 so 2+2 is unrecoverable).
+          TLEN=${#CF_API_TOKEN}
+          ZLEN=${#CF_ZONE_ID}
+          echo ">>> CF_API_TOKEN length=$TLEN (expected ~40)  head='${CF_API_TOKEN:0:2}'…tail='${CF_API_TOKEN: -2}'"
+          echo ">>> CF_ZONE_ID   length=$ZLEN (expected 32)   head='${CF_ZONE_ID:0:2}'…tail='${CF_ZONE_ID: -2}'"
 
           # Sanity check: token itself must be valid. Use the one endpoint
           # that requires zero scope beyond "token exists".
