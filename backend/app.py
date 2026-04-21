@@ -1455,6 +1455,101 @@ def serve_frame(filename):
     return send_file(fpath, mimetype="image/jpeg")
 
 
+# --- Frame decrypt plumbing -------------------------------------------------
+# Frames are v1 envelopes just like chat/memory/identity: the broadcast
+# extension runs VNRecognizeText on-device, stuffs `image` + `ocr_text`
+# into the same JSON payload, and ChaCha20-seals the whole thing. The
+# server sees only `body_ct` — that's why frames_meta.ocr_text is always
+# "" and screen.analyze.ocr_summary is empty.
+#
+# Two endpoints open the decrypt path to agents + API clients:
+#   GET /v1/screen/frames/<id>/envelope — opaque envelope JSON.
+#                                         Used by the enclave to pull
+#                                         the ciphertext back for
+#                                         in-enclave decryption.
+#   GET /v1/screen/frames/<id>/decrypt  — proxies to the enclave's
+#                                         /v1/screen/frames/<id>/decrypt
+#                                         and returns the plaintext:
+#                                         image_b64, ocr_text, app, w, h.
+#                                         This is the API-path parity
+#                                         clients ask for when they want
+#                                         everything curl-reachable too.
+
+
+def _find_envelope_path(store, frame_id: str) -> Path | None:
+    """Locate the on-disk .env.json for a given frame id.
+
+    Fast path: filename is `<id>.env.json` — check that first. Fall back
+    to scanning frames_meta by id in case the filename convention shifts.
+    """
+    if not re.match(r"^[a-f0-9]{16,64}$", frame_id):
+        return None
+    direct = store.frames_dir / f"{frame_id}.env.json"
+    if direct.exists():
+        return direct
+    with store.frames_lock:
+        for meta in store.frames_meta:
+            if meta.get("id") == frame_id:
+                p = store.frames_dir / meta["filename"]
+                if p.exists():
+                    return p
+    return None
+
+
+@app.route("/v1/screen/frames/<frame_id>/envelope", methods=["GET"])
+def frame_envelope(frame_id):
+    """Return the raw v1 envelope JSON for a single frame.
+
+    Callers needing plaintext should hit /v1/screen/frames/<id>/decrypt
+    instead — this endpoint exists primarily so the enclave can pull the
+    ciphertext back for in-enclave decryption.
+    """
+    store = require_user()
+    fpath = _find_envelope_path(store, frame_id)
+    if fpath is None:
+        return jsonify({"error": "not found"}), 404
+    try:
+        env = json.loads(fpath.read_text())
+    except Exception as e:
+        return jsonify({"error": f"envelope parse: {e}"}), 500
+    if not isinstance(env, dict):
+        return jsonify({"error": "envelope not an object"}), 500
+    return jsonify(env)
+
+
+@app.route("/v1/screen/frames/<frame_id>/decrypt", methods=["GET"])
+def frame_decrypt(frame_id):
+    """Proxy to the enclave's decrypt endpoint so API-only clients get
+    plaintext without needing the MCP transport.
+
+    Query params are forwarded untouched; the enclave honors
+    `include_image=true|false` to gate the base64 JPEG payload (large).
+    """
+    store = require_user()
+    fpath = _find_envelope_path(store, frame_id)
+    if fpath is None:
+        return jsonify({"error": "not found"}), 404
+
+    enclave_url = os.environ.get("FEEDLING_ENCLAVE_URL", "").rstrip("/")
+    if not enclave_url:
+        return jsonify({"error": "enclave unreachable — FEEDLING_ENCLAVE_URL not set"}), 503
+
+    # Forward the caller's api_key + any include_image flag.
+    api_key = _extract_api_key()
+    headers = {"X-API-Key": api_key} if api_key else {}
+    params = {"include_image": request.args.get("include_image", "true")}
+    try:
+        with httpx.Client(timeout=30, verify=False) as client:
+            r = client.get(
+                f"{enclave_url}/v1/screen/frames/{frame_id}/decrypt",
+                headers=headers,
+                params=params,
+            )
+        return (r.content, r.status_code, {"Content-Type": r.headers.get("Content-Type", "application/json")})
+    except httpx.HTTPError as e:
+        return jsonify({"error": f"enclave_error: {e}"}), 502
+
+
 @app.route("/v1/screen/analyze", methods=["GET"])
 def analyze_screen():
     store = require_user()

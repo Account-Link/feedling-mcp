@@ -34,6 +34,7 @@ import datetime as _dt
 import hashlib
 import json
 import os
+import re
 import ssl
 import sys
 import tempfile
@@ -813,6 +814,83 @@ def v1_identity_get():
         base.update({"decrypt_status": f"error: {reason}"})
         return jsonify({"identity": base, "user_id": authorized_user_id,
                         "decrypt_errors": [{"reason": reason}]})
+
+
+@app.route("/v1/screen/frames/<frame_id>/decrypt", methods=["GET"])
+def v1_frame_decrypt(frame_id):
+    """Decrypt a single v1 screen-frame envelope and return its plaintext.
+
+    The iOS broadcast extension runs VNRecognizeText on each frame and
+    packs both the base64 JPEG and the OCR text into one JSON payload
+    before sealing it with ChaCha20-Poly1305. The backend never sees the
+    plaintext; this route is the only way agents or API clients can
+    read either the pixels or the OCR text.
+
+    Query params:
+      include_image (bool, default true): omit `image_b64` if false —
+        helpful when the caller only wants OCR + metadata and wants to
+        avoid pulling ~80-120 KB per frame.
+    """
+    if not _state["ready"]:
+        return jsonify({"error": "not_ready", "detail": _state["error"]}), 503
+    if not re.match(r"^[a-f0-9]{16,64}$", frame_id or ""):
+        return jsonify({"error": "bad frame id"}), 400
+
+    api_key = _extract_api_key()
+    if not api_key:
+        return jsonify({"error": "missing api_key"}), 401
+
+    try:
+        whoami = _flask_get("/v1/users/whoami", api_key)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 401:
+            return jsonify({"error": "unauthorized"}), 401
+        return jsonify({"error": f"backend_error: {e}"}), 502
+    authorized_user_id = whoami.get("user_id", "")
+    if not authorized_user_id:
+        return jsonify({"error": "cannot resolve user_id"}), 401
+
+    try:
+        env = _flask_get(f"/v1/screen/frames/{frame_id}/envelope", api_key)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return jsonify({"error": "frame not found"}), 404
+        return jsonify({"error": f"backend_error: {e}"}), 502
+
+    include_image = request.args.get("include_image", "true").lower() != "false"
+    content_sk = _get_or_derive_content_sk()
+
+    try:
+        plaintext = _decrypt_envelope(env, authorized_user_id, content_sk)
+    except DecryptFailure as e:
+        return jsonify({"error": f"decrypt_failed: {e.reason}"}), 502
+
+    try:
+        inner = json.loads(plaintext.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        return jsonify({"error": f"plaintext_parse: {e}"}), 502
+
+    result = {
+        "id": frame_id,
+        "ts": inner.get("ts") or env.get("ts"),
+        "app": inner.get("app"),
+        "bundle": inner.get("bundle"),
+        "ocr_text": inner.get("ocr_text", ""),
+        "urls": inner.get("urls", []),
+        "w": inner.get("w", 0),
+        "h": inner.get("h", 0),
+        "tier_hint": inner.get("tier_hint"),
+        "v": int(env.get("v", 1)),
+        "owner_user_id": authorized_user_id,
+        "decrypt_status": "ok",
+    }
+    if include_image:
+        result["image_b64"] = inner.get("image", "")
+        result["image_mime"] = "image/jpeg"
+    else:
+        result["image_b64"] = None
+        result["image_bytes_omitted"] = True
+    return jsonify(result)
 
 
 def _get_or_derive_content_sk() -> nacl.public.PrivateKey:

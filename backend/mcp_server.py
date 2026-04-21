@@ -29,6 +29,7 @@ from typing import Any
 import httpx
 from fastmcp import FastMCP, Context
 from fastmcp.server.dependencies import get_http_request
+from fastmcp.utilities.types import Image
 from fastmcp.server.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
@@ -358,6 +359,84 @@ def screen_analyze(ctx: Context = None) -> dict:
 )
 def screen_summary(ctx: Context = None) -> dict:
     return _get("/v1/screen/summary", ctx=ctx)
+
+
+@mcp.tool(
+    name="feedling.screen.decrypt_frame",
+    description=(
+        "Decrypt a screen-frame envelope and return the actual pixels + OCR "
+        "text so the Agent can SEE the frame. Runs inside the enclave — the "
+        "plaintext never leaves the TDX boundary except on the wire back to "
+        "the authenticated caller. If frame_id is omitted, the most recent "
+        "frame is used. Returns a list with the JPEG image (so vision "
+        "activates) and a text block containing ocr_text + app + ts metadata."
+    ),
+)
+def screen_decrypt_frame(
+    frame_id: str = "",
+    include_image: bool = True,
+    ctx: Context = None,
+) -> list:
+    """Resolve a frame id (or pick the latest), ask the enclave to
+    decrypt, and return an MCP content list the agent can consume:
+
+        [ Image(jpeg_bytes, format="jpeg"),   # vision block
+          "{json metadata with ocr_text}"     # text block ]
+
+    If include_image is False, returns a dict with ocr_text + metadata
+    only — useful when the caller just wants text and wants to avoid the
+    bandwidth cost of shipping JPEG base64.
+    """
+    if not ENCLAVE_BASE:
+        return [{"error": "enclave not configured — FEEDLING_ENCLAVE_URL missing"}]
+
+    # Resolve frame_id lazily — empty means "latest".
+    fid = (frame_id or "").strip()
+    if not fid:
+        try:
+            listing = _get("/v1/screen/frames", {"limit": 1}, ctx=ctx)
+        except httpx.HTTPError as e:
+            return [{"error": f"frames_list_failed: {e}"}]
+        frames = listing.get("frames") or []
+        if not frames:
+            return [{"error": "no frames on record yet"}]
+        fid = frames[0].get("id") or ""
+        if not fid:
+            return [{"error": "latest frame has no id"}]
+
+    try:
+        with httpx.Client(timeout=30, verify=False) as client:
+            r = client.get(
+                f"{ENCLAVE_BASE}/v1/screen/frames/{fid}/decrypt",
+                headers=_headers(ctx),
+                params={"include_image": "true" if include_image else "false"},
+            )
+            r.raise_for_status()
+            payload = r.json()
+    except httpx.HTTPError as e:
+        return [{"error": f"enclave_decrypt_failed: {e}", "frame_id": fid}]
+
+    if payload.get("error"):
+        return [payload]
+
+    metadata = {k: v for k, v in payload.items() if k not in ("image_b64",)}
+    if not include_image:
+        return [metadata]
+
+    img_b64 = payload.get("image_b64") or ""
+    if not img_b64:
+        return [{"warning": "decrypt ok but no image_b64 in plaintext", **metadata}]
+
+    try:
+        jpeg_bytes = base64.b64decode(img_b64)
+    except Exception as e:
+        return [{"error": f"image_b64_decode: {e}", **metadata}]
+
+    print(f"[mcp] decrypt_frame id={fid} bytes={len(jpeg_bytes)} ocr_chars={len(metadata.get('ocr_text') or '')}")
+    # FastMCP serializes list returns as a multi-block MCP tool result:
+    # the Image becomes an ImageContent the agent's vision reads, and the
+    # dict becomes structuredContent + a JSON-serialized text block.
+    return [Image(data=jpeg_bytes, format="jpeg"), metadata]
 
 
 # ---------------------------------------------------------------------------
