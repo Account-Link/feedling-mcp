@@ -35,6 +35,18 @@ on:
         description: 'Type "yes" to confirm you want to spin up a NEW prod9 CVM.'
         required: true
         default: 'no'
+      skip_to_publish:
+        description: 'Resume mode: skip deploy, go straight to compose_hash publish + commit. Requires app_id + vm_uuid.'
+        required: false
+        default: 'no'
+      app_id_override:
+        description: 'If skip_to_publish=yes, use this app_id (40-char hex).'
+        required: false
+        default: ''
+      vm_uuid_override:
+        description: 'If skip_to_publish=yes, use this vm_uuid (dashed UUID).'
+        required: false
+        default: ''
 
 concurrency:
   group: bootstrap-prod9
@@ -86,6 +98,7 @@ jobs:
       # name but different app_id — unbounded spend + audit confusion.
       # ---------------------------------------------------------------
       - name: Pre-flight — assert no existing feedling-enclave-v2 CVM
+        if: ${{ github.event.inputs.skip_to_publish != 'yes' }}
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
         run: |
@@ -106,6 +119,7 @@ jobs:
       # Running this twice is safe — the DELETE is gated on a GET match.
       # ---------------------------------------------------------------
       - name: Pre-flight — purge conflicting A records for api/mcp.feedling.app
+        if: ${{ github.event.inputs.skip_to_publish != 'yes' }}
         env:
           CF_API_TOKEN_RAW: ${{ secrets.CF_API_TOKEN }}
           CF_ZONE_ID_RAW:   ${{ secrets.CF_ZONE_ID }}
@@ -174,6 +188,7 @@ jobs:
       # ---------------------------------------------------------------
       - name: phala deploy → prod9
         id: deploy
+        if: ${{ github.event.inputs.skip_to_publish != 'yes' }}
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
           CF_API_TOKEN:        ${{ secrets.CF_API_TOKEN }}
@@ -242,6 +257,7 @@ jobs:
       # First-time LE issuance can take 2-4 min; we allow up to ~10 min.
       # ---------------------------------------------------------------
       - name: Wait for enclave /attestation (passthrough TLS)
+        if: ${{ github.event.inputs.skip_to_publish != 'yes' }}
         env:
           APP_ID: ${{ steps.deploy.outputs.app_id }}
         run: |
@@ -261,6 +277,7 @@ jobs:
           exit 1
 
       - name: Wait for api.feedling.app/healthz (ingress + LE cert + DNS)
+        if: ${{ github.event.inputs.skip_to_publish != 'yes' }}
         run: |
           set -euo pipefail
           URL="https://api.feedling.app/healthz"
@@ -278,16 +295,20 @@ jobs:
           exit 1
 
       - name: Wait for mcp.feedling.app (ingress SNI routing)
+        if: ${{ github.event.inputs.skip_to_publish != 'yes' }}
         run: |
           set -euo pipefail
           URL="https://mcp.feedling.app/sse"
           echo ">>> probing $URL"
+          # Note: /sse is long-polling. curl gets the 200 response headers
+          # then --max-time fires, returning exit 28 but still printing
+          # http_code=200. We MUST NOT chain `|| echo 000` to the $() —
+          # that concatenates "200" + "000" = "200000" which fails the
+          # 3-digit regex. Instead, check empty and fall back cleanly.
           for i in $(seq 1 30); do
-            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$URL" || echo "000")
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$URL" 2>/dev/null || true)
+            [ -z "$CODE" ] && CODE="000"
             echo "  attempt $i → HTTP $CODE"
-            # /sse is long-polling; any 2xx/4xx means TLS + routing work.
-            # 000 means TLS/DNS still propagating. 5xx also acceptable —
-            # MCP container itself may need another beat.
             if [[ "$CODE" =~ ^[2-5][0-9][0-9]$ ]]; then
               echo ">>> mcp.feedling.app routing confirmed (HTTP $CODE)"
               exit 0
@@ -329,8 +350,8 @@ jobs:
       # ---------------------------------------------------------------
       - name: Commit migration state (CVM_ID + iOS CVMEndpoints) → prod9
         env:
-          NEW_APP_ID:    ${{ steps.deploy.outputs.app_id }}
-          NEW_VM_UUID:   ${{ steps.deploy.outputs.vm_uuid }}
+          NEW_APP_ID:    ${{ github.event.inputs.skip_to_publish == 'yes' && github.event.inputs.app_id_override || steps.deploy.outputs.app_id }}
+          NEW_VM_UUID:   ${{ github.event.inputs.skip_to_publish == 'yes' && github.event.inputs.vm_uuid_override || steps.deploy.outputs.vm_uuid }}
           SWIFT_FILE:    testapp/FeedlingTest/CVMEndpoints.swift
           CVM_ID_FILE:   deploy/prod-cvm-id.txt
           NEW_GATEWAY:   dstack-pha-prod9.phala.network
@@ -387,8 +408,8 @@ jobs:
 
       - name: Summary
         env:
-          NEW_APP_ID:  ${{ steps.deploy.outputs.app_id }}
-          NEW_VM_UUID: ${{ steps.deploy.outputs.vm_uuid }}
+          NEW_APP_ID:  ${{ github.event.inputs.skip_to_publish == 'yes' && github.event.inputs.app_id_override || steps.deploy.outputs.app_id }}
+          NEW_VM_UUID: ${{ github.event.inputs.skip_to_publish == 'yes' && github.event.inputs.vm_uuid_override || steps.deploy.outputs.vm_uuid }}
         run: |
           cat <<EOF >> "$GITHUB_STEP_SUMMARY"
           ## prod9 bootstrap complete

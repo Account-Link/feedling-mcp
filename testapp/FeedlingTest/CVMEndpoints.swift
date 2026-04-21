@@ -23,17 +23,12 @@ enum CVMEndpoints {
 
     /// Phala dstack App ID of the production CVM. Appears as the hex prefix
     /// in dstack-gateway URLs (`<appId>-<port>s.<gatewayDomain>`).
-    ///
-    /// TODO(post-prod9-deploy): replace this with the new prod9 app_id
-    /// returned by `phala cvms get feedling-enclave-v2`. Current value is
-    /// the retired prod5 app_id, retained so pre-migration builds keep
-    /// working against the old CVM until cutover.
-    static let defaultAppId: String = "051a174f2457a6c474680a5d745372398f97b6ad"
+    static let defaultAppId: String = "9798850e096d770293c67305c6cfdceed68c1d28"
 
     /// dstack-gateway cluster hostname. prod9 is the only public cluster
     /// that supports TXT-based custom-domain routing — required by
     /// dstack-ingress 2.2 multi-domain config.
-    static let defaultGatewayDomain: String = "dstack-pha-prod5.phala.network"
+    static let defaultGatewayDomain: String = "dstack-pha-prod9.phala.network"
 
     /// Public custom domain for the Flask API (routed via ingress).
     static let apiHost: String = "api.feedling.app"
