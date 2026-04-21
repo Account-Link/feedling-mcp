@@ -31,8 +31,17 @@ class SharedConfig {
         set { sharedDefaults?.set(newValue, forKey: ingestTokenKey) }
     }
 
+    // Broadcast extension is a separate target and cannot import the main
+    // app's `CVMEndpoints` enum. The real value is written to app-group
+    // UserDefaults by `FeedlingAPI.init` (see `resolveIngestWSEndpoint`);
+    // this fallback only matters on the very first broadcast before the
+    // main app has ever launched. Kept in sync with `CVMEndpoints.defaults`
+    // so a cold-start fallback still hits the current CVM.
+    static let defaultIngestEndpoint =
+        "wss://051a174f2457a6c474680a5d745372398f97b6ad-9998.dstack-pha-prod5.phala.network/ingest"
+
     static var ingestEndpoint: String {
-        get { sharedDefaults?.string(forKey: ingestEndpointKey) ?? "ws://54.209.126.4:9998/ingest" }
+        get { sharedDefaults?.string(forKey: ingestEndpointKey) ?? defaultIngestEndpoint }
         set { sharedDefaults?.set(newValue, forKey: ingestEndpointKey) }
     }
 

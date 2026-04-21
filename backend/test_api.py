@@ -4,7 +4,7 @@ Feedling backend API test suite.
 
 Usage:
     python test_api.py                        # needs --key or --multi-tenant (everything is auth-gated)
-    python test_api.py http://54.209.126.4:5001 --multi-tenant
+    python test_api.py https://api.feedling.app --multi-tenant
     python test_api.py http://localhost:5001 --key <shared_api_key>
 
 Post-SINGLE_USER/v0 strip (2026-04-20):

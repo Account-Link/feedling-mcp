@@ -1,21 +1,44 @@
-# Feedling — Phala TDX CVM compose.
+# Feedling — Phala TDX CVM compose (CVM-only, post-VPS migration).
 #
-# This compose runs inside a Phala dstack CVM. The compose_hash of this
-# file is what the on-chain FeedlingAppAuth contract authorizes and what
-# iOS's audit card replays out of RTMR3.
+# VPS is gone. This compose is the whole production stack:
+#   - dstack-ingress: TLS termination for mcp.feedling.app + api.feedling.app
+#   - backend:       Flask (HTTP+WS) — sole source of truth for user data
+#   - mcp:           FastMCP SSE (plain HTTP behind ingress)
+#   - enclave:       decrypt proxy + /attestation (own TLS on :5003,
+#                    reachable via dstack-gateway `-5003s.` passthrough)
 #
-# Run locally first to confirm healthy:
-#   docker compose -f deploy/docker-compose.phala.yaml pull
-#   docker compose -f deploy/docker-compose.phala.yaml up -d
+# IMPORTANT: this replaces the prior VPS+CVM split. DNS A-records for
+# both `mcp.feedling.app` and `api.feedling.app` are migrated off
+# `54.209.126.4` and onto Phala's dstack-gateway. Existing prod users
+# re-onboard from scratch (per user direction 2026-04-21).
 #
-# Deploy to Phala:
-#   phala deploy -c deploy/docker-compose.phala.yaml -n feedling-enclave
+# REQUIRED CVM NODE: prod9 (dstack-pha-prod9). Multi-domain TXT routing
+# via `_dstack-app-address.<domain>` only works on the prod9 gateway;
+# prod5/prod7 do not support it. This is why we redeploy to a new CVM
+# rather than updating the existing one on prod5 — new node → new
+# app_id → new compose_hash authorization required.
 #
-# After deploy:
-#   1. Read CVM's public URL from `phala cvms get <name>`
-#   2. Compute compose_hash with deploy/publish-compose-hash.sh
-#   3. Publish hash on-chain via FeedlingAppAuth.addComposeHash
-#   4. Point iOS app's enclave URL at the CVM (Settings or env var)
+# DNS records dstack-ingress manages automatically (needs CF token with
+# Zone.DNS:Edit on feedling.app):
+#   CNAME mcp.feedling.app → <app-id>.dstack-pha-prod9.phala.network
+#   CNAME api.feedling.app → <app-id>.dstack-pha-prod9.phala.network
+#   TXT   _dstack-app-address.mcp.feedling.app → <app-id>:443
+#   TXT   _dstack-app-address.api.feedling.app → <app-id>:443
+#   CAA   mcp.feedling.app / api.feedling.app pinned to Let's Encrypt
+#
+# Deploy flow:
+#   1. `phala deploy -c deploy/docker-compose.phala.yaml -n feedling-enclave-v2 \
+#         --node-id <prod9-node-id> -e CF_API_TOKEN=... -e CF_ZONE_ID=...`
+#   2. Wait for ingress to issue LE certs (first-time boot ~2–3 min).
+#   3. Update CF DNS: A records for mcp/api → the public IP printed by
+#      `phala cvms get feedling-enclave-v2` (or the CNAME target above).
+#   4. Compute compose_hash; publish on-chain via FeedlingAppAuth.addComposeHash.
+#   5. iOS follow-up PR: update `AuditCardView.swift` `makeAttestationURL`
+#      and `FeedlingAPI.swift` pinning URL to the new app_id on prod9.
+#      Decide whether the MCP-port pubkey-pin row stays (now pins ingress
+#      cert — requires enclave_app.py to bake ingress cert SPKI hash into
+#      REPORT_DATA) or is retired (content-layer envelope crypto still
+#      secures reads/writes regardless of transport-layer pinning).
 #
 # CRITICAL: every literal in this file becomes part of the compose_hash.
 # Any ${VAR} below must be category (A) — cosmetic / non-security.
@@ -24,24 +47,72 @@
 name: feedling-enclave
 
 services:
+  # --- Public TLS termination for both custom domains (mcp + api). ---
+  # HAProxy-based L4/L7 ingress inside the TDX CVM. Issues LE certs via
+  # CF DNS-01, routes by SNI. Key material stays inside the enclave
+  # volume `letsencrypt` — the CF token only has DNS-edit scope, not
+  # certificate authority.
+  ingress:
+    image: dstacktee/dstack-ingress:2.2@sha256:d05a7b343c37c1cca1bba8dbf7e8f3c6d2118158af2d41c455103796db4f67f0
+    restart: unless-stopped
+    ports:
+      - "443:443"
+    environment:
+      DNS_PROVIDER: "cloudflare"
+      GATEWAY_DOMAIN: "_.dstack-pha-prod9.phala.network"
+      SET_CAA: "true"
+      CERTBOT_EMAIL: "sxysun9@gmail.com"
+      # Multi-domain mode: one container, two SNI-routed upstreams.
+      DOMAINS: |
+        mcp.feedling.app
+        api.feedling.app
+      ROUTING_MAP: |
+        mcp.feedling.app=mcp:5002
+        api.feedling.app=backend:5001
+      # CF_API_TOKEN must be injected via `phala deploy -e` (encrypted
+      # env channel, NOT baked into compose_hash). Required scopes:
+      # Zone.DNS:Edit on the feedling.app zone (for DNS-01 challenge +
+      # TXT _dstack-app-address records + CAA pinning).
+      CLOUDFLARE_API_TOKEN: "${CF_API_TOKEN}"
+    volumes:
+      # dstack-ingress 2.2 talks to the host's dstack daemon via tappd.sock
+      # (older API socket). Key generation, quote derivation, and the
+      # _dstack-app-address TXT record binding all go through this.
+      - /var/run/tappd.sock:/var/run/tappd.sock
+      - feedling_ingress_letsencrypt:/etc/letsencrypt
+      - feedling_ingress_evidences:/evidences
+    depends_on:
+      backend:
+        condition: service_started
+      mcp:
+        condition: service_started
+
+  # --- Attestation service + decrypt proxy. ---
+  # Keeps its own in-enclave TLS on :5003. NOT routed through ingress —
+  # iOS reaches it via dstack-gateway passthrough at
+  #   https://<app-id>-5003s.dstack-pha-prod9.phala.network/attestation
+  # so the audit card can pin sha256(cert.DER) against the fingerprint
+  # baked into REPORT_DATA. Moving this behind ingress would break the
+  # Phase 3 pinning guarantee.
   enclave:
     image: ghcr.io/account-link/feedling:78b51a6
     command: ["python", "-u", "backend/enclave_app.py"]
     restart: unless-stopped
     environment:
-      # --- BAKED: security-relevant ---
       FEEDLING_ENCLAVE_PORT: "5003"
       FEEDLING_DATA_DIR: "/data"
-      # Phase 3: terminate TLS inside the enclave. With this on,
-      # bootstrap() derives a dstack-KMS-bound ECDSA P-256 cert and
-      # bakes sha256(cert.DER) into REPORT_DATA. Clients verify the
-      # live cert by comparing sha256(DER) to the attested value —
-      # the self-signed chain is expected; PKI trust is not the model.
       FEEDLING_ENCLAVE_TLS: "true"
-      # Enclave calls Flask for whoami + ciphertext fetch. Override the
-      # 127.0.0.1 default because services are distinct containers on the
-      # compose network.
       FEEDLING_FLASK_URL: "http://backend:5001"
+      # Post-prod9 migration: MCP terminates plain HTTP behind
+      # dstack-ingress. The LE cert for mcp.feedling.app lives on the
+      # ingress volume, NOT derived from dstack-KMS path
+      # `feedling-mcp-tls-v1`, so the Phase C.2 pubkey fingerprint no
+      # longer has a live counterpart. Leave empty → iOS renders the
+      # "Pre-Phase-C.2 deployment" disclosure row (already supported).
+      # Flip back to "true" only if restoring the MCP-in-enclave-TLS
+      # mode (compose would also need to re-add ACME env + mount
+      # /var/run/dstack.sock for the mcp service).
+      FEEDLING_MCP_TLS_IN_ENCLAVE: "false"
       # NOTE: intentionally NOT setting DSTACK_SIMULATOR_ENDPOINT.
       # dstack-sdk treats "is this env var PRESENT?" as "use simulator"
       # even when the value is empty, so an empty string would make it
@@ -52,28 +123,21 @@ services:
       - "5003:5003"
     volumes:
       - feedling_enclave_data:/data
-      # dstack-sdk talks to the host's dstack daemon via this socket.
-      # Phala CVM auto-creates /var/run/dstack.sock on the host; mounting
-      # it into the container lets us call get_quote/get_key/etc.
       - /var/run/dstack.sock:/var/run/dstack.sock
     healthcheck:
-      # Liveness (not readiness): any HTTP response from Flask — including
-      # 503 while dstack-sdk boot is in flight — counts as healthy. If we
-      # required /healthz=200, a slow first-quote generation would fail
-      # the healthcheck window and take the whole compose down with it.
-      # Real readiness is confirmed externally by /attestation returning
-      # 200 (iOS audit card does this).
-      #
-      # -k is required because the enclave serves a self-signed cert
-      # whose trust comes from the attestation, not from a local CA
-      # bundle; inside the container there's no way to pin against
-      # REPORT_DATA for this liveness ping anyway.
       test: ["CMD-SHELL", "curl -k -s -o /dev/null -w '%{http_code}' https://127.0.0.1:5003/healthz | grep -qE '^(200|503)$'"]
       interval: 15s
       timeout: 5s
       retries: 20
       start_period: 120s
 
+  # --- Flask backend — the ONLY backend. ---
+  # Serves plain HTTP on :5001 (TLS terminated by ingress for
+  # api.feedling.app). Also runs the WebSocket ingest on :9998 for the
+  # iOS broadcast extension; that port is exposed via dstack-gateway
+  # TLS-terminated route `wss://<app-id>-9998.dstack-pha-prod9...` —
+  # frames are app-layer encrypted (FrameEnvelope v1) so gateway TLS
+  # is sufficient for transport hygiene.
   backend:
     image: ghcr.io/account-link/feedling:78b51a6
     command: ["python", "-u", "backend/app.py"]
@@ -82,9 +146,6 @@ services:
       FEEDLING_API_KEY: ""
       FEEDLING_DATA_DIR: "/data"
       FEEDLING_WS_PORT: "9998"
-      # enclave service serves HTTPS since Phase 3. verify is disabled
-      # inside the compose network — the trust model is REPORT_DATA pin
-      # from outside, not PKI from inside.
       FEEDLING_ENCLAVE_URL: "https://enclave:5003"
     ports:
       - "5001:5001"
@@ -95,6 +156,13 @@ services:
       enclave:
         condition: service_healthy
 
+  # --- MCP SSE server (plain HTTP behind ingress). ---
+  # TLS termination moved to the ingress service; MCP speaks HTTP only.
+  # Consequence: the Phase C.2 MCP-port pubkey-pin (derived from
+  # dstack-KMS at path `feedling-mcp-tls-v1`) is no longer in this path.
+  # Ingress owns the LE cert for mcp.feedling.app. iOS audit card either
+  # (a) drops the MCP-TLS pin row, or (b) pins the ingress cert SPKI via
+  # a new attested fingerprint. See header TODO.
   mcp:
     image: ghcr.io/account-link/feedling:78b51a6
     command: ["python", "-u", "backend/mcp_server.py"]
@@ -102,38 +170,11 @@ services:
     environment:
       FEEDLING_API_KEY: ""
       FEEDLING_FLASK_URL: "http://backend:5001"
-      # When set, MCP routes content reads (chat/memory/identity) through
-      # the enclave's decrypt proxy so agents see plaintext. Writes still
-      # go to Flask (which stores the ciphertext MCP wrapped for them).
       FEEDLING_ENCLAVE_URL: "https://enclave:5003"
       FEEDLING_MCP_PORT: "5002"
       FEEDLING_MCP_TRANSPORT: "sse"
-      # Phase C.1 fallback: dstack-KMS self-signed cert. Used when
-      # FEEDLING_ACME_DOMAIN is unset (e.g., local dev without CF token).
-      FEEDLING_MCP_TLS: "true"
-      # Phase C.2: ACME-DNS-01 via Cloudflare. When set, MCP acquires a
-      # Let's Encrypt cert for this domain at boot and serves it on port
-      # 5002. The cert key is derived from dstack-KMS ('feedling-mcp-tls-v1')
-      # so its public key fingerprint is stable and pre-computed by the
-      # enclave service for the attestation bundle.
-      FEEDLING_ACME_DOMAIN: "mcp.feedling.app"
-      FEEDLING_ACME_EMAIL: "sxysun9@gmail.com"
-      FEEDLING_TLS_CACHE_DIR: "/tls"
-      # FEEDLING_ACME_STAGING: "false"   # set to "true" to test against LE staging
-      # CF_ZONE_ID and CF_API_TOKEN must be injected via Phala's encrypted
-      # environment variable channel — do NOT hardcode here (they are not
-      # part of the compose_hash but must not appear in plaintext in the file).
-      FEEDLING_CF_ZONE_ID: "${CF_ZONE_ID}"
-      FEEDLING_CF_API_TOKEN: "${CF_API_TOKEN}"
-    ports:
-      - "5002:5002"
-    volumes:
-      # dstack socket for key derivation (cert key + account key from dstack-KMS).
-      - /var/run/dstack.sock:/var/run/dstack.sock
-      # Persistent TLS cert cache: avoids hitting LE rate limits (5 certs/week)
-      # on every container restart. Only the cert PEM is here; the key is
-      # regenerated from dstack-KMS (stable across reboots, no persistence needed).
-      - feedling_mcp_tls_data_v2:/tls
+      # Plain HTTP — ingress terminates TLS.
+      FEEDLING_MCP_TLS: "false"
     depends_on:
       backend:
         condition: service_started
@@ -143,5 +184,7 @@ volumes:
     name: feedling_enclave_data
   feedling_backend_data:
     name: feedling_backend_data
-  feedling_mcp_tls_data_v2:
-    name: feedling_mcp_tls_data_v2
+  feedling_ingress_letsencrypt:
+    name: feedling_ingress_letsencrypt
+  feedling_ingress_evidences:
+    name: feedling_ingress_evidences

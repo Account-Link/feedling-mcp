@@ -18,7 +18,7 @@ class SampleHandler: RPBroadcastSampleHandler {
 
         let token = SharedConfig.ingestToken.trimmingCharacters(in: .whitespacesAndNewlines)
         let endpoint = SharedConfig.ingestEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
-        WebSocketManager.shared.connect(endpoint: endpoint.isEmpty ? "ws://54.209.126.4:9998/ingest" : endpoint,
+        WebSocketManager.shared.connect(endpoint: endpoint.isEmpty ? SharedConfig.defaultIngestEndpoint : endpoint,
                                         token: token.isEmpty ? "feedling" : token)
         print("[broadcast] started, interval=\(Int(frameInterval * 1000))ms, endpoint=\(endpoint)")
     }

@@ -177,6 +177,25 @@ reinstalled fresh against a multi-tenant backend via the normal
 | Purpose | First Feedling deployment where the MCP-port cert is a real CA-signed LE cert (not self-signed dstack-KMS) whose private key is provably inside the TDX enclave. Agents (Claude.ai / mobile MCP clients) get a cert their OS trusts out of the box AND auditors can verify the pubkey is enclave-bound. `mcp.feedling.app` is now end-to-end trusted without trusting the gateway operator on the audit-aware path. |
 | Retired by | Phase D deploy below. |
 
+### Phase E migration — pure-CVM, ingress-terminated TLS (in-flight, 2026-04-21)
+
+**Status**: code + compose + CI ready on `main`. `phala deploy` to prod9
+not yet executed. Once it runs the table below gets filled in with the
+real app_id / compose_hash / Sepolia tx.
+
+| | |
+|---|---|
+| Provider | Phala Cloud dstack on node `prod9` — ONLY gateway that supports `_dstack-app-address.<domain>` TXT routing (prod5/prod7 don't). |
+| Name | `feedling-enclave-v2` (new CVM → new app_id → new on-chain authorization required). |
+| App ID | TBD after `phala cvms get feedling-enclave-v2` post-deploy. |
+| Compose | `deploy/docker-compose.phala.yaml` — now 4 services: `ingress` (dstack-ingress 2.2 multi-domain, HAProxy-based), `enclave` (decrypt + attestation, own TLS on :5003), `backend` (Flask HTTP + WS ingest), `mcp` (FastMCP SSE, plain HTTP behind ingress). |
+| Dry-run compose_hash | `0x1f0169bab4b1ee19058bd72bdb1fb46cc9b1b9de75a1e2a348134959c908efb9` (with `:78b51a6` image pin; real hash TBD after CI bumps to a fresh image tag). |
+| TLS termination | **Migrated**: mcp.feedling.app + api.feedling.app are terminated by `dstack-ingress` inside the CVM (LE certs issued via CF DNS-01, `CLOUDFLARE_API_TOKEN` injected via `phala deploy -e`, not in compose_hash). `enclave` service still terminates its own TLS on :5003 (reached via `-5003s.` passthrough) — iOS audit card Row 7 still pins `sha256(cert.DER)` to REPORT_DATA. WS ingest on :9998 stays gateway-TLS with FrameEnvelope v1 app-layer crypto. |
+| MCP pubkey pin (Phase C.2) | **Retired**: `FEEDLING_MCP_TLS_IN_ENCLAVE=false` on the enclave service, so `mcp_tls_cert_pubkey_fingerprint_hex` is empty. iOS audit card shows the existing "Pre-Phase-C.2 deployment" disclosure row. Content-layer envelope crypto (enclave_content_pk) remains the real trust boundary for reads/writes. |
+| VPS | **Decommissioned**: `deploy-vps` CI job deleted; `api.feedling.app` + `mcp.feedling.app` DNS A records move off `54.209.126.4` and onto dstack-gateway. Prod user re-onboards from scratch per 2026-04-21 user direction (no v0→v1-style migration path). |
+| iOS | `testapp/FeedlingTest/CVMEndpoints.swift` centralizes URL construction via `appId` + `gatewayDomain` (env / UserDefaults / compiled defaults). Flip defaults to prod9 in a follow-up commit once app_id is known. |
+| On-chain | compose_hash will be auto-published on Eth Sepolia by the `deploy-cvm` CI job on push to main (now uses `FEEDLING_COMPOSE_FILE=deploy/docker-compose.phala.yaml` so it hashes the compose that actually boots). |
+
 ### Phase D TDX CVM — multi-tenant-only, envelope-only backend (running, 2026-04-20)
 
 | | |

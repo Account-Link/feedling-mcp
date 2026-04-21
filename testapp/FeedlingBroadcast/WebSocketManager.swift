@@ -54,7 +54,7 @@ final class WebSocketManager: NSObject {
 
     private override init() { super.init() }
 
-    func connect(endpoint: String = "ws://54.209.126.4:9998/ingest", token: String) {
+    func connect(endpoint: String = SharedConfig.defaultIngestEndpoint, token: String) {
         queue.async {
             self.token = token
             guard let url = URL(string: endpoint) else { return }

@@ -1,8 +1,137 @@
 # Feedling — Handoff
 
 Snapshot of the project as of 2026-04-20, end of the autonomous build
-sprint that shipped Phases A–D + the v0/SINGLE_USER strip.
+sprint that shipped Phases A–D + the v0/SINGLE_USER strip. An
+in-flight migration to a pure-CVM architecture on Phala prod9 is
+described in "Migration (in-flight, 2026-04-21)" immediately below;
+the rest of this doc is the pre-migration reference.
 Whoever picks this up next — start here.
+
+## Migration (in-flight, 2026-04-21)
+
+**Goal**: decommission the VPS. `dstack-ingress` 2.2 inside the CVM
+terminates TLS for both `api.feedling.app` and `mcp.feedling.app` in a
+single HAProxy container, routing by SNI to the backend (5001) and MCP
+(5002) services. The prod9 gateway is required — only prod9 supports
+`_dstack-app-address.<domain>` TXT-based custom-domain routing.
+User explicitly chose endgame over conservative (re-onboard the single
+prod user from scratch; no v0→v1-style in-place migration path).
+
+**What changed in this commit (code + config, all committed ready for
+`phala deploy`):**
+
+- `deploy/docker-compose.phala.yaml` — added `ingress` service
+  (`dstacktee/dstack-ingress:2.2@sha256:d05a7b3…`). MCP dropped its own
+  ACME config + `FEEDLING_MCP_TLS=false` (plain HTTP behind ingress).
+  Enclave service sets `FEEDLING_MCP_TLS_IN_ENCLAVE=false` so it leaves
+  `mcp_tls_cert_pubkey_fingerprint_hex` empty in the attestation bundle.
+  `GATEWAY_DOMAIN=_.dstack-pha-prod9.phala.network`.
+- `testapp/FeedlingTest/CVMEndpoints.swift` — NEW. Centralized URL
+  construction (attestation, ws ingest, api, mcp) driven by
+  `appId` + `gatewayDomain`, overridable via
+  `FEEDLING_CVM_APP_ID`/`FEEDLING_CVM_GATEWAY_DOMAIN` env or
+  `feedling.cvm.appId`/`feedling.cvm.gatewayDomain` UserDefaults.
+  Defaults still prod5 so pre-cutover builds work; flip in a follow-up
+  commit once the prod9 app_id is known.
+- `testapp/FeedlingTest/FeedlingAPI.swift` — `resolveIngestWSEndpoint`
+  and `attestationURL` delegate to `CVMEndpoints`. No hardcoded VPS IP
+  or app_id strings.
+- `testapp/FeedlingTest/AuditCardView.swift` — three URL sites moved
+  to `CVMEndpoints` (MCP pubkey-pin URL, `makeAttestationURL` default,
+  `fetchRawJSON`). The MCP pubkey-pin branch is now skipped by the
+  pre-existing `attestedMcpPkFp.isEmpty` guard because the migrated
+  CVM leaves that bundle field empty — iOS shows the existing
+  "Pre-Phase-C.2 deployment" disclosure row.
+- `testapp/FeedlingBroadcast/{SharedConfig,WebSocketManager,SampleHandler}.swift` —
+  broadcast extension is a separate target and can't import
+  `CVMEndpoints`; it now uses `SharedConfig.defaultIngestEndpoint` as
+  fallback (matches CVMEndpoints defaults). Real value is still written
+  to App Group UserDefaults by `FeedlingAPI.init`.
+- `backend/enclave_app.py` — MCP pubkey fingerprint derivation gated
+  on `FEEDLING_MCP_TLS_IN_ENCLAVE` (default `true` for backward compat
+  with any non-migrated CVM; set `false` in the new compose).
+- `tools/audit_live_cvm.py` — endpoint URLs derived from env
+  (`FEEDLING_CVM_APP_ID`/`FEEDLING_CVM_GATEWAY_DOMAIN`) with prod5
+  defaults; Row 8 treats empty `mcp_tls_cert_pubkey_fingerprint_hex`
+  as a pass-with-disclosure (ingress-terminated TLS; content-layer
+  envelope crypto is the real trust boundary).
+- `.github/workflows/ci.yml` — `deploy-vps` job deleted; `deploy-cvm`
+  now gates on the test jobs directly. Added
+  `FEEDLING_COMPOSE_FILE: deploy/docker-compose.phala.yaml` to the
+  `publish-compose-hash.sh` step so on-chain authorization hashes the
+  compose that actually boots prod (without this it hashed
+  `docker-compose.yaml`, the local-dev compose — pre-existing bug,
+  now fixed).
+
+**Local validation done (2026-04-21)**:
+
+- `docker compose -f deploy/docker-compose.phala.yaml config --quiet` → OK
+- `python -m compileall backend tools` → OK
+- `xcodebuild FeedlingTest` → build succeeded (iOS 26.4 sim)
+- `xcodebuild FeedlingBroadcast` → build succeeded
+- Dry-run compose_hash for the new compose (with current
+  `:78b51a6` image pin) = `0x1f0169bab4b1ee19058bd72bdb1fb46cc9b1b9de75a1e2a348134959c908efb9`.
+  The real on-chain publish will use the compose bytes after CI
+  pins a fresh image tag — don't pre-authorize this value.
+
+**What still has to happen (fully CI-driven, two workflow_dispatch
+runs — no manual `phala`/`gh`/`curl` on your laptop):**
+
+1. Trigger `.github/workflows/bootstrap-prod9.yml` with `confirm=yes`.
+   This single workflow:
+   a. Asserts no stale `feedling-enclave-v2` CVM exists.
+   b. Purges CF records for `api.feedling.app` + `mcp.feedling.app`
+      (anything that would conflict with dstack-ingress's CNAME/TXT/CAA
+      creation).
+   c. Runs `phala deploy --node-id 18 --kms phala -e CF_*=$secret -j --wait`
+      against the prod9 gateway; captures the new `app_id` + `vm_uuid`.
+   d. Polls `https://<app-id>-5003s.<prod9-gateway>/attestation` and
+      `https://api.feedling.app/healthz` + `https://mcp.feedling.app/sse`
+      until all three respond (up to ~10 min for first-boot LE
+      issuance).
+   e. Publishes the new `compose_hash` on Eth Sepolia (idempotent).
+   f. `gh variable set CVM_ID` → new `vm_uuid` so the next CI run
+      on main updates *this* CVM in place.
+   g. Auto-commits a one-line `CVMEndpoints.swift` bump
+      (`defaultAppId` + `defaultGatewayDomain`) tagged `[skip ci]`.
+2. Run `FEEDLING_CVM_APP_ID=<new> FEEDLING_CVM_GATEWAY_DOMAIN=dstack-pha-prod9.phala.network python3 tools/audit_live_cvm.py`
+   → should be **8/8 green** (Row 8 = disclosure row since MCP TLS is
+   now ingress-terminated).
+3. Fresh iOS install on the one prod user's device → audit card
+   should be **6/6 green**.
+4. Trigger `.github/workflows/retire-prod5-vps.yml` with
+   `confirm=yes-delete-prod5`. Safety-gated on `CVM_ID` already
+   pointing at the new prod9 CVM. It:
+   - `phala cvms delete <prod5-vm-uuid>` (billing stops).
+   - SSH `openclaw@54.209.126.4` → `systemctl --user stop/disable/mask`
+     the `feedling-backend` + `feedling-mcp` units and drops
+     `~/RETIRED.md` tombstone.
+   - Purges any CF records still pointing at 54.209.126.4.
+   - Removes the `VPS_HOST`/`VPS_USER`/`VPS_DEPLOY_KEY` repo
+     vars/secrets so no future CI run can reach the dead box.
+
+**First-push footnote**: when this migration PR lands on `main`, the
+existing `deploy-cvm` CI job will run and try `phala deploy --cvm-id
+$CVM_ID` with `$CVM_ID` still pointing at the prod5 UUID. The on-chain
+compose_hash publish runs FIRST and succeeds; only the final
+`phala deploy` step fails (prod5 CVM can't boot a compose that targets
+the prod9 gateway). That's expected red CI, not a problem — the hash
+is already authorized, and `bootstrap-prod9.yml` is the intended next
+step. Future pushes (after bootstrap flips `CVM_ID`) will go green.
+
+**Key guardrails during migration**:
+
+- `0x051a174f…` prod5 app_id still appears as defaults in
+  `CVMEndpoints.swift` + `audit_live_cvm.py`. This is intentional so
+  pre-cutover iOS builds keep working against the live pre-migration
+  CVM. The CVM defaults flip happens in one commit after step 3 above.
+- Compose_hash for the new compose depends on the image tag pinned in
+  CI. The `deploy-cvm` job pins `:<sha>` and re-computes. Don't try to
+  pre-authorize a hash by hand — you'll race the CI bump.
+- `FEEDLING_MCP_TLS_IN_ENCLAVE=false` is the env-var seam that retires
+  Phase C.2. Flipping it back would require re-adding ACME+
+  `/var/run/dstack.sock` to the mcp service in compose; not just a
+  redeploy.
 
 ## TL;DR
 

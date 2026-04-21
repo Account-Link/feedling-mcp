@@ -137,11 +137,14 @@ final class FeedlingAPI: ObservableObject {
 
     private func resolveIngestWSEndpoint(from baseURL: String) -> String {
         guard let comps = URLComponents(string: baseURL), let host = comps.host, !host.isEmpty else {
-            return "ws://54.209.126.4:9998/ingest"
+            return CVMEndpoints.wsIngestURL
         }
-        // Cloud API is behind Cloudflare; ingest ws is exposed on MCP host.
-        if host == "api.feedling.app" {
-            return "ws://mcp.feedling.app:9998/ingest"
+        // Cloud API is behind dstack-ingress; the WS ingest on :9998 is NOT
+        // in the ingress routing map (adding it would need another custom
+        // domain). Use the dstack-gateway direct URL for cloud; self-hosted
+        // falls back to the user's own host on :9998.
+        if host == CVMEndpoints.apiHost {
+            return CVMEndpoints.wsIngestURL
         }
         return "ws://\(host):9998/ingest"
     }
@@ -512,8 +515,9 @@ final class FeedlingAPI: ObservableObject {
     /// MRTD from the live enclave's attestation.
     @Published private(set) var enclaveMRTD: String?
 
-    /// URL for the /attestation endpoint. Defaults to the cloud MCP host;
-    /// in self-hosted mode it swaps to the user's own.
+    /// URL for the /attestation endpoint. Defaults to the cloud CVM's
+    /// `-5003s.` TLS-passthrough route; in self-hosted mode swaps to the
+    /// user's own host.
     private var attestationURL: URL? {
         if let override = ProcessInfo.processInfo.environment["FEEDLING_ATTESTATION_URL"],
            let u = URL(string: override) {
@@ -523,12 +527,12 @@ final class FeedlingAPI: ObservableObject {
             let mcp = baseURL.replacingOccurrences(of: "api.", with: "mcp.")
             return URL(string: "\(mcp)/attestation")
         }
-        // Phase 3: Phala dstack-pha-prod5 CVM with in-enclave TLS.
-        // The `-5003s.` suffix tells dstack-gateway to pass TLS through
-        // to the CVM instead of terminating — the TLS cert presented to
-        // the client originates inside the enclave and is bound to
-        // compose_hash via REPORT_DATA. See deploy/DEPLOYMENTS.md §Phase 3.
-        return URL(string: "https://051a174f2457a6c474680a5d745372398f97b6ad-5003s.dstack-pha-prod5.phala.network/attestation")
+        // Phase 3: Phala dstack CVM with in-enclave TLS. The `-5003s.`
+        // suffix tells dstack-gateway to pass TLS through to the CVM
+        // instead of terminating — the cert the client sees is the one
+        // the enclave generated (bound to compose_hash via REPORT_DATA).
+        // See deploy/DEPLOYMENTS.md §Phase 3 and CVMEndpoints.swift.
+        return CVMEndpoints.attestationURL
     }
 
     /// Load (or lazily generate) the user's long-lived content keypair.

@@ -215,7 +215,16 @@ final class AuditViewModel: ObservableObject {
             let mcpCapture = PinningCaptureDelegate()
             let mcpSession = URLSession(configuration: .ephemeral,
                                         delegate: mcpCapture, delegateQueue: nil)
-            if let mcpURL = URL(string: "https://051a174f2457a6c474680a5d745372398f97b6ad-5002s.dstack-pha-prod5.phala.network/") {
+            // Phase C.2 MCP pubkey pin. Post-prod9 migration, MCP sits behind
+            // dstack-ingress (plain HTTP internally; LE cert at ingress), so
+            // the `-5002s.` passthrough route no longer exists. If the
+            // attestation bundle carries mcp_tls_cert_pubkey_fingerprint_hex
+            // it's because `enclave_app.py` is still baking it (legacy). We
+            // keep this branch for backward compat with pre-migration CVMs:
+            // built from CVMEndpoints so flipping app_id/gateway also flips
+            // this URL. On post-migration CVMs, the bundle field will be
+            // empty and this whole branch is skipped above.
+            if let mcpURL = URL(string: "https://\(CVMEndpoints.appId)-5002s.\(CVMEndpoints.gatewayDomain)/") {
                 _ = try? await mcpSession.data(from: mcpURL)
                 // capturedCertPubkeySHA256Hex holds sha256(SubjectPublicKeyInfo DER)
                 if let livePkFp = mcpCapture.capturedCertPubkeySHA256Hex?.lowercased() {
@@ -257,11 +266,12 @@ final class AuditViewModel: ObservableObject {
             let mcp = api.baseURL.replacingOccurrences(of: "api.", with: "mcp.")
             return URL(string: "\(mcp)/attestation")
         }
-        // Phase 3: live Phala dstack-pha-prod5 CVM with in-enclave TLS.
+        // Phase 3: live Phala dstack CVM with in-enclave TLS.
         // The `-5003s.` suffix triggers TLS passthrough at dstack-gateway
         // so the cert the client sees is the one the enclave generated
-        // (bound to compose_hash via dstack-KMS).
-        return URL(string: "https://051a174f2457a6c474680a5d745372398f97b6ad-5003s.dstack-pha-prod5.phala.network/attestation")
+        // (bound to compose_hash via dstack-KMS). Centralized in
+        // CVMEndpoints so app_id/gateway migrations are a one-file flip.
+        return CVMEndpoints.attestationURL
     }
 
     // MARK: - Wire type for the /attestation response
@@ -555,8 +565,7 @@ struct AuditCardView: View {
         // viewer shows the exact bytes. Uses the non-pinning TLS shim
         // since the security-relevant pin already ran in vm.run().
         // Falls back silently on error.
-        guard let url = URL(string: "https://051a174f2457a6c474680a5d745372398f97b6ad-5003s.dstack-pha-prod5.phala.network/attestation")
-        else { return }
+        guard let url = CVMEndpoints.attestationURL else { return }
         let session = URLSession(configuration: .ephemeral,
                                  delegate: PinningCaptureDelegate(),
                                  delegateQueue: nil)

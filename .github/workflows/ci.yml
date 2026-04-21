@@ -162,46 +162,6 @@ jobs:
         run: cd ios/FeedlingDCAP && swift test --parallel
 
   # =========================================================================
-  # DEPLOY — VPS (Flask + MCP systemd units on api.feedling.app)
-  #
-  # SSHes to the prod VPS, pulls main, restarts user-level systemd services.
-  # Only runs on push to main AFTER every test job is green.
-  # =========================================================================
-  deploy-vps:
-    name: deploy VPS
-    needs: [forge-test, python-tests, docker-build, lint, dcap-python]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    runs-on: ubuntu-24.04
-    concurrency:
-      group: deploy-vps
-      cancel-in-progress: false
-    steps:
-      - name: Deploy over SSH
-        env:
-          SSH_KEY:  ${{ secrets.VPS_DEPLOY_KEY }}
-          VPS_HOST: ${{ vars.VPS_HOST }}
-          VPS_USER: ${{ vars.VPS_USER }}
-        run: |
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes \
-              "$VPS_USER@$VPS_HOST" bash -s <<'REMOTE'
-            set -euo pipefail
-            cd "$HOME/feedling-mcp"
-            git fetch origin main
-            git reset --hard origin/main
-            export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-            systemctl --user restart feedling-backend.service feedling-mcp.service
-            sleep 3
-            systemctl --user is-active feedling-backend.service feedling-mcp.service
-            echo "deployed $(git rev-parse --short HEAD)"
-          REMOTE
-          echo "--- healthz ---"
-          curl -fsS --max-time 10 https://api.feedling.app/healthz
-
-  # =========================================================================
   # DEPLOY — detect whether this push affects CVM image or compose
   #
   # The CVM is expensive to redeploy (on-chain tx + iOS consent modal) so
@@ -242,7 +202,7 @@ jobs:
   # =========================================================================
   deploy-cvm:
     name: deploy CVM
-    needs: [deploy-vps, detect-cvm-changes]
+    needs: [forge-test, python-tests, docker-build, lint, dcap-python, detect-cvm-changes]
     if: |
       github.ref == 'refs/heads/main' &&
       github.event_name == 'push' &&
@@ -305,6 +265,12 @@ jobs:
           PRIVATE_KEY:                ${{ secrets.ETH_DEPLOYER_KEY }}
           ETH_SEPOLIA_RPC_URL:        ${{ vars.ETH_SEPOLIA_RPC_URL }}
           FEEDLING_APP_AUTH_CONTRACT: ${{ vars.FEEDLING_APP_AUTH_CONTRACT }}
+          # Post-VPS migration: docker-compose.phala.yaml is the only compose
+          # that actually boots prod. Without this override the script would
+          # hash deploy/docker-compose.yaml (the local-dev compose) and
+          # authorize the wrong bytes on-chain — dstack's boot-time hash
+          # would mismatch and the CVM would refuse to start.
+          FEEDLING_COMPOSE_FILE:      deploy/docker-compose.phala.yaml
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install pyyaml
@@ -318,8 +284,15 @@ jobs:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
           CF_ZONE_ID:          ${{ secrets.CF_ZONE_ID }}
           CF_API_TOKEN:        ${{ secrets.CF_API_TOKEN }}
-          CVM_ID:              ${{ vars.CVM_ID }}
         run: |
+          # CVM_ID lives in a committed file so bootstrap-prod9.yml can
+          # update it via `git commit` (no Variables-API permission needed).
+          CVM_ID=$(tr -d '[:space:]' < deploy/prod-cvm-id.txt)
+          if [ -z "$CVM_ID" ]; then
+            echo "::error::deploy/prod-cvm-id.txt is empty — cannot target a CVM"
+            exit 1
+          fi
+          echo ">>> deploy-cvm target: $CVM_ID"
           phala deploy \
             --api-token "$PHALA_CLOUD_API_KEY" \
             --cvm-id "$CVM_ID" \

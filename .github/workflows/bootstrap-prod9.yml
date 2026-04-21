@@ -1,0 +1,395 @@
+name: Bootstrap prod9 CVM (one-time migration)
+
+# Stand up the replacement CVM on Phala prod9 (dstack-pha-prod9) in a
+# single manual trigger:
+#
+#   1. Pre-flight: assert no stale `feedling-enclave-v2` CVM exists, and
+#      delete existing Cloudflare A records for api/mcp.feedling.app that
+#      would otherwise conflict with dstack-ingress's CNAME creation.
+#   2. `phala deploy` -c docker-compose.phala.yaml --node-id 18 --wait -j
+#      -> capture new app_id + vm_uuid from the JSON output.
+#   3. Poll the enclave's passthrough TLS endpoint + the public
+#      ingress-terminated endpoint until both answer 200 (LE cert + CF
+#      DNS propagation can take ~2-4 min on first boot).
+#   4. Publish compose_hash on Eth Sepolia (idempotent — script skips if
+#      the hash is already authorized).
+#   5. `gh variable set CVM_ID` to the new vm_uuid so subsequent
+#      deploy-cvm CI runs update *this* CVM in place.
+#   6. Auto-commit a one-line iOS bump flipping CVMEndpoints defaults to
+#      the new app_id + prod9 gateway (tagged `[skip ci]` so the commit
+#      doesn't retrigger CI or the image publish).
+#
+# After this workflow goes green, run `tools/audit_live_cvm.py` against
+# the new CVM and the iOS audit card to confirm 8/8 + 6/6 respectively.
+# Only then trigger `retire-prod5-vps.yml` to tear down the old stack.
+#
+# NOT idempotent on "step 2": re-running from scratch would create a
+# SECOND feedling-enclave-v2 CVM. Pre-flight guards against this by
+# failing if one already exists — delete it manually (`phala cvms
+# delete <uuid>`) before re-triggering.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "yes" to confirm you want to spin up a NEW prod9 CVM.'
+        required: true
+        default: 'no'
+
+concurrency:
+  group: bootstrap-prod9
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    name: deploy feedling-enclave-v2 to prod9
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write  # for the iOS CVMEndpoints bump commit
+    env:
+      CVM_NAME:       feedling-enclave-v2
+      PROD9_NODE_ID:  "18"
+      PROD9_GATEWAY:  dstack-pha-prod9.phala.network
+      COMPOSE_FILE:   deploy/docker-compose.phala.yaml
+
+    steps:
+      - name: Gate on explicit confirmation
+        if: ${{ github.event.inputs.confirm != 'yes' }}
+        run: |
+          echo "::error::confirm input must be exactly 'yes' to proceed; got '${{ github.event.inputs.confirm }}'"
+          exit 1
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install phala CLI + foundry + python
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tooling (phala CLI, pyyaml, jq)
+        run: |
+          npm install -g phala
+          python3 -m pip install --upgrade pip pyyaml
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq curl
+
+      # ---------------------------------------------------------------
+      # Pre-flight: bail out if a stale v2 CVM already exists. Re-running
+      # this workflow blindly would create a second CVM with the same
+      # name but different app_id — unbounded spend + audit confusion.
+      # ---------------------------------------------------------------
+      - name: Pre-flight — assert no existing feedling-enclave-v2 CVM
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: |
+          set -euo pipefail
+          echo ">>> checking for pre-existing CVM named '$CVM_NAME'..."
+          EXISTING=$(phala cvms list -j --api-token "$PHALA_CLOUD_API_KEY" 2>/dev/null \
+            | jq -r --arg n "$CVM_NAME" '.items[]? | select(.name == $n) | .vm_uuid' || true)
+          if [ -n "$EXISTING" ]; then
+            echo "::error::CVM named '$CVM_NAME' already exists (vm_uuid=$EXISTING)."
+            echo "::error::Delete it first: phala cvms delete $EXISTING --api-token <key>"
+            exit 1
+          fi
+          echo ">>> no stale $CVM_NAME — proceeding"
+
+      # ---------------------------------------------------------------
+      # Pre-flight: delete any existing A records for api/mcp.feedling.app
+      # that would conflict with dstack-ingress's CNAME creation on boot.
+      # Running this twice is safe — the DELETE is gated on a GET match.
+      # ---------------------------------------------------------------
+      - name: Pre-flight — purge conflicting A records for api/mcp.feedling.app
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ZONE_ID:   ${{ secrets.CF_ZONE_ID }}
+        run: |
+          set -euo pipefail
+          purge() {
+            local name="$1"
+            echo ">>> scanning existing records for $name"
+            # Purge ALL record types on this name except NS/SOA — dstack-ingress
+            # needs a clean slate to create CNAME + TXT + CAA.
+            local resp
+            resp=$(curl -sS -H "Authorization: Bearer $CF_API_TOKEN" \
+              "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records?name=$name&per_page=100")
+            if ! echo "$resp" | jq -e '.success' >/dev/null; then
+              echo "::error::CF list failed for $name: $resp"
+              exit 1
+            fi
+            local ids
+            ids=$(echo "$resp" | jq -r '.result[] | select(.type != "NS" and .type != "SOA") | "\(.id)|\(.type)|\(.content)"')
+            if [ -z "$ids" ]; then
+              echo ">>> $name — nothing to purge"
+              return
+            fi
+            while IFS= read -r line; do
+              local id type content
+              id="${line%%|*}"
+              local rest="${line#*|}"
+              type="${rest%%|*}"
+              content="${rest#*|}"
+              echo ">>> deleting $type $name -> $content  ($id)"
+              local del
+              del=$(curl -sS -X DELETE \
+                -H "Authorization: Bearer $CF_API_TOKEN" \
+                "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records/$id")
+              if ! echo "$del" | jq -e '.success' >/dev/null; then
+                echo "::error::CF delete failed for $id: $del"
+                exit 1
+              fi
+            done <<< "$ids"
+          }
+          purge "api.feedling.app"
+          purge "mcp.feedling.app"
+
+      # ---------------------------------------------------------------
+      # DEPLOY. Creates a fresh CVM (no --cvm-id). --kms phala is the
+      # default but we spell it for clarity. --wait blocks until dstack
+      # reports the VM state machine reached "running".
+      # ---------------------------------------------------------------
+      - name: phala deploy → prod9
+        id: deploy
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+          CF_API_TOKEN:        ${{ secrets.CF_API_TOKEN }}
+          CF_ZONE_ID:          ${{ secrets.CF_ZONE_ID }}
+        run: |
+          set -euo pipefail
+          echo ">>> phala deploy -n $CVM_NAME --node-id $PROD9_NODE_ID -c $COMPOSE_FILE"
+          # Capture both the raw output (human-readable) and the JSON tail.
+          # -j makes the CLI emit a JSON document at the end; earlier lines
+          # are human progress. We tee raw output for the workflow log.
+          set -o pipefail
+          phala deploy \
+            --api-token "$PHALA_CLOUD_API_KEY" \
+            -n "$CVM_NAME" \
+            -c "$COMPOSE_FILE" \
+            --node-id "$PROD9_NODE_ID" \
+            --kms phala \
+            -e "CF_API_TOKEN=$CF_API_TOKEN" \
+            -e "CF_ZONE_ID=$CF_ZONE_ID" \
+            --wait \
+            -j 2>&1 | tee /tmp/phala-deploy.log
+
+          # The JSON document is the last valid `{…}` block in the log.
+          # Extract it by reading the tail and finding the first '{'.
+          python3 - <<'PY' > /tmp/phala-deploy.json
+          import json, re, sys, pathlib
+          raw = pathlib.Path("/tmp/phala-deploy.log").read_text()
+          # Greedy match the last top-level JSON object in the output.
+          m = re.findall(r'\{[\s\S]*?\}(?=\s*$)', raw, flags=re.MULTILINE)
+          # Fall back: try progressively larger tails that parse as JSON.
+          candidates = []
+          for start in range(len(raw)):
+              if raw[start] != '{': continue
+              try:
+                  obj, end = json.JSONDecoder().raw_decode(raw[start:])
+                  candidates.append((start, end, obj))
+              except json.JSONDecodeError:
+                  continue
+          if not candidates:
+              print("ERROR: no JSON object found in phala deploy output", file=sys.stderr)
+              sys.exit(2)
+          # Pick the LAST parseable object — phala prints it last.
+          _, _, obj = candidates[-1]
+          print(json.dumps(obj))
+          PY
+
+          APP_ID=$(jq -r '.app_id // empty' /tmp/phala-deploy.json)
+          VM_UUID=$(jq -r '.vm_uuid // empty' /tmp/phala-deploy.json)
+          STATUS=$(jq -r '.status // empty' /tmp/phala-deploy.json)
+          if [ -z "$APP_ID" ] || [ -z "$VM_UUID" ]; then
+            echo "::error::phala deploy JSON missing app_id/vm_uuid"
+            cat /tmp/phala-deploy.json
+            exit 1
+          fi
+          echo ">>> app_id=$APP_ID  vm_uuid=$VM_UUID  status=$STATUS"
+          echo "app_id=$APP_ID"   >> "$GITHUB_OUTPUT"
+          echo "vm_uuid=$VM_UUID" >> "$GITHUB_OUTPUT"
+
+      # ---------------------------------------------------------------
+      # Readiness probes. Two gates:
+      #   (a) the enclave's attestation port (passthrough TLS on 5003s.)
+      #       answers 200 — confirms the enclave container booted, derived
+      #       its in-enclave cert from dstack-KMS, and is serving /attestation.
+      #   (b) api.feedling.app/healthz answers 200 — confirms ingress issued
+      #       LE certs, CF DNS propagated, and SNI routing works.
+      # First-time LE issuance can take 2-4 min; we allow up to ~10 min.
+      # ---------------------------------------------------------------
+      - name: Wait for enclave /attestation (passthrough TLS)
+        env:
+          APP_ID: ${{ steps.deploy.outputs.app_id }}
+        run: |
+          set -euo pipefail
+          URL="https://${APP_ID}-5003s.${PROD9_GATEWAY}/attestation"
+          echo ">>> probing $URL"
+          for i in $(seq 1 60); do
+            CODE=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 "$URL" || echo "000")
+            echo "  attempt $i → HTTP $CODE"
+            if [ "$CODE" = "200" ]; then
+              echo ">>> enclave up"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::enclave /attestation never returned 200 at $URL"
+          exit 1
+
+      - name: Wait for api.feedling.app/healthz (ingress + LE cert + DNS)
+        run: |
+          set -euo pipefail
+          URL="https://api.feedling.app/healthz"
+          echo ">>> probing $URL"
+          for i in $(seq 1 60); do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$URL" || echo "000")
+            echo "  attempt $i → HTTP $CODE"
+            if [ "$CODE" = "200" ]; then
+              echo ">>> ingress live (TLS + DNS + SNI routing confirmed)"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::api.feedling.app/healthz never returned 200 — LE cert or DNS propagation is stuck"
+          exit 1
+
+      - name: Wait for mcp.feedling.app (ingress SNI routing)
+        run: |
+          set -euo pipefail
+          URL="https://mcp.feedling.app/sse"
+          echo ">>> probing $URL"
+          for i in $(seq 1 30); do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$URL" || echo "000")
+            echo "  attempt $i → HTTP $CODE"
+            # /sse is long-polling; any 2xx/4xx means TLS + routing work.
+            # 000 means TLS/DNS still propagating. 5xx also acceptable —
+            # MCP container itself may need another beat.
+            if [[ "$CODE" =~ ^[2-5][0-9][0-9]$ ]]; then
+              echo ">>> mcp.feedling.app routing confirmed (HTTP $CODE)"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::mcp.feedling.app never reachable — LE cert or SNI routing misconfig"
+          exit 1
+
+      # ---------------------------------------------------------------
+      # Publish compose_hash on-chain. Idempotent — if the migration PR
+      # already triggered deploy-cvm on push, the hash is already there
+      # and the script's isAppAllowed guard skips the tx. Either way we
+      # get the "on-chain authorized" guarantee before flipping iOS.
+      # ---------------------------------------------------------------
+      - name: Publish compose_hash on Sepolia (idempotent)
+        env:
+          PRIVATE_KEY:                ${{ secrets.ETH_DEPLOYER_KEY }}
+          ETH_SEPOLIA_RPC_URL:        ${{ vars.ETH_SEPOLIA_RPC_URL }}
+          FEEDLING_APP_AUTH_CONTRACT: ${{ vars.FEEDLING_APP_AUTH_CONTRACT }}
+          FEEDLING_COMPOSE_FILE:      deploy/docker-compose.phala.yaml
+        run: ./deploy/publish-compose-hash.sh eth_sepolia
+
+      # ---------------------------------------------------------------
+      # Flip the persistent migration state in one commit, tagged
+      # [skip ci] so neither ci.yml nor docker-publish.yml retrigger —
+      # we've already validated everything above and a rebuild would
+      # invalidate the compose_hash we just published.
+      #
+      # Two files:
+      #   - deploy/prod-cvm-id.txt  — ci.yml's deploy-cvm step reads this
+      #     to decide which CVM to `phala deploy --cvm-id` on future runs.
+      #     Using a committed file instead of a repo variable because the
+      #     workflow GITHUB_TOKEN cannot manage Actions variables without
+      #     a PAT — and we'd rather have a single source of truth in git
+      #     anyway (auditable via blame, survives org-level key rotations).
+      #   - testapp/FeedlingTest/CVMEndpoints.swift — the iOS app's baked
+      #     defaults. Env/UserDefaults still override (env > UD > default).
+      # ---------------------------------------------------------------
+      - name: Commit migration state (CVM_ID + iOS CVMEndpoints) → prod9
+        env:
+          NEW_APP_ID:    ${{ steps.deploy.outputs.app_id }}
+          NEW_VM_UUID:   ${{ steps.deploy.outputs.vm_uuid }}
+          SWIFT_FILE:    testapp/FeedlingTest/CVMEndpoints.swift
+          CVM_ID_FILE:   deploy/prod-cvm-id.txt
+          NEW_GATEWAY:   dstack-pha-prod9.phala.network
+        run: |
+          set -euo pipefail
+
+          # 1) Write the new vm_uuid to the committed CVM_ID file.
+          echo "$NEW_VM_UUID" > "$CVM_ID_FILE"
+
+          # 2) Update the two iOS defaults. Quoted heredoc → bash does
+          # zero interpolation; python reads everything from os.environ.
+          python3 - <<'PY'
+          import pathlib, re, os, sys
+          p = pathlib.Path(os.environ["SWIFT_FILE"])
+          s = p.read_text()
+          new_app = os.environ["NEW_APP_ID"]
+          new_gw  = os.environ["NEW_GATEWAY"]
+          s2 = re.sub(r'(static let defaultAppId:\s*String\s*=\s*")[0-9a-f]+(")', rf'\g<1>{new_app}\g<2>', s)
+          s2 = re.sub(r'(static let defaultGatewayDomain:\s*String\s*=\s*")[^"]+(")', rf'\g<1>{new_gw}\g<2>', s2)
+          if s2 == s:
+              print("ERROR: no substitution happened — regex drift?", file=sys.stderr)
+              raise SystemExit(3)
+          p.write_text(s2)
+          PY
+
+          echo "--- diff ---"
+          git diff -- "$SWIFT_FILE" "$CVM_ID_FILE"
+          if git diff --quiet -- "$SWIFT_FILE" "$CVM_ID_FILE"; then
+            echo ">>> migration state already matches prod9 — no commit needed"
+            exit 0
+          fi
+
+          git config user.name  'feedling-ci'
+          git config user.email 'ci@feedling.app'
+          git add "$SWIFT_FILE" "$CVM_ID_FILE"
+          git commit -F - <<MSG
+          deploy: migrate prod to prod9 CVM ${NEW_APP_ID:0:7} [skip ci]
+
+          Bootstrap-prod9 workflow run. New CVM on Phala prod9:
+          - app_id:  $NEW_APP_ID
+          - gateway: $NEW_GATEWAY
+          - vm_uuid: $NEW_VM_UUID
+
+          Files updated:
+          - deploy/prod-cvm-id.txt   → new vm_uuid so ci.yml's deploy-cvm
+            step targets this CVM on future pushes.
+          - testapp/FeedlingTest/CVMEndpoints.swift → defaults flipped to
+            prod9 app_id + gateway (env/UserDefaults overrides still win).
+
+          Old prod5 CVM + 54.209.126.4 VPS still live; retire via
+          retire-prod5-vps.yml after iOS audit card goes 6/6.
+          MSG
+          git push origin HEAD:main
+
+      - name: Summary
+        env:
+          NEW_APP_ID:  ${{ steps.deploy.outputs.app_id }}
+          NEW_VM_UUID: ${{ steps.deploy.outputs.vm_uuid }}
+        run: |
+          cat <<EOF >> "$GITHUB_STEP_SUMMARY"
+          ## prod9 bootstrap complete
+
+          | Field | Value |
+          |-------|-------|
+          | CVM name | \`$CVM_NAME\` |
+          | vm_uuid | \`$NEW_VM_UUID\` |
+          | app_id | \`$NEW_APP_ID\` |
+          | Gateway | \`$PROD9_GATEWAY\` |
+          | api.feedling.app | live (HTTP 200) |
+          | mcp.feedling.app | reachable |
+          | compose_hash | published on Sepolia (idempotent) |
+          | CVM_ID var | updated → new vm_uuid |
+          | iOS CVMEndpoints | committed with \`[skip ci]\` |
+
+          ### Next steps (user)
+
+          1. \`FEEDLING_CVM_APP_ID=$NEW_APP_ID FEEDLING_CVM_GATEWAY_DOMAIN=$PROD9_GATEWAY python3 tools/audit_live_cvm.py\` — should be **8/8 green**.
+          2. Fresh iOS install (pulls the new defaults) → audit card should be **6/6 green**.
+          3. If both pass: trigger \`retire-prod5-vps.yml\` with \`confirm=yes\` to tear down the old stack.
+          EOF
