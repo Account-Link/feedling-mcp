@@ -48,17 +48,51 @@ if [ -z "$APP_COMPOSE_FILE" ] && [ ! -f "$COMPOSE_FILE" ]; then
   exit 1
 fi
 
-# Fail loud on uncommitted changes to the input — a published hash that
-# points at a commit without the actual content is worse than no publish.
-CHECK_FILE="${APP_COMPOSE_FILE:-$COMPOSE_FILE}"
-if ! git -C "$REPO_ROOT" diff --quiet HEAD -- "$CHECK_FILE"; then
-  echo "ERROR: $CHECK_FILE has uncommitted changes." >&2
-  echo "       Commit it first, then re-run this script." >&2
-  exit 1
+# In synthesis mode we hash the local file, so uncommitted changes would
+# publish a hash that points at a commit without the actual content.
+# In live-cvm mode the hash comes from dstack, so local file state is
+# irrelevant (we only use the compose path for yaml_url metadata).
+if [ -z "${FEEDLING_CVM_ID:-}" ]; then
+  CHECK_FILE="${APP_COMPOSE_FILE:-$COMPOSE_FILE}"
+  if ! git -C "$REPO_ROOT" diff --quiet HEAD -- "$CHECK_FILE"; then
+    echo "ERROR: $CHECK_FILE has uncommitted changes." >&2
+    echo "       Commit it first, then re-run this script." >&2
+    exit 1
+  fi
 fi
 
-# Compute compose_hash = sha256(canonical-json(app_compose))
-COMPOSE_HASH="0x$(
+# Compute compose_hash. Primary mode: read the live hash from an already-
+# deployed CVM (dstack is the ground truth — it injects `features`,
+# updates `pre_launch_script` version, etc. at deploy time, so local
+# synthesis always drifts). Fallback: local synthesis for offline dev.
+#
+# Primary — live CVM mode:   FEEDLING_CVM_ID=<uuid> ./publish-compose-hash.sh …
+# Fallback — offline synth:  plain `./publish-compose-hash.sh …`
+#
+# Tier-2 CI must deploy the CVM FIRST, then call this with FEEDLING_CVM_ID
+# set — otherwise we're authorizing a hash dstack never computes.
+if [ -n "${FEEDLING_CVM_ID:-}" ]; then
+  if [ -z "${PHALA_CLOUD_API_KEY:-}" ]; then
+    echo "ERROR: FEEDLING_CVM_ID set but PHALA_CLOUD_API_KEY is not." >&2
+    echo "       Can't query the live CVM for its compose_hash." >&2
+    exit 1
+  fi
+  if ! command -v phala >/dev/null 2>&1; then
+    echo "ERROR: phala CLI not installed — install via 'npm install -g phala'." >&2
+    exit 1
+  fi
+  echo ">>> reading compose_hash from live CVM: $FEEDLING_CVM_ID"
+  LIVE_HASH="$(phala cvms get "$FEEDLING_CVM_ID" -j --api-key "$PHALA_CLOUD_API_KEY" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["compose_hash"])' \
+    2>/dev/null || true)"
+  if [ -z "$LIVE_HASH" ] || [ "${#LIVE_HASH}" -ne 64 ]; then
+    echo "ERROR: couldn't read compose_hash from CVM $FEEDLING_CVM_ID (got: '$LIVE_HASH')" >&2
+    exit 1
+  fi
+  COMPOSE_HASH="0x${LIVE_HASH}"
+  HASH_SOURCE="live-cvm:$FEEDLING_CVM_ID"
+else
+  COMPOSE_HASH="0x$(
 python3 <<PY
 import hashlib, json, pathlib, yaml, sys
 app_compose_path = "$APP_COMPOSE_FILE"
@@ -68,8 +102,11 @@ if app_compose_path:
     app_compose = json.loads(pathlib.Path(app_compose_path).read_text())
 else:
     # Synthesize a minimal app-compose.json wrapping the docker-compose.yaml.
-    # This is what dstack would generate with `phala deploy` — we reproduce
-    # the deterministic shape here so our on-chain hash matches theirs.
+    # NOTE: dstack at deploy time adds fields like "features" and rewrites
+    # "pre_launch_script" to its current version, so this synthesis will
+    # typically NOT match the live CVM's hash. Use FEEDLING_CVM_ID mode
+    # (above) for any real deploy; synthesis stays only as an offline
+    # dev aid.
     docker_yaml = pathlib.Path(compose_yaml_path).read_text()
     app_compose = {
         "manifest_version": 2,
@@ -91,6 +128,8 @@ canonical = json.dumps(app_compose, separators=(",", ":"), sort_keys=True)
 print(hashlib.sha256(canonical.encode()).hexdigest())
 PY
 )"
+  HASH_SOURCE="synthesized from $COMPOSE_FILE (offline mode)"
+fi
 
 GIT_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 REMOTE_URL="$(git -C "$REPO_ROOT" config --get remote.origin.url | \
@@ -99,7 +138,7 @@ REL_COMPOSE="$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1], sys
 YAML_URL="${REMOTE_URL}/raw/${GIT_COMMIT}/${REL_COMPOSE}"
 
 echo ">>> compose_file  : $COMPOSE_FILE"
-echo ">>> app_compose   : ${APP_COMPOSE_FILE:-(synthesized from docker-compose.yaml)}"
+echo ">>> hash_source   : $HASH_SOURCE"
 echo ">>> compose_hash  : $COMPOSE_HASH"
 echo ">>> git_commit    : $GIT_COMMIT"
 echo ">>> yaml_url      : $YAML_URL"

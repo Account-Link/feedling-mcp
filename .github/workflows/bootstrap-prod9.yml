@@ -324,11 +324,16 @@ jobs:
       # and the script's isAppAllowed guard skips the tx. Either way we
       # get the "on-chain authorized" guarantee before flipping iOS.
       # ---------------------------------------------------------------
-      - name: Publish compose_hash on Sepolia (idempotent)
+      - name: Publish live compose_hash on Sepolia (idempotent)
         env:
           PRIVATE_KEY:                ${{ secrets.ETH_DEPLOYER_KEY }}
           ETH_SEPOLIA_RPC_URL:        ${{ vars.ETH_SEPOLIA_RPC_URL }}
           FEEDLING_APP_AUTH_CONTRACT: ${{ vars.FEEDLING_APP_AUTH_CONTRACT }}
+          # Read the hash dstack actually computed at boot, not our local
+          # synthesis (dstack injects `features` + bumps `pre_launch_script`
+          # version → synthesis always drifts).
+          FEEDLING_CVM_ID:            ${{ github.event.inputs.skip_to_publish == 'yes' && github.event.inputs.vm_uuid_override || steps.deploy.outputs.vm_uuid }}
+          PHALA_CLOUD_API_KEY:        ${{ secrets.PHALA_CLOUD_API_KEY }}
           FEEDLING_COMPOSE_FILE:      deploy/docker-compose.phala.yaml
         run: ./deploy/publish-compose-hash.sh eth_sepolia
 
