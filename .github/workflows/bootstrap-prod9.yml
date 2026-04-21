@@ -107,10 +107,28 @@ jobs:
       # ---------------------------------------------------------------
       - name: Pre-flight — purge conflicting A records for api/mcp.feedling.app
         env:
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          CF_ZONE_ID:   ${{ secrets.CF_ZONE_ID }}
+          CF_API_TOKEN_RAW: ${{ secrets.CF_API_TOKEN }}
+          CF_ZONE_ID_RAW:   ${{ secrets.CF_ZONE_ID }}
         run: |
           set -euo pipefail
+
+          # Strip any whitespace (incl. trailing newlines) that might have
+          # slipped into the GitHub secret when it was pasted in the UI.
+          # `Authorization: Bearer <token>\n` silently fails auth.
+          CF_API_TOKEN=$(printf '%s' "$CF_API_TOKEN_RAW" | tr -d '[:space:]')
+          CF_ZONE_ID=$(printf '%s' "$CF_ZONE_ID_RAW" | tr -d '[:space:]')
+
+          # Sanity check: token itself must be valid. Use the one endpoint
+          # that requires zero scope beyond "token exists".
+          ver=$(curl -sS -H "Authorization: Bearer $CF_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/user/tokens/verify")
+          if ! echo "$ver" | jq -e '.success' >/dev/null; then
+            echo "::error::CF token verify failed: $ver"
+            echo "::error::fix the CF_API_TOKEN repo secret — it must be a CF API Token (not Global Key) with Zone:DNS:Edit scope on the feedling.app zone"
+            exit 1
+          fi
+          echo ">>> CF token ok, status=$(echo "$ver" | jq -r '.result.status')"
+
           purge() {
             local name="$1"
             echo ">>> scanning existing records for $name"
