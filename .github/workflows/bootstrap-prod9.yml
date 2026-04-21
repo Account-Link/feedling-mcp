@@ -122,23 +122,12 @@ jobs:
           CF_API_TOKEN=$(printf '%s' "$CF_API_TOKEN_RAW" | LC_ALL=C tr -d '[:space:][:cntrl:]')
           CF_ZONE_ID=$(printf '%s' "$CF_ZONE_ID_RAW" | LC_ALL=C tr -d '[:space:][:cntrl:]')
 
-          # Safe diagnostics — print length + first/last 2 chars only (this
-          # is 40-char URL-safe base64 so 2+2 is unrecoverable).
-          TLEN=${#CF_API_TOKEN}
-          ZLEN=${#CF_ZONE_ID}
-          echo ">>> CF_API_TOKEN length=$TLEN (expected ~40)  head='${CF_API_TOKEN:0:2}'…tail='${CF_API_TOKEN: -2}'"
-          echo ">>> CF_ZONE_ID   length=$ZLEN (expected 32)   head='${CF_ZONE_ID:0:2}'…tail='${CF_ZONE_ID: -2}'"
-
-          # Sanity check: token itself must be valid. Use the one endpoint
-          # that requires zero scope beyond "token exists".
-          ver=$(curl -sS -H "Authorization: Bearer $CF_API_TOKEN" \
-            "https://api.cloudflare.com/client/v4/user/tokens/verify")
-          if ! echo "$ver" | jq -e '.success' >/dev/null; then
-            echo "::error::CF token verify failed: $ver"
-            echo "::error::fix the CF_API_TOKEN repo secret — it must be a CF API Token (not Global Key) with Zone:DNS:Edit scope on the feedling.app zone"
-            exit 1
-          fi
-          echo ">>> CF token ok, status=$(echo "$ver" | jq -r '.result.status')"
+          echo ">>> CF_API_TOKEN length=${#CF_API_TOKEN}  CF_ZONE_ID length=${#CF_ZONE_ID}"
+          # No `/user/tokens/verify` precheck — that endpoint only works
+          # for legacy user-owned tokens and returns code 1000 for modern
+          # account-owned tokens (cfat_ prefix). The zone-scoped list call
+          # below is itself the auth test — it fails loudly if the token
+          # lacks Zone:DNS:Edit on this zone.
 
           purge() {
             local name="$1"
