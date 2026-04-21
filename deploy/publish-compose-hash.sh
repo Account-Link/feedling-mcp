@@ -106,6 +106,32 @@ echo ">>> yaml_url      : $YAML_URL"
 echo ">>> chain         : $CHAIN"
 echo
 
+# Idempotency guard: skip the on-chain call if this hash is already authorized.
+# `addComposeHash` reverts with AlreadyApproved(hash) on duplicates, which
+# turns a re-run of tier-2 CI into red builds for no reason. A read-only
+# `isAppAllowed` check avoids that entirely.
+#
+# Env is populated either by CI (GH repo secrets/vars) or by contracts/.env
+# when run locally. If neither set things, we skip the check — worst case
+# is the pre-guard behavior (revert on duplicate).
+if [ -z "${FEEDLING_APP_AUTH_CONTRACT:-}" ] && [ -f "$REPO_ROOT/contracts/.env" ]; then
+  set -a; . "$REPO_ROOT/contracts/.env"; set +a
+fi
+
+RPC_VAR="$(echo "$CHAIN" | tr '[:lower:]' '[:upper:]')_RPC_URL"
+RPC_URL="${!RPC_VAR:-}"
+
+if [ -n "${FEEDLING_APP_AUTH_CONTRACT:-}" ] && [ -n "$RPC_URL" ]; then
+  # `cast` auto-reads $CHAIN as a network alias and rejects our chain names —
+  # unset it just for this call.
+  ALREADY=$(env -u CHAIN cast call "$FEEDLING_APP_AUTH_CONTRACT" \
+    "isAppAllowed(bytes32)(bool)" "$COMPOSE_HASH" --rpc-url "$RPC_URL" 2>/dev/null || true)
+  if [ "$ALREADY" = "true" ]; then
+    echo ">>> compose_hash already authorized on $CHAIN — skipping on-chain publish"
+    exit 0
+  fi
+fi
+
 cd "$REPO_ROOT/contracts"
 make add-hash CHAIN="$CHAIN" \
   COMPOSE_HASH="$COMPOSE_HASH" \
