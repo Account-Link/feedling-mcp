@@ -115,11 +115,12 @@ jobs:
           # Strip any whitespace (incl. trailing newlines) that might have
           # slipped into the GitHub secret when it was pasted in the UI.
           # `Authorization: Bearer <token>\n` silently fails auth.
-          # Strip any non-[A-Za-z0-9_-] chars — CF tokens are URL-safe
-          # base64. Handles paste artifacts like smart quotes, Bearer prefix,
-          # trailing \r on Windows clipboards, stray whitespace.
-          CF_API_TOKEN=$(printf '%s' "$CF_API_TOKEN_RAW" | LC_ALL=C tr -cd 'A-Za-z0-9_-')
-          CF_ZONE_ID=$(printf '%s' "$CF_ZONE_ID_RAW" | LC_ALL=C tr -cd 'A-Za-z0-9')
+          # Strip only whitespace and control chars. Modern CF tokens may
+          # contain '.' (v1.0-... prefix) plus '_' and '-', so we cannot
+          # filter to a strict base64 charset — that was a real bug we hit
+          # which mangled valid tokens into invalid ones.
+          CF_API_TOKEN=$(printf '%s' "$CF_API_TOKEN_RAW" | LC_ALL=C tr -d '[:space:][:cntrl:]')
+          CF_ZONE_ID=$(printf '%s' "$CF_ZONE_ID_RAW" | LC_ALL=C tr -d '[:space:][:cntrl:]')
 
           # Safe diagnostics — print length + first/last 2 chars only (this
           # is 40-char URL-safe base64 so 2+2 is unrecoverable).
