@@ -87,7 +87,7 @@ final class AuditViewModel: ObservableObject {
         var bodySignatureValid: Bool
         var tlsCertBindingChecked: Bool
         var tlsTerminationDisclosure: String?
-        var mcpTlsCertBindingChecked: Bool      // Phase C
+        var mcpTlsStatus: AuditRowStatus        // Phase C / prod9: pass/fail/info
         var mcpTlsDisclosure: String?           // Phase C
         var composeBinding: EventLogReplay.Result?
         var enclaveContentPK: String?
@@ -206,35 +206,39 @@ final class AuditViewModel: ObservableObject {
         //    mcp_tls_cert_pubkey_fingerprint_hex = sha256(SubjectPublicKeyInfo DER).
         //    We open a CA-verified TLS session to the MCP endpoint, extract the
         //    cert's public key DER, sha256 it, and compare to the attested value.
-        var mcpChecked = false
+        var mcpStatus: AuditRowStatus = .fail
         var mcpDisclosure: String? = nil
         let attestedMcpPkFp = (bundle.mcp_tls_cert_pubkey_fingerprint_hex ?? "").lowercased()
         if attestedMcpPkFp.isEmpty {
-            mcpDisclosure = "Pre-Phase-C.2 deployment — MCP pubkey fingerprint not in attestation bundle yet."
+            // Post-prod9 architecture: MCP sits behind dstack-ingress which
+            // owns the Let's Encrypt cert for mcp.feedling.app. The
+            // in-enclave MCP pubkey pin was retired. This is NOT a pass —
+            // there's no attestation-bound pin to verify against — but it's
+            // also not a failure. It's a disclosure: transport trust relies
+            // on CA + DNS + ingress operator; the real privacy guarantee is
+            // the content-layer envelope crypto (enclave_content_pk below).
+            // Shown as .info (yellow) to make that distinction honest.
+            mcpStatus = .info
+            mcpDisclosure = "In-enclave MCP TLS pin retired in the prod9 migration. Transport security is now standard Let's Encrypt TLS terminated at dstack-ingress — equivalent to any normal HTTPS site. Your actual privacy (chat, memory, identity, screen frames) is protected by the content-layer envelope crypto keyed to enclave_content_pk shown below."
         } else {
             let mcpCapture = PinningCaptureDelegate()
             let mcpSession = URLSession(configuration: .ephemeral,
                                         delegate: mcpCapture, delegateQueue: nil)
-            // Phase C.2 MCP pubkey pin. Post-prod9 migration, MCP sits behind
-            // dstack-ingress (plain HTTP internally; LE cert at ingress), so
-            // the `-5002s.` passthrough route no longer exists. If the
-            // attestation bundle carries mcp_tls_cert_pubkey_fingerprint_hex
-            // it's because `enclave_app.py` is still baking it (legacy). We
-            // keep this branch for backward compat with pre-migration CVMs:
-            // built from CVMEndpoints so flipping app_id/gateway also flips
-            // this URL. On post-migration CVMs, the bundle field will be
-            // empty and this whole branch is skipped above.
+            // Legacy path — pre-prod9 CVMs with the `-5002s.` passthrough
+            // and an in-enclave pinned key. Kept so audits against older
+            // deploys still work.
             if let mcpURL = URL(string: "https://\(CVMEndpoints.appId)-5002s.\(CVMEndpoints.gatewayDomain)/") {
                 _ = try? await mcpSession.data(from: mcpURL)
-                // capturedCertPubkeySHA256Hex holds sha256(SubjectPublicKeyInfo DER)
                 if let livePkFp = mcpCapture.capturedCertPubkeySHA256Hex?.lowercased() {
                     if livePkFp == attestedMcpPkFp {
-                        mcpChecked = true
+                        mcpStatus = .pass
                         mcpDisclosure = "Let's Encrypt cert, key inside CVM. Pubkey fingerprint matches attestation bundle — the private key was generated inside the hardware boundary."
                     } else {
+                        mcpStatus = .fail
                         mcpDisclosure = "Pubkey mismatch: live \(String(livePkFp.prefix(16)))… vs attested \(String(attestedMcpPkFp.prefix(16)))…. Possible MITM or stale attestation."
                     }
                 } else {
+                    mcpStatus = .fail
                     mcpDisclosure = "Couldn't capture MCP port cert public key — TLS handshake may have failed."
                 }
             }
@@ -249,7 +253,7 @@ final class AuditViewModel: ObservableObject {
             bodySignatureValid: bodySigValid,
             tlsCertBindingChecked: tlsChecked,
             tlsTerminationDisclosure: disclosure,
-            mcpTlsCertBindingChecked: mcpChecked,
+            mcpTlsStatus: mcpStatus,
             mcpTlsDisclosure: mcpDisclosure,
             composeBinding: composeBinding,
             enclaveContentPK: bundle.enclave_content_pk_hex,
@@ -319,19 +323,69 @@ fileprivate enum AuditMechanismCopy {
     static let bodySignature = "The attestation payload itself is signed by the enclave's own key, which is in turn signed by Intel's hardware. Verifying this signature proves the report came from this exact enclave at this exact moment."
     static let composeBinding = "The enclave's boot sequence hashes its own exact container recipe into a register called mr_config_id. The quote carries this register; the hash IS the recipe. If we control the app, we control the recipe, and the hash on-chain proves which recipe you're talking to."
     static let tlsBinding = "The certificate your phone just saw during the TLS handshake was generated inside the enclave. Its fingerprint is baked into the signed quote we fetched. Match = this really is the enclave we think it is; no middleman could swap the cert without faking Intel's signature."
-    static let mcpTlsBinding = "The MCP port (where your agent connects) has a certificate from Let's Encrypt — a globally trusted authority. The certificate's private key was generated inside the TDX enclave and never left it. The key fingerprint is baked into the attestation bundle so you can verify it yourself: the private key serving your agent's requests was born inside the hardware boundary and is provably the same one the enclave attests to."
+    static let mcpTlsBinding = "Where your agent connects (mcp.feedling.app) uses a standard Let's Encrypt certificate. Earlier versions pinned the MCP key inside the enclave too, but that pin was retired in the prod9 migration — the certificate is now issued and served by the dstack-ingress layer that sits in front of the enclave, so the TLS layer is only as trustworthy as any normal HTTPS site (CA + DNS). The real privacy boundary is one level deeper: chat messages, memories, identity, and screen frames are individually sealed with the enclave's content key (`enclave_content_pk` below) BEFORE they leave your phone, and can only be opened inside the enclave. Transport TLS protects bystanders; content-layer envelope crypto protects from everyone including the operator."
     static let onChainAudit = "Every app version we ship gets its compose hash published to a public Ethereum contract. Agents or auditors can read the full release history on-chain and cross-reference it against what the enclave is actually running. This link goes to the transaction that published the current version."
 }
 
 // Row-level expand/collapse state — local so tapping one row doesn't
 // re-run the audit or disturb the pinned attestation fetch.
+//
+// Status note: `info` is for rows that aren't a pass/fail binary —
+// e.g. the MCP transport row after the prod9 migration, where the
+// in-enclave TLS pin was retired by design and the privacy guarantee
+// shifted to the content-layer envelope. A green ✓ there would be
+// misleading; a red ✗ would be wrong (nothing is broken). Info is the
+// honest middle: "this is a disclosure, not a verdict."
+enum AuditRowStatus {
+    case pass, fail, info
+}
+
 struct AuditRowView: View {
     let title: String
-    let ok: Bool
+    let status: AuditRowStatus
     let note: String?
     let mechanism: String?
 
     @State private var expanded: Bool = false
+
+    // Back-compat initializer for all rows that still use ok: Bool.
+    init(title: String, ok: Bool, note: String? = nil, mechanism: String? = nil) {
+        self.title = title
+        self.status = ok ? .pass : .fail
+        self.note = note
+        self.mechanism = mechanism
+    }
+
+    // Info-state initializer — used when a row represents a disclosure
+    // rather than a pass/fail check.
+    init(title: String, status: AuditRowStatus, note: String? = nil, mechanism: String? = nil) {
+        self.title = title
+        self.status = status
+        self.note = note
+        self.mechanism = mechanism
+    }
+
+    private var iconName: String {
+        switch status {
+        case .pass: return "checkmark.circle.fill"
+        case .fail: return "exclamationmark.triangle.fill"
+        case .info: return "info.circle.fill"
+        }
+    }
+    private var iconTint: Color {
+        switch status {
+        case .pass: return .green
+        case .fail: return .orange
+        case .info: return .yellow
+        }
+    }
+    private var accessibilityVerdict: String {
+        switch status {
+        case .pass: return "passed"
+        case .fail: return "failed"
+        case .info: return "informational"
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -341,8 +395,8 @@ struct AuditRowView: View {
                 }
             } label: {
                 HStack(alignment: .top) {
-                    Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                        .foregroundStyle(ok ? .green : .orange)
+                    Image(systemName: iconName)
+                        .foregroundStyle(iconTint)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(title).font(.caption).foregroundStyle(.primary)
                         if let n = note {
@@ -359,7 +413,7 @@ struct AuditRowView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(title), \(ok ? "passed" : "failed")\(mechanism != nil ? ", tap for how we got this" : "")")
+            .accessibilityLabel("\(title), \(accessibilityVerdict)\(mechanism != nil ? ", tap for how we got this" : "")")
 
             if expanded, let m = mechanism {
                 Text(m)
@@ -447,8 +501,8 @@ struct AuditCardView: View {
                          ok: r.tlsCertBindingChecked,
                          note: r.tlsTerminationDisclosure,
                          mechanism: AuditMechanismCopy.tlsBinding)
-            AuditRowView(title: "MCP TLS: Let's Encrypt cert, key in CVM",
-                         ok: r.mcpTlsCertBindingChecked,
+            AuditRowView(title: mcpRowTitle(r.mcpTlsStatus),
+                         status: r.mcpTlsStatus,
                          note: r.mcpTlsDisclosure,
                          mechanism: AuditMechanismCopy.mcpTlsBinding)
 
@@ -627,6 +681,14 @@ struct AuditCardView: View {
                     .foregroundStyle(.secondary)
                     .padding(.leading, 26)
             }
+        }
+    }
+
+    private func mcpRowTitle(_ status: AuditRowStatus) -> String {
+        switch status {
+        case .pass: return "MCP TLS: in-enclave pinned key matches attestation"
+        case .fail: return "MCP TLS: pin mismatch"
+        case .info: return "MCP transport: standard TLS (content-layer crypto is the privacy boundary)"
         }
     }
 

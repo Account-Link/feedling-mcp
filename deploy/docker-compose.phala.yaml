@@ -147,6 +147,15 @@ services:
       FEEDLING_DATA_DIR: "/data"
       FEEDLING_WS_PORT: "9998"
       FEEDLING_ENCLAVE_URL: "https://enclave:5003"
+      # APNs developer key for push (Dynamic Island / Live Activity).
+      # Injected via `phala deploy -e APNS_KEY_P8_B64=...` (encrypted env
+      # channel, NOT baked into compose_hash). Empty default keeps dev
+      # deploys + CI compose-build healthy — code falls through to
+      # "logged_only" mode when unset. KEY_ID + TEAM_ID are also overridable
+      # but default to the Apple dev team's ids in backend/app.py.
+      APNS_KEY_P8_B64: "${APNS_KEY_P8_B64:-}"
+      APNS_KEY_ID: "${APNS_KEY_ID:-}"
+      APNS_TEAM_ID: "${APNS_TEAM_ID:-}"
     ports:
       - "5001:5001"
       - "9998:9998"

@@ -285,6 +285,12 @@ jobs:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
           CF_ZONE_ID:          ${{ secrets.CF_ZONE_ID }}
           CF_API_TOKEN:        ${{ secrets.CF_API_TOKEN }}
+          # APNs private key (base64-encoded .p8). Injected via the
+          # encrypted env channel — NOT baked into compose_hash. KEY_ID +
+          # TEAM_ID stay hardcoded in backend/app.py defaults, so only
+          # the key body needs to travel. If the secret isn't set, the
+          # backend logs-only and the iOS push is silently dropped.
+          APNS_KEY_P8_B64:     ${{ secrets.APNS_KEY_P8_B64 }}
           CVM_ID:              ${{ steps.cvmid.outputs.cvm_id }}
         run: |
           echo ">>> deploy-cvm target: $CVM_ID"
@@ -294,6 +300,7 @@ jobs:
             -c deploy/docker-compose.phala.yaml \
             -e "CF_ZONE_ID=$CF_ZONE_ID" \
             -e "CF_API_TOKEN=$CF_API_TOKEN" \
+            -e "APNS_KEY_P8_B64=$APNS_KEY_P8_B64" \
             --wait
 
       - name: Publish live compose_hash on Sepolia

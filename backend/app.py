@@ -678,21 +678,39 @@ app = Flask(__name__)
 # APNs config (global — one Apple dev key for the app)
 # ---------------------------------------------------------------------------
 
-TEAM_ID = "DC9JH5DRMY"
-KEY_ID = "5TH55X5U7T"
-BUNDLE_ID = "com.feedling.mcp"
-APNS_SANDBOX = True
+TEAM_ID = os.environ.get("APNS_TEAM_ID", "").strip() or "DC9JH5DRMY"
+KEY_ID = os.environ.get("APNS_KEY_ID", "").strip() or "5TH55X5U7T"
+BUNDLE_ID = os.environ.get("APNS_BUNDLE_ID", "").strip() or "com.feedling.mcp"
+APNS_SANDBOX = os.environ.get("APNS_SANDBOX", "true").strip().lower() != "false"
 
-_KEY_SEARCH = [
-    FEEDLING_DIR / f"AuthKey_{KEY_ID}.p8",
-    Path(__file__).parent / f"AuthKey_{KEY_ID}.p8",
-]
 APNS_KEY = None
-for _p in _KEY_SEARCH:
-    if _p.exists():
-        APNS_KEY = _p.read_text()
-        print(f"[apns] key loaded from {_p}")
-        break
+# Prefer env vars over filesystem: CVM deploys inject the key via
+# docker compose env, not mounted files. APNS_KEY_P8_B64 is base64 to
+# survive GH Actions → compose shell quoting of the multi-line PEM.
+_env_b64 = os.environ.get("APNS_KEY_P8_B64", "").strip()
+if _env_b64:
+    try:
+        APNS_KEY = base64.b64decode(_env_b64).decode("utf-8")
+        print(f"[apns] key loaded from APNS_KEY_P8_B64 (len={len(APNS_KEY)})")
+    except Exception as e:
+        print(f"[apns] APNS_KEY_P8_B64 decode failed: {e}")
+if not APNS_KEY:
+    _env_raw = os.environ.get("APNS_KEY_P8", "").strip()
+    if _env_raw:
+        APNS_KEY = _env_raw
+        print(f"[apns] key loaded from APNS_KEY_P8 (len={len(APNS_KEY)})")
+if not APNS_KEY:
+    _env_path = os.environ.get("APNS_KEY_PATH", "").strip()
+    _KEY_SEARCH = [
+        Path(_env_path) if _env_path else None,
+        FEEDLING_DIR / f"AuthKey_{KEY_ID}.p8",
+        Path(__file__).parent / f"AuthKey_{KEY_ID}.p8",
+    ]
+    for _p in _KEY_SEARCH:
+        if _p and _p.exists():
+            APNS_KEY = _p.read_text()
+            print(f"[apns] key loaded from {_p}")
+            break
 if not APNS_KEY:
     print("[apns] WARNING: .p8 key not found — push endpoints will log only, not deliver")
 

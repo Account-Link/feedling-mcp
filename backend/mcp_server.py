@@ -325,6 +325,19 @@ def screen_latest_frame(ctx: Context = None) -> dict:
 
 
 @mcp.tool(
+    name="feedling.screen.frames_list",
+    description=(
+        "List recent screen frame metadata (timestamp, app, OCR text) from the "
+        "user's iOS device. Does NOT include image bytes — use latest_frame for "
+        "image bytes of the newest frame. limit defaults to 20, max 100. "
+        "Useful for 'what has the user been doing?' over a short window."
+    ),
+)
+def screen_frames_list(limit: int = 20, ctx: Context = None) -> dict:
+    return _get("/v1/screen/frames", {"limit": max(1, min(limit, 100))}, ctx=ctx)
+
+
+@mcp.tool(
     name="feedling.screen.analyze",
     description=(
         "Get a structured analysis of the user's current screen activity: "
@@ -333,6 +346,18 @@ def screen_latest_frame(ctx: Context = None) -> dict:
 )
 def screen_analyze(ctx: Context = None) -> dict:
     return _get("/v1/screen/analyze", ctx=ctx)
+
+
+@mcp.tool(
+    name="feedling.screen.summary",
+    description=(
+        "Get today's screen-time rollup for the user (iOS + Mac): total minutes, "
+        "top app, top category, pickups. Aggregated server-side from the last 24h "
+        "of frames. Use for daily-report-style questions."
+    ),
+)
+def screen_summary(ctx: Context = None) -> dict:
+    return _get("/v1/screen/summary", ctx=ctx)
 
 
 # ---------------------------------------------------------------------------
