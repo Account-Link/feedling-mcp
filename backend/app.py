@@ -192,6 +192,7 @@ class UserStore:
         self._load_push_state()
         self._load_live_activity_state()
         self._load_chat()
+        self._load_frames_meta()
 
     # ------- file paths -------
     @property
@@ -225,6 +226,73 @@ class UserStore:
     @property
     def bootstrap_events_file(self) -> Path:
         return self.dir / "bootstrap_events.jsonl"
+
+    @property
+    def frames_meta_file(self) -> Path:
+        return self.dir / "frames_meta.json"
+
+    # ------- frames index -------
+    def _load_frames_meta(self):
+        # Fast path: index file already persisted.
+        if self.frames_meta_file.exists():
+            try:
+                data = json.loads(self.frames_meta_file.read_text())
+                if isinstance(data, list):
+                    self.frames_meta = data
+                    print(f"[{self.user_id}/frames] loaded index n={len(self.frames_meta)}")
+                    return
+            except Exception as e:
+                print(f"[{self.user_id}/frames] index load failed: {e} — rebuilding from disk")
+
+        # Rebuild path: no index yet (first boot with this fix, or pre-fix restart
+        # left orphan env.json files). Scan frames_dir and reconstruct meta from
+        # envelope bodies + file mtime. ts fallback loses sub-second precision but
+        # is good enough to un-orphan pre-fix frames.
+        recovered: list[dict] = []
+        try:
+            for p in sorted(self.frames_dir.glob("*.env.json")):
+                try:
+                    env = json.loads(p.read_text())
+                    if not isinstance(env, dict) or not env.get("body_ct"):
+                        continue
+                    recovered.append({
+                        "filename": p.name,
+                        "ts": p.stat().st_mtime,
+                        "app": None,
+                        "ocr_text": "",
+                        "w": 0,
+                        "h": 0,
+                        "encrypted": True,
+                        "id": env.get("id") or p.stem.split(".")[0],
+                        "v": env.get("v", 1),
+                        "owner_user_id": env.get("owner_user_id"),
+                    })
+                except Exception as e:
+                    print(f"[{self.user_id}/frames] skip {p.name}: {e}")
+            recovered.sort(key=lambda m: m["ts"])
+            if len(recovered) > MAX_FRAMES:
+                # Keep the newest MAX_FRAMES; prune orphan files for the rest.
+                drop = recovered[:-MAX_FRAMES]
+                recovered = recovered[-MAX_FRAMES:]
+                for m in drop:
+                    try:
+                        (self.frames_dir / m["filename"]).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+            self.frames_meta = recovered
+            self._persist_frames_meta()
+            print(f"[{self.user_id}/frames] rebuilt index from disk n={len(recovered)}")
+        except Exception as e:
+            print(f"[{self.user_id}/frames] rebuild failed: {e}")
+            self.frames_meta = []
+
+    def _persist_frames_meta(self):
+        try:
+            tmp = self.frames_meta_file.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(self.frames_meta))
+            tmp.replace(self.frames_meta_file)
+        except Exception as e:
+            print(f"[{self.user_id}/frames] index save failed: {e}")
 
     # ------- tokens -------
     def _load_tokens(self):
@@ -495,6 +563,7 @@ def _save_frame_envelope(store: UserStore, payload: dict, env: dict):
             old = store.frames_dir / removed["filename"]
             if old.exists():
                 old.unlink()
+        store._persist_frames_meta()
 
     body_len = len(env.get("body_ct") or "")
     print(f"[ingest:{store.user_id}] saved v1 frame id={item_id} body_ct_len={body_len}")
