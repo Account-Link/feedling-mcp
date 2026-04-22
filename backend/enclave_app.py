@@ -54,6 +54,7 @@ from cryptography.hazmat.primitives.hashes import SHA256
 from cryptography.hazmat.primitives import serialization
 from cryptography.exceptions import InvalidTag
 from flask import Flask, jsonify, Response, request
+from flask_compress import Compress
 from dstack_sdk import DstackClient
 
 from dstack_tls import derive_tls_cert_and_key, derive_key_only, TLS_KEY_PATH, MCP_TLS_KEY_PATH
@@ -367,6 +368,9 @@ def bootstrap():
 # ---------------------------------------------------------------------------
 
 app = Flask(__name__)
+# gzip large JSON responses (decrypt-with-image ships ~470 KB of
+# base64-encoded JPEG inside JSON — compresses down ~35-45%).
+Compress(app)
 
 
 @app.route("/healthz", methods=["GET"])

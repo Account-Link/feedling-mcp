@@ -19,6 +19,7 @@ import httpx
 import jwt
 import websockets
 from flask import Flask, abort, g, jsonify, request, Response, send_file
+from flask_compress import Compress
 
 # ---------------------------------------------------------------------------
 # Root directory + deployment mode
@@ -742,6 +743,11 @@ def _run_ws_server():
 threading.Thread(target=_run_ws_server, daemon=True).start()
 
 app = Flask(__name__)
+# gzip responses when the client sends Accept-Encoding: gzip. CVM egress
+# throughput is ~30-50 KB/s for large payloads; the decrypt-with-image
+# path was shipping 470 KB of JSON per call, and dropping that in half
+# via compression is a 3-5x latency win for "show me the screen" calls.
+Compress(app)
 
 # ---------------------------------------------------------------------------
 # APNs config (global — one Apple dev key for the app)

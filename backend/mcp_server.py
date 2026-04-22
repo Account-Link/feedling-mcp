@@ -799,12 +799,20 @@ if __name__ == "__main__":
 
     if transport == "sse":
         # Build a Starlette app so we can attach the key-capture middleware,
-        # then run it with uvicorn.
+        # then run it with uvicorn. GZipMiddleware compresses tool-call
+        # responses above 500 B — decrypt_frame with include_image=true
+        # ships ~470 KB of base64 JPEG inside JSON, and CVM egress is
+        # ~30-50 KB/s without compression; gzip cuts the wire payload
+        # by ~35-45% and turns a 6-10s call into ~2-3s.
         import uvicorn
         from starlette.middleware import Middleware as StarletteMW
+        from starlette.middleware.gzip import GZipMiddleware
         app = mcp.http_app(
             transport="sse",
-            middleware=[StarletteMW(KeyCaptureMiddleware)],
+            middleware=[
+                StarletteMW(GZipMiddleware, minimum_size=500),
+                StarletteMW(KeyCaptureMiddleware),
+            ],
         )
         if tls_on:
             uvicorn.run(app, host="0.0.0.0", port=port,
