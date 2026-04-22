@@ -53,7 +53,9 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.hashes import SHA256
 from cryptography.hazmat.primitives import serialization
 from cryptography.exceptions import InvalidTag
-from flask import Flask, jsonify, Response, request
+from io import BytesIO
+
+from flask import Flask, jsonify, Response, request, send_file
 from flask_compress import Compress
 from dstack_sdk import DstackClient
 
@@ -895,6 +897,87 @@ def v1_frame_decrypt(frame_id):
         result["image_b64"] = None
         result["image_bytes_omitted"] = True
     return jsonify(result)
+
+
+@app.route("/v1/screen/frames/<frame_id>/image", methods=["GET"])
+def v1_frame_image(frame_id):
+    """Decrypt a v1 screen-frame envelope and return the raw JPEG bytes.
+
+    Binary sibling of /decrypt. Returns Content-Type image/jpeg and
+    supports HTTP Range requests, which lets a client fetch the image
+    in N parallel chunks. dstack-gateway throttles each TCP connection
+    to ~1 Mbps, so a 4-way parallel Range fetch on a ~175 KB JPEG can
+    complete in ~1s rather than ~3-4s on a single stream.
+
+    Why a separate endpoint rather than reusing /decrypt:
+      - /decrypt returns JSON with base64-encoded image inside. Range
+        on that is awkward (base64 boundaries, JSON framing).
+      - Raw bytes with Range gives us 33% savings over base64 AND
+        trivial multi-stream support.
+      - Future server-side OCR still runs on these same bytes inside
+        the enclave — this endpoint just exposes them to agents that
+        want to view the pixels themselves.
+
+    Metadata (OCR text, app, timestamp, dimensions) remains on
+    /decrypt?include_image=false — callers wanting both should hit
+    both endpoints; they can be fetched in parallel.
+    """
+    if not _state["ready"]:
+        return jsonify({"error": "not_ready", "detail": _state["error"]}), 503
+    if not re.match(r"^[a-f0-9]{16,64}$", frame_id or ""):
+        return jsonify({"error": "bad frame id"}), 400
+
+    api_key = _extract_api_key()
+    if not api_key:
+        return jsonify({"error": "missing api_key"}), 401
+
+    try:
+        whoami = _flask_get("/v1/users/whoami", api_key)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 401:
+            return jsonify({"error": "unauthorized"}), 401
+        return jsonify({"error": f"backend_error: {e}"}), 502
+    authorized_user_id = whoami.get("user_id", "")
+    if not authorized_user_id:
+        return jsonify({"error": "cannot resolve user_id"}), 401
+
+    try:
+        env = _flask_get(f"/v1/screen/frames/{frame_id}/envelope", api_key)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return jsonify({"error": "frame not found"}), 404
+        return jsonify({"error": f"backend_error: {e}"}), 502
+
+    content_sk = _get_or_derive_content_sk()
+    try:
+        plaintext = _decrypt_envelope(env, authorized_user_id, content_sk)
+    except DecryptFailure as e:
+        return jsonify({"error": f"decrypt_failed: {e.reason}"}), 502
+
+    try:
+        inner = json.loads(plaintext.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        return jsonify({"error": f"plaintext_parse: {e}"}), 502
+
+    image_b64 = inner.get("image", "")
+    if not image_b64:
+        return jsonify({"error": "no image in plaintext"}), 404
+    try:
+        jpeg_bytes = base64.b64decode(image_b64)
+    except Exception as e:
+        return jsonify({"error": f"image_b64_decode: {e}"}), 502
+
+    # Flask's send_file with conditional=True honors HTTP Range + etag
+    # out of the box — clients can split the JPEG into parallel chunks
+    # to bypass the per-TCP-connection throttle on dstack-gateway.
+    return send_file(
+        BytesIO(jpeg_bytes),
+        mimetype="image/jpeg",
+        as_attachment=False,
+        download_name=f"{frame_id}.jpg",
+        conditional=True,
+        max_age=0,
+    )
 
 
 def _get_or_derive_content_sk() -> nacl.public.PrivateKey:

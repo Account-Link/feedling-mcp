@@ -1554,6 +1554,46 @@ def frame_decrypt(frame_id):
         return jsonify({"error": f"enclave_error: {e}"}), 502
 
 
+@app.route("/v1/screen/frames/<frame_id>/image", methods=["GET"])
+def frame_image(frame_id):
+    """Proxy to the enclave's raw-JPEG endpoint, passing Range through.
+
+    Returns Content-Type image/jpeg with Accept-Ranges: bytes. Clients
+    can issue parallel Range GETs to bypass the per-TCP-connection
+    throttle on dstack-gateway (~1 Mbps/stream, ~3-4 Mbps aggregate).
+    """
+    store = require_user()
+    fpath = _find_envelope_path(store, frame_id)
+    if fpath is None:
+        return jsonify({"error": "not found"}), 404
+
+    enclave_url = os.environ.get("FEEDLING_ENCLAVE_URL", "").rstrip("/")
+    if not enclave_url:
+        return jsonify({"error": "enclave unreachable — FEEDLING_ENCLAVE_URL not set"}), 503
+
+    api_key = _extract_api_key()
+    # Forward api_key + Range (if present) so the enclave's send_file
+    # can respond 206 Partial Content with the requested slice.
+    fwd_headers = {"X-API-Key": api_key} if api_key else {}
+    if request.headers.get("Range"):
+        fwd_headers["Range"] = request.headers["Range"]
+    try:
+        with httpx.Client(timeout=30, verify=False) as client:
+            r = client.get(
+                f"{enclave_url}/v1/screen/frames/{frame_id}/image",
+                headers=fwd_headers,
+            )
+    except httpx.HTTPError as e:
+        return jsonify({"error": f"enclave_error: {e}"}), 502
+
+    resp_headers = {}
+    for h in ("Content-Type", "Content-Length", "Content-Range",
+              "Accept-Ranges", "ETag", "Last-Modified"):
+        if r.headers.get(h):
+            resp_headers[h] = r.headers[h]
+    return (r.content, r.status_code, resp_headers)
+
+
 @app.route("/v1/screen/analyze", methods=["GET"])
 def analyze_screen():
     store = require_user()

@@ -62,7 +62,11 @@ final class WebSocketFrameQueue {
         guard WebSocketManager.shared.connected else { return }
 
         let resized = resizeIfNeeded(frame.image, maxEdge: 960)
-        guard let jpegData = resized.jpegData(compressionQuality: 0.6) else { return }
+        // 0.5 balances wire-size (CVM egress is per-TCP throttled)
+        // against future server-side OCR, which will run on these
+        // bytes inside the enclave. Q=0.4 starts to mush small text;
+        // Q=0.5 preserves legibility at ~30% fewer bytes than Q=0.6.
+        guard let jpegData = resized.jpegData(compressionQuality: 0.5) else { return }
 
         let ocrText = performOCR(from: resized)
         let bundleId = "com.feedling.mcp"
