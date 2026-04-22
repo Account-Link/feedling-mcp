@@ -109,11 +109,21 @@ final class WebSocketFrameQueue {
     }
 
     private func resizeIfNeeded(_ image: UIImage, maxEdge: CGFloat) -> UIImage {
+        // UIImage from VTCreateCGImageFromCVPixelBuffer has scale=1, so
+        // .size is already in pixels. UIGraphicsImageRenderer defaults
+        // to the device scale (@3x on iPhone), which would render a
+        // requested 442x960 target as 1326x2880 actual pixels and bloat
+        // every JPEG ~9x. Force scale=1 so we get exactly what we asked.
         let longest = max(image.size.width, image.size.height)
         guard longest > maxEdge else { return image }
-        let scale = maxEdge / longest
-        let size = CGSize(width: floor(image.size.width * scale), height: floor(image.size.height * scale))
-        return UIGraphicsImageRenderer(size: size).image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
+        let ratio = maxEdge / longest
+        let size = CGSize(width: floor(image.size.width * ratio),
+                          height: floor(image.size.height * ratio))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: size))
+        }
     }
 
     private func performOCR(from image: UIImage) -> String {
