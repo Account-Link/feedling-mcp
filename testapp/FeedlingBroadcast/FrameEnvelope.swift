@@ -27,8 +27,9 @@ import Foundation
 ///   }}
 ///
 /// Where AEAD AAD = "owner_user_id|v|id".utf8 — matches server.
-/// Where BoxSeal = ek_pub(32) || ChaChaPoly(HKDF-SHA256(salt=ek_pub||recipient_pk,
-///                                                     info="feedling-box-seal-v1"), 0^12 nonce, K)
+/// Where BoxSeal = ek_pub(32) || ChaChaPoly(HKDF-SHA256(salt=empty,
+///                                                     info="feedling-box-seal-v1"),
+///                                         nonce=SHA256(ek_pub||recipient_pk)[:12], K)
 enum FrameEnvelope {
 
     /// Read the three inputs we need from the App Group UserDefaults
@@ -92,26 +93,26 @@ enum FrameEnvelope {
 
     // MARK: - primitives
 
-    /// HKDF-SHA256 + ChaChaPoly "box seal" — matches ContentEncryption.swift.
-    ///
-    /// Returns ek_pub(32) || ct || tag(16). Recipient recovers the
-    /// shared secret via their X25519 SK, derives the same key with HKDF,
-    /// and decrypts.
+    /// HKDF-SHA256 + ChaChaPoly "box seal" — matches ContentEncryption.BoxSeal
+    /// and backend enclave_app._box_seal_open_hkdf. Parameters:
+    ///   salt  = empty
+    ///   info  = "feedling-box-seal-v1"
+    ///   nonce = first 12 bytes of SHA256(ek_pub || recipient_pub)
+    /// Returns ek_pub(32) || ct || tag(16).
     private static func boxSeal(payload: Data, recipientPK: Curve25519.KeyAgreement.PublicKey) -> Data? {
         let ek = Curve25519.KeyAgreement.PrivateKey()
         let ekPub = ek.publicKey.rawRepresentation
         let recipientRaw = recipientPK.rawRepresentation
         guard let shared = try? ek.sharedSecretFromKeyAgreement(with: recipientPK) else { return nil }
-        let salt = ekPub + recipientRaw
         let key = shared.hkdfDerivedSymmetricKey(
             using: SHA256.self,
-            salt: salt,
+            salt: Data(),
             sharedInfo: Data("feedling-box-seal-v1".utf8),
             outputByteCount: 32
         )
-        let zeroNonce = try? ChaChaPoly.Nonce(data: Data(count: 12))
-        guard let zeroNonce = zeroNonce else { return nil }
-        guard let box = try? ChaChaPoly.seal(payload, using: key, nonce: zeroNonce) else { return nil }
+        let nonceBytes = Data(SHA256.hash(data: ekPub + recipientRaw)).prefix(12)
+        guard let nonce = try? ChaChaPoly.Nonce(data: nonceBytes) else { return nil }
+        guard let box = try? ChaChaPoly.seal(payload, using: key, nonce: nonce) else { return nil }
         return ekPub + box.ciphertext + box.tag
     }
 

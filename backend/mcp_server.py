@@ -371,12 +371,13 @@ def screen_summary(ctx: Context = None) -> dict:
         "frame is used. Returns a list with the JPEG image (so vision "
         "activates) and a text block containing ocr_text + app + ts metadata."
     ),
+    output_schema=None,
 )
 def screen_decrypt_frame(
     frame_id: str = "",
     include_image: bool = True,
     ctx: Context = None,
-) -> list:
+):
     """Resolve a frame id (or pick the latest), ask the enclave to
     decrypt, and return an MCP content list the agent can consume:
 
