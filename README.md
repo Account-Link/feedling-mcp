@@ -267,8 +267,11 @@ Creates a venv under `~/feedling-venv`, installs deps, writes
 | GET | `/v1/content/export` | Export all user content as envelopes |
 | POST | `/v1/account/reset` | Wipe this user's data + rotate api_key |
 | GET | `/v1/screen/analyze` | Semantic-first screen analysis + `rate_limit_ok` |
-| GET | `/v1/screen/frames/latest` | Latest frame envelope + OCR |
-| GET | `/v1/screen/frames` | List recent frames (metadata) |
+| GET | `/v1/screen/summary` | Today's screen-time rollup (top app, minutes, pickups) |
+| GET | `/v1/screen/frames/latest` | Latest frame metadata (v1 envelope; image is ciphertext) |
+| GET | `/v1/screen/frames` | List recent frames (metadata only) |
+| GET | `/v1/screen/frames/<id>/decrypt` | Enclave decrypt → plaintext OCR + optional base64 JPEG |
+| GET | `/v1/screen/frames/<id>/image` | Raw JPEG bytes, `Accept-Ranges: bytes` for parallel fetch |
 | POST | `/v1/push/dynamic-island` | Push to Dynamic Island |
 | POST | `/v1/push/live-activity` | Update Live Activity |
 | GET | `/v1/push/tokens` | List registered APNs tokens |
@@ -281,7 +284,7 @@ Creates a venv under `~/feedling-venv`, installs deps, writes
 All write endpoints that take content enforce v1 envelope shape and
 reject plaintext with `400 plaintext_write_rejected`.
 
-### MCP tools (14 total)
+### MCP tools (17 total)
 
 | Tool | Maps to |
 |------|---------|
@@ -295,8 +298,11 @@ reject plaintext with `400 plaintext_write_rejected`.
 | `feedling.memory.delete` | DELETE /v1/memory/delete |
 | `feedling.push.dynamic_island` | POST /v1/push/dynamic-island |
 | `feedling.push.live_activity` | POST /v1/push/live-activity |
-| `feedling.screen.latest_frame` | GET /v1/screen/frames/latest |
+| `feedling.screen.latest_frame` | GET /v1/screen/frames/latest (metadata only) |
+| `feedling.screen.frames_list` | GET /v1/screen/frames (metadata only; encrypted) |
 | `feedling.screen.analyze` | GET /v1/screen/analyze |
+| `feedling.screen.summary` | GET /v1/screen/summary |
+| `feedling.screen.decrypt_frame` | GET /v1/screen/frames/<id>/decrypt — Image block + OCR for agent vision |
 | `feedling.chat.post_message` | wraps to v1 envelope → POST /v1/chat/response |
 | `feedling.chat.get_history` | GET /v1/chat/history |
 

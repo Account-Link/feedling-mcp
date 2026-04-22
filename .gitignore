@@ -23,3 +23,6 @@ ios/FeedlingDCAP/.build/
 ios/FeedlingDCAP/.swiftpm/
 ios/**/Package.resolved
 .gstack/
+
+# Claude Code session scratch (task locks, transient state)
+.claude/
