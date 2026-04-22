@@ -182,11 +182,24 @@ def _headers(ctx: Context | None = None) -> dict:
     return h
 
 
+# Module-level pooled clients — avoid paying a fresh TCP+TLS handshake
+# on every tool call. The backend is in-cluster plain HTTP; the enclave
+# is reached over its self-signed TLS surface so verify=False.
+_FLASK_HTTP = httpx.Client(
+    timeout=60,
+    limits=httpx.Limits(max_keepalive_connections=8, max_connections=16),
+)
+_ENCLAVE_HTTP = httpx.Client(
+    timeout=60,
+    verify=False,
+    limits=httpx.Limits(max_keepalive_connections=8, max_connections=16),
+)
+
+
 def _get(path: str, params: dict | None = None, ctx: Context | None = None) -> dict:
-    with httpx.Client(timeout=60) as client:
-        r = client.get(f"{FLASK_BASE}{path}", params=params, headers=_headers(ctx))
-        r.raise_for_status()
-        return r.json()
+    r = _FLASK_HTTP.get(f"{FLASK_BASE}{path}", params=params, headers=_headers(ctx))
+    r.raise_for_status()
+    return r.json()
 
 
 def _get_decrypted(path: str, params: dict | None = None, ctx: Context | None = None) -> dict:
@@ -200,24 +213,21 @@ def _get_decrypted(path: str, params: dict | None = None, ctx: Context | None = 
     """
     if not ENCLAVE_BASE:
         return _get(path, params=params, ctx=ctx)
-    with httpx.Client(timeout=60, verify=False) as client:
-        r = client.get(f"{ENCLAVE_BASE}{path}", params=params, headers=_headers(ctx))
-        r.raise_for_status()
-        return r.json()
+    r = _ENCLAVE_HTTP.get(f"{ENCLAVE_BASE}{path}", params=params, headers=_headers(ctx))
+    r.raise_for_status()
+    return r.json()
 
 
 def _post(path: str, body: dict, ctx: Context | None = None) -> dict:
-    with httpx.Client(timeout=60) as client:
-        r = client.post(f"{FLASK_BASE}{path}", json=body, headers=_headers(ctx))
-        r.raise_for_status()
-        return r.json()
+    r = _FLASK_HTTP.post(f"{FLASK_BASE}{path}", json=body, headers=_headers(ctx))
+    r.raise_for_status()
+    return r.json()
 
 
 def _delete(path: str, params: dict | None = None, ctx: Context | None = None) -> dict:
-    with httpx.Client(timeout=60) as client:
-        r = client.delete(f"{FLASK_BASE}{path}", params=params, headers=_headers(ctx))
-        r.raise_for_status()
-        return r.json()
+    r = _FLASK_HTTP.delete(f"{FLASK_BASE}{path}", params=params, headers=_headers(ctx))
+    r.raise_for_status()
+    return r.json()
 
 
 def _whoami_pubkeys(ctx: Context | None = None) -> tuple[str, bytes | None, bytes | None]:
@@ -317,8 +327,11 @@ def push_live_activity(
 @mcp.tool(
     name="feedling.screen.latest_frame",
     description=(
-        "Get the most recent screen frame captured from the user's iOS device, "
-        "including OCR text, the foreground app, and a timestamp."
+        "Metadata ONLY for the most recent screen frame (timestamp, frame id, "
+        "filename, envelope url). Every frame is a v1 envelope, so app/ocr_text "
+        "come back empty and there is no plaintext image here. To actually SEE "
+        "the screen — pixels + real OCR text — call feedling.screen.decrypt_frame "
+        "(it defaults to the latest frame)."
     ),
 )
 def screen_latest_frame(ctx: Context = None) -> dict:
@@ -328,10 +341,11 @@ def screen_latest_frame(ctx: Context = None) -> dict:
 @mcp.tool(
     name="feedling.screen.frames_list",
     description=(
-        "List recent screen frame metadata (timestamp, app, OCR text) from the "
-        "user's iOS device. Does NOT include image bytes — use latest_frame for "
-        "image bytes of the newest frame. limit defaults to 20, max 100. "
-        "Useful for 'what has the user been doing?' over a short window."
+        "List recent screen frame metadata (timestamp, frame id, filename) from "
+        "the user's iOS device. Frames are v1 envelopes so app and ocr_text in "
+        "this listing are always empty — use feedling.screen.decrypt_frame with a "
+        "specific frame_id to get real OCR + app + pixels for any frame. limit "
+        "defaults to 20, max 100."
     ),
 )
 def screen_frames_list(limit: int = 20, ctx: Context = None) -> dict:
@@ -406,14 +420,13 @@ def screen_decrypt_frame(
             return [{"error": "latest frame has no id"}]
 
     try:
-        with httpx.Client(timeout=30, verify=False) as client:
-            r = client.get(
-                f"{ENCLAVE_BASE}/v1/screen/frames/{fid}/decrypt",
-                headers=_headers(ctx),
-                params={"include_image": "true" if include_image else "false"},
-            )
-            r.raise_for_status()
-            payload = r.json()
+        r = _ENCLAVE_HTTP.get(
+            f"{ENCLAVE_BASE}/v1/screen/frames/{fid}/decrypt",
+            headers=_headers(ctx),
+            params={"include_image": "true" if include_image else "false"},
+        )
+        r.raise_for_status()
+        payload = r.json()
     except httpx.HTTPError as e:
         return [{"error": f"enclave_decrypt_failed: {e}", "frame_id": fid}]
 

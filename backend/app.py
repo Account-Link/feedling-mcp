@@ -1433,12 +1433,10 @@ def latest_frame():
         if not store.frames_meta:
             return jsonify({"error": "no frames yet"}), 404
         meta = store.frames_meta[-1].copy()
-
-    fpath = store.frames_dir / meta["filename"]
-    if not fpath.exists():
-        return jsonify({"error": "file missing"}), 404
-
-    meta["image_base64"] = base64.b64encode(fpath.read_bytes()).decode()
+    # image_base64 used to be included here, but every frame is a v1
+    # envelope now — the file bytes are opaque ciphertext and only
+    # waste ~900KB per call. Callers wanting pixels should hit
+    # /v1/screen/frames/<id>/decrypt (or the decrypt_frame MCP tool).
     meta["url"] = _frame_url(store, meta["filename"])
     return jsonify(meta)
 
