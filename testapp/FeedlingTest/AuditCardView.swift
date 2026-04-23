@@ -611,10 +611,9 @@ struct AuditCardView: View {
                          ok: r.tlsCertBindingChecked,
                          note: r.tlsTerminationDisclosure,
                          mechanism: AuditMechanismCopy.tlsBinding)
-            AuditRowView(title: mcpRowTitle(r.mcpTlsStatus),
-                         status: r.mcpTlsStatus,
-                         note: r.mcpTlsDisclosure,
-                         mechanism: AuditMechanismCopy.mcpTlsBinding)
+
+            Divider().padding(.vertical, 4)
+            threatModelBlock()
 
             Divider().padding(.vertical, 4)
             Text("Public release log")
@@ -909,11 +908,35 @@ struct AuditCardView: View {
         }
     }
 
+    // The "what's protected" block shown under the security rows. This
+    // replaced an amber "MCP transport" row that used to sit in the
+    // security list — that row was tracking a structural fact (in-enclave
+    // TLS pin went away in the prod9 migration), which isn't a pass/fail
+    // check. It's an architectural disclosure. The threat we actually
+    // care about for this product is reading user *content*, which the
+    // envelope crypto below handles; metadata exposure to the ingress is
+    // a documented tradeoff, not a hole in content privacy.
+    @ViewBuilder
+    private func threatModelBlock() -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Your content is what's protected")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("""
+            Chat messages, memories, identity, and screen frames are individually sealed on this device with the enclave's content key (`enclave_content_pk`, shown below) before anything is sent. Only the enclave — verified to be the one the rows above describe — can open them. Nobody in the middle — Apple, your ISP, the dstack operator, Phala, us — can read your content.
+
+            Transport TLS is standard Let's Encrypt at the dstack ingress. That protects bystanders from seeing connection metadata (timing, request sizes, which endpoints you hit). We don't claim metadata privacy against the dstack operator — that's an architectural tradeoff from the prod9 migration, documented in docs/AUDIT.md.
+            """)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private func mcpRowTitle(_ status: AuditRowStatus) -> String {
         switch status {
         case .pass: return "MCP TLS: in-enclave pinned key matches attestation"
         case .fail: return "MCP TLS: pin mismatch"
-        case .info: return "MCP transport: standard TLS (content-layer crypto is the privacy boundary)"
+        case .info: return "MCP transport: standard TLS"
         }
     }
 
