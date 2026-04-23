@@ -80,15 +80,49 @@ digest and set `--no-install-recommends`, this is deterministic *for that
 base image* — but regenerating the base image (Debian sources shift daily)
 would produce different apt versions.
 
-For Phase 1 this is acceptable. If auditors insist, the next iteration
-would:
+This is an open gap, not a scheduled item. Future tightening options:
 
 - Pin apt packages by exact version (`package=1.2.3-1`)
-- Or switch to a fully-static Python distribution (e.g. distroless Python)
-- Or use Nix / Bazel for a fully deterministic graph
+- Switch to a fully-static Python distribution (e.g. distroless Python)
+- Use Nix / Bazel for a fully deterministic graph
 
-## Verification script (planned)
+## Reproducibility verification scripts
 
-`deploy/verify-build.sh` (Phase 2 deliverable): given a git commit and a
-GitHub Release digest claim, clones, builds, compares, and emits a signed
-attestation. Used by CI and by third-party auditors.
+Two companion scripts live next to this file and mirror the pattern from
+`dstack-tutorial/02-bitrot-and-reproducibility`:
+
+### `deploy/build-reproducible.sh`
+
+Runs two back-to-back `docker buildx build` passes with
+`SOURCE_DATE_EPOCH=0` and `rewrite-timestamp=true`, outputs an OCI
+tarball, and fails if the two tarball sha256s don't match. On success
+writes `deploy/build-manifest.json`:
+
+```json
+{
+  "image_hash":   "<sha256 of the OCI tarball>",
+  "image_digest": "<sha256 of the OCI manifest inside the tarball>",
+  "build_date":   "<UTC ISO-8601>",
+  "source_date_epoch": 0
+}
+```
+
+Commit `build-manifest.json` alongside a deploy so auditors can see what
+you expected the build to produce.
+
+### `deploy/verify-remote.sh`
+
+```bash
+./deploy/verify-remote.sh user@auditor-machine
+```
+
+Tarballs `deploy/Dockerfile` + `backend/`, ships them to a remote host,
+rebuilds there with the same flags, and compares the tarball sha256
+against `deploy/build-manifest.json`. A match proves the build is
+deterministic across machines. Any mismatch points at Docker Buildx
+version drift or apt package drift on the base image — see "Known
+non-determinism" above.
+
+Third-party auditors run `verify-remote.sh` against their own host
+without needing write access to anything here — the only authority they
+grant is a signed-in build environment of their choosing.
