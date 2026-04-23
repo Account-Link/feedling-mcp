@@ -26,6 +26,7 @@
 		6432F6362F93A547006FA607 /* MemoryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6432F6322F93A547006FA607 /* MemoryViewModel.swift */; };
 		6B69634A47BFB6AA70AF1609 /* FeedlingAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3DB0E6C7C11B4B979F67492 /* FeedlingAPI.swift */; };
 		6EEB48B8B45275CBDFCDC9F8 /* Verifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61A4444D8C2BB0F630FB7A42 /* Verifier.swift */; };
+		73EC42CE84AE40ECF3874591 /* BaseImageReference.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31214D6790D54B66CE47DFEA /* BaseImageReference.swift */; };
 		8008026851A69E377E0C9937 /* SampleHandler+WebSocketQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 408A6FFA15EE70ECF1B9E9DA /* SampleHandler+WebSocketQueue.swift */; };
 		8234416BB7B24F57E6E971F4 /* Parser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9354145BA0CA53600D58644 /* Parser.swift */; };
 		831D484187F89765720E6E05 /* ContentEncryption.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFC04E45A4517F7284A87DB7 /* ContentEncryption.swift */; };
@@ -92,6 +93,7 @@
 		2889F890552F556700BB6ACD /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		28A4834DDC516FBDFC2E61DA /* FeedlingBroadcastSetupUI.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FeedlingBroadcastSetupUI.entitlements; sourceTree = "<group>"; };
 		2CDD8AF63E3E29635CACE24C /* SharedConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedConfig.swift; sourceTree = "<group>"; };
+		31214D6790D54B66CE47DFEA /* BaseImageReference.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BaseImageReference.swift; path = FeedlingTest/DCAP/BaseImageReference.swift; sourceTree = SOURCE_ROOT; };
 		3909F8C0719509F4F8260943 /* FeedlingBroadcast.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FeedlingBroadcast.entitlements; sourceTree = "<group>"; };
 		408A6FFA15EE70ECF1B9E9DA /* SampleHandler+WebSocketQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SampleHandler+WebSocketQueue.swift"; sourceTree = "<group>"; };
 		55823AFBDF473E1DBABB4A3E /* FeedlingTestWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FeedlingTestWidget.entitlements; sourceTree = "<group>"; };
@@ -213,6 +215,7 @@
 				E5F144489611AF835F8CFC0D /* dcap_qvl.xcframework */,
 				5CD64A76AF9DDEA53F680AEF /* DCAPQVL.swift */,
 				EC3449A6B4C5231A51C68E4F /* IntelPCSClient.swift */,
+				31214D6790D54B66CE47DFEA /* BaseImageReference.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -428,6 +431,7 @@
 				12A04CB5B88BD594DB35E87A /* EventLogReplay.swift in Sources */,
 				3ED44791B682BAC194DA5697 /* DCAPQVL.swift in Sources */,
 				50B1423F8F175BE01171EE90 /* IntelPCSClient.swift in Sources */,
+				73EC42CE84AE40ECF3874591 /* BaseImageReference.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

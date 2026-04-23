@@ -81,11 +81,11 @@ final class AuditViewModel: ObservableObject {
     struct AuditReport {
         var verifiedAt: Date
         var hardwareAttestationValid: Bool
-        /// Raw base-image measurements from the quote. We surface these
-        /// for manual inspection; we do NOT compare them against a pinned
-        /// reference list (there is no such list bundled in the app).
-        /// Nil iff the quote failed to parse.
-        var baseImageMeasurements: BaseImageMeasurements?
+        /// Result of the trust-on-first-use check against a saved
+        /// reference set of MRTD + RTMR0-2. `.match` / `.firstLaunch`
+        /// render green, `.mismatch` renders red, transient/fetch
+        /// errors render amber-info.
+        var baseImageVerdict: BaseImageVerdict?
         var composeHash: String?
         var chainValid: Bool
         var bodySignatureValid: Bool
@@ -111,13 +111,6 @@ final class AuditViewModel: ObservableObject {
         /// qvlVerdict below subsumes that check.
         var qvlVerdict: DCAPVerifiedReport?
         var qvlError: String?
-
-        struct BaseImageMeasurements {
-            let mrtd: String
-            let rtmr0: String
-            let rtmr1: String
-            let rtmr2: String
-        }
     }
 
     func run() async {
@@ -221,14 +214,17 @@ final class AuditViewModel: ObservableObject {
         //          deployments; all zeros on the local simulator)
         let parsed = (try? DCAPParser.parse(quoteBytes))
         let rtmr3FromQuote = parsed?.rtmr3Hex ?? ""
-        let baseMeasurements = parsed.map {
-            AuditReport.BaseImageMeasurements(
-                mrtd: $0.body.mrtd.hexString,
-                rtmr0: $0.body.rtmr0.hexString,
-                rtmr1: $0.body.rtmr1.hexString,
-                rtmr2: $0.body.rtmr2.hexString
-            )
-        }
+
+        // 2c. Base-image TOFU. On first audit, fetch the expected
+        //     measurements for this app_id from the public app-
+        //     attestations endpoint and save them locally. On every
+        //     subsequent audit, compare the live quote's MRTD+RTMR0-2
+        //     against that saved reference. Mismatch => red; new pin
+        //     on first successful audit => green; offline on first
+        //     run => amber pending.
+        let baseImageVerdict: BaseImageVerdict = await evaluateBaseImage(
+            parsed: parsed, appId: CVMEndpoints.appId)
+
         let composeBinding = EventLogReplay.verify(
             claimedComposeHash: bundle.compose_hash,
             eventLogJSON: bundle.event_log_json ?? "[]",
@@ -314,7 +310,7 @@ final class AuditViewModel: ObservableObject {
         self.report = AuditReport(
             verifiedAt: Date(),
             hardwareAttestationValid: hardwareValid,
-            baseImageMeasurements: baseMeasurements,
+            baseImageVerdict: baseImageVerdict,
             composeHash: bundle.compose_hash,
             chainValid: chainValid,
             bodySignatureValid: bodySigValid,
@@ -330,6 +326,48 @@ final class AuditViewModel: ObservableObject {
             qvlVerdict: qvlVerdict,
             qvlError: qvlError
         )
+    }
+
+    /// Trust-on-first-use evaluation of the dstack base image.
+    /// First run: fetch reference from the public app-attestations
+    /// endpoint, save to UserDefaults, treat as pass. Every run after:
+    /// just compare the live quote to the saved reference.
+    private func evaluateBaseImage(
+        parsed: ParsedQuote?, appId: String
+    ) async -> BaseImageVerdict {
+        guard let parsed = parsed else {
+            return BaseImageVerdict(kind: .quoteUnavailable, saved: nil)
+        }
+        let liveMRTD = parsed.body.mrtd.hexString.lowercased()
+        let liveR0 = parsed.body.rtmr0.hexString.lowercased()
+        let liveR1 = parsed.body.rtmr1.hexString.lowercased()
+        let liveR2 = parsed.body.rtmr2.hexString.lowercased()
+
+        if let saved = BaseImageStore.load(appId: appId) {
+            if saved.mrtd == liveMRTD && saved.rtmr0 == liveR0
+                && saved.rtmr1 == liveR1 && saved.rtmr2 == liveR2 {
+                return BaseImageVerdict(kind: .match, saved: saved)
+            }
+            var diffs: [String] = []
+            if saved.mrtd != liveMRTD { diffs.append("MRTD") }
+            if saved.rtmr0 != liveR0 { diffs.append("RTMR0") }
+            if saved.rtmr1 != liveR1 { diffs.append("RTMR1") }
+            if saved.rtmr2 != liveR2 { diffs.append("RTMR2") }
+            return BaseImageVerdict(
+                kind: .mismatch(reason: "diverged: \(diffs.joined(separator: ", "))"),
+                saved: saved)
+        }
+
+        // No saved reference yet — fetch, save, treat as pass.
+        do {
+            let fetched = try await BaseImageReferenceClient.fetch(appId: appId)
+            BaseImageStore.save(fetched, appId: appId)
+            return BaseImageVerdict(kind: .firstLaunch, saved: fetched)
+        } catch {
+            return BaseImageVerdict(
+                kind: .pendingFirstFetch(error: String(describing: error)),
+                saved: nil)
+        }
     }
 
     private func makeAttestationURL(api: FeedlingAPI) -> URL? {
@@ -388,7 +426,7 @@ final class AuditViewModel: ObservableObject {
 // flagged for @sxysun review before beta.
 fileprivate enum AuditMechanismCopy {
     static let hardwareAttestation = "Intel's hardware signs a quote every time the enclave runs. We fetched this quote from the live server and verified Intel's signature against a CA baked into this app. If you trust Intel's silicon, you can trust this check."
-    static let baseImage = "The enclave boots from a measured OS image. Its measurements (MRTD, RTMR0-2) identify the dstack runtime and can in principle be reproduced by building meta-dstack from source. We surface the raw hex values from the attestation quote so you or your agent can compare them manually against dstack's published references — we do NOT automatically compare them to a pinned endorsed list inside this app. Treat this row as a disclosure, not a pass/fail."
+    static let baseImage = "The enclave boots from a measured OS image. Its fingerprint (MRTD + RTMR0-2) is signed into the TDX quote by Intel's hardware. On the first audit this app downloads the expected values for this enclave and saves them on this device; every audit after that compares the live quote against those saved values. Green means the enclave is still running the exact same base image we originally pinned. Red means the image changed — either legitimately (a dstack update) or because something is running that wasn't what we recorded — and the row intentionally nags you until you clear it."
     static let pckChain = "Intel ships a chain of certificates with every TDX quote — the hardware key's identity, signed by a platform key, signed by Intel's root. We walked the full chain offline. This runs entirely on your phone; no server call."
     static let bodySignature = "The attestation payload itself is signed by the enclave's own key, which is in turn signed by Intel's hardware. Verifying this signature proves the report came from this exact enclave at this exact moment."
     static let qeReport = "Body-signature verification alone only proves 'something signed this quote with some P-256 key.' To tie that key back to Intel's hardware we verify the Quoting Enclave report: it's ECDSA-signed by the PCK leaf (Intel's platform cert), and its REPORT_DATA field contains a SHA-256 of the attestation pubkey. Together they say 'Intel's QE vouched for the key that signed this quote.' This closes the loop the chain+body checks above don't."
@@ -558,7 +596,7 @@ struct AuditCardView: View {
             AuditRowView(title: "Hardware attestation valid (Intel TDX)",
                          ok: r.hardwareAttestationValid, note: nil,
                          mechanism: AuditMechanismCopy.hardwareAttestation)
-            baseImageRow(r.baseImageMeasurements)
+            baseImageRow(r.baseImageVerdict)
             AuditRowView(title: "PCK cert chain → Intel SGX Root CA",
                          ok: r.chainValid, note: nil,
                          mechanism: AuditMechanismCopy.pckChain)
@@ -710,32 +748,51 @@ struct AuditCardView: View {
         }
     }
 
-    // Base-image row: we render this as `.info` (yellow) because we
-    // extract the raw MRTD + RTMR0-2 from the quote and display them,
-    // but we do NOT compare them to a pinned endorsed reference list.
-    // A green check here would be a lie; a red X would be wrong (the
-    // measurements are genuine, they're just not pinned). Info = "here's
-    // the data, judge it yourself or hand it to your agent." The raw
-    // hex lives in the expand panel so the row stays compact.
+    // Base-image TOFU row. Compares the live quote's MRTD+RTMR0-2
+    // against a reference saved in UserDefaults on the first successful
+    // audit. Green on match or first launch, red on mismatch, info on
+    // transient fetch failure.
     @ViewBuilder
-    private func baseImageRow(_ m: AuditViewModel.AuditReport.BaseImageMeasurements?) -> some View {
-        if let m = m {
-            let detail = """
+    private func baseImageRow(_ v: BaseImageVerdict?) -> some View {
+        let detailLines = { (saved: BaseImageReference?) -> String in
+            guard let s = saved else { return AuditMechanismCopy.baseImage }
+            let version = s.imageVersion.map { "\nPinned dstack image: \($0)" } ?? ""
+            let savedAt = ISO8601DateFormatter().string(from: s.savedAt)
+            return """
             \(AuditMechanismCopy.baseImage)
 
-            MRTD:  \(m.mrtd)
-            RTMR0: \(m.rtmr0)
-            RTMR1: \(m.rtmr1)
-            RTMR2: \(m.rtmr2)
+            Reference saved \(savedAt)\(version)
+            MRTD:  \(s.mrtd)
+            RTMR0: \(s.rtmr0)
+            RTMR1: \(s.rtmr1)
+            RTMR2: \(s.rtmr2)
             """
-            AuditRowView(title: "Base image measurements (surfaced, not pinned)",
+        }
+        switch v?.kind {
+        case .match:
+            AuditRowView(title: "Base image matches pinned reference",
+                         ok: true,
+                         note: "MRTD + RTMR0-2 unchanged since first audit.",
+                         mechanism: detailLines(v?.saved))
+        case .firstLaunch:
+            AuditRowView(title: "Base image reference pinned",
+                         ok: true,
+                         note: "First audit — the enclave's MRTD + RTMR0-2 have been saved and will be checked against future audits.",
+                         mechanism: detailLines(v?.saved))
+        case .mismatch(let reason):
+            AuditRowView(title: "Base image does NOT match pinned reference",
+                         ok: false,
+                         note: "\(reason). The enclave is running a different OS image than the one we originally pinned on this device.",
+                         mechanism: detailLines(v?.saved))
+        case .pendingFirstFetch(let err):
+            AuditRowView(title: "Base image — first-run pin pending",
                          status: .info,
-                         note: "Raw MRTD + RTMR0-2 from the quote. Not compared to a reference list — tap to see values.",
-                         mechanism: detail)
-        } else {
-            AuditRowView(title: "Base image measurements",
+                         note: "Could not download expected measurements: \(err.prefix(120)). Re-open the audit card while online to pin.",
+                         mechanism: AuditMechanismCopy.baseImage)
+        case .quoteUnavailable, .none:
+            AuditRowView(title: "Base image",
                          status: .fail,
-                         note: "Could not parse the quote; measurements unavailable.",
+                         note: "Could not parse the quote; comparison skipped.",
                          mechanism: AuditMechanismCopy.baseImage)
         }
     }
