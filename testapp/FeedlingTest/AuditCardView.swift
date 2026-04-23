@@ -100,13 +100,15 @@ final class AuditViewModel: ObservableObject {
         /// Layer 3 — QE report signature + REPORT_DATA binding. Nil
         /// if the quote failed to parse far enough to evaluate.
         var qeReport: QEReportVerdict?
-        /// Layer 4 — Intel SGX Extensions on the PCK leaf. Nil if
-        /// absent or unparseable.
-        var pckExtensions: PCKSGXExtensions?
         /// Full dcap-qvl verdict — Intel tcbInfo + PCK CRL + signature
         /// chain all checked by the Phala/dcap-qvl Rust lib we link via
         /// XCFramework. Nil when the fetch or verify failed; see
         /// `qvlError` for why.
+        ///
+        /// Note: our hand-rolled PCK SGX Extension parser still runs in
+        /// DCAPVerifier to extract FMSPC for the PCS collateral fetch,
+        /// but we no longer surface its values as a separate row — the
+        /// qvlVerdict below subsumes that check.
         var qvlVerdict: DCAPVerifiedReport?
         var qvlError: String?
 
@@ -325,7 +327,6 @@ final class AuditViewModel: ObservableObject {
             releaseGitCommit: bundle.enclave_release?.git_commit,
             onChainTxURL: txURL,
             qeReport: qeVerdict,
-            pckExtensions: pckExt,
             qvlVerdict: qvlVerdict,
             qvlError: qvlError
         )
@@ -391,7 +392,6 @@ fileprivate enum AuditMechanismCopy {
     static let pckChain = "Intel ships a chain of certificates with every TDX quote — the hardware key's identity, signed by a platform key, signed by Intel's root. We walked the full chain offline. This runs entirely on your phone; no server call."
     static let bodySignature = "The attestation payload itself is signed by the enclave's own key, which is in turn signed by Intel's hardware. Verifying this signature proves the report came from this exact enclave at this exact moment."
     static let qeReport = "Body-signature verification alone only proves 'something signed this quote with some P-256 key.' To tie that key back to Intel's hardware we verify the Quoting Enclave report: it's ECDSA-signed by the PCK leaf (Intel's platform cert), and its REPORT_DATA field contains a SHA-256 of the attestation pubkey. Together they say 'Intel's QE vouched for the key that signed this quote.' This closes the loop the chain+body checks above don't."
-    static let pckExtensions = "The PCK certificate carries Intel-proprietary extensions naming this exact CPU platform: FMSPC (platform family/model/stepping), PCE-SVN (security version of the Provisioning Certification Enclave), and CPU-SVN (per-component microcode versions). We surface the raw values here; the dcap-qvl row below is what actually compares them against Intel's current required TCB level."
     static let qvlTCB = "This row is what Phala's Rust dcap-qvl library says when it fetches Intel's tcbInfo.json + PCK CRL from the Phala PCCS mirror and walks the whole thing: PCK chain, body signature, QE report, TCB-level match against Intel's currently-required version, and revocation check. Same library the dstack audit tool shells out to. Green means Intel currently certifies this CPU + microcode as UpToDate."
     static let composeBinding = "The enclave's boot sequence hashes its own exact container recipe into a register called mr_config_id. The quote carries this register; the hash IS the recipe. If we control the app, we control the recipe, and the hash on-chain proves which recipe you're talking to."
     static let tlsBinding = "The certificate your phone just saw during the TLS handshake was generated inside the enclave. Its fingerprint is baked into the signed quote we fetched. Match = this really is the enclave we think it is; no middleman could swap the cert without faking Intel's signature."
@@ -567,7 +567,6 @@ struct AuditCardView: View {
                          note: r.bodySignatureValid ? nil : "fails against the iOS simulator's mock quote; passes on real TDX hardware",
                          mechanism: AuditMechanismCopy.bodySignature)
             qeReportRow(r.qeReport)
-            pckExtensionsRow(r.pckExtensions)
             qvlVerdictRow(r.qvlVerdict, error: r.qvlError)
             composeBindingRow(r.composeBinding)
             AuditRowView(title: "TLS cert bound to attestation",
@@ -767,34 +766,6 @@ struct AuditCardView: View {
                          status: .fail,
                          note: "Quote didn't parse far enough to evaluate.",
                          mechanism: AuditMechanismCopy.qeReport)
-        }
-    }
-
-    // PCK SGX Extensions — info row showing FMSPC + PCE/CPU-SVN. Like
-    // the base-image row, this is an extract-and-display surface, not a
-    // compare. Intel PCS lookup against these values is out of scope.
-    @ViewBuilder
-    private func pckExtensionsRow(_ ext: PCKSGXExtensions?) -> some View {
-        if let ext = ext {
-            let fmspcHex = ext.fmspc?.hexString ?? "(absent)"
-            let cpuSVNHex = ext.cpuSVN?.hexString ?? "(absent)"
-            let pceSVNStr = ext.pceSVN.map(String.init) ?? "(absent)"
-            let detail = """
-            \(AuditMechanismCopy.pckExtensions)
-
-            FMSPC:   \(fmspcHex)
-            PCE-SVN: \(pceSVNStr)
-            CPU-SVN: \(cpuSVNHex)
-            """
-            AuditRowView(title: "PCK SGX extensions (surfaced, not pinned)",
-                         status: .info,
-                         note: "FMSPC, PCE-SVN, CPU-SVN extracted from PCK leaf. Not compared to Intel's tcbInfo.json — tap for values.",
-                         mechanism: detail)
-        } else {
-            AuditRowView(title: "PCK SGX extensions",
-                         status: .fail,
-                         note: "Could not parse the Intel SGX Extensions from the PCK leaf.",
-                         mechanism: AuditMechanismCopy.pckExtensions)
         }
     }
 
