@@ -65,16 +65,23 @@ public struct IntelPCSClient {
 
     // MARK: - Assembled collateral
 
+    /// Matches `QuoteCollateralV3` in dcap-qvl/src/lib.rs. The fields
+    /// marked #[serde(with = "serde_bytes")] in Rust map to the
+    /// `serde-human-bytes` crate, which encodes bytes as **lowercase
+    /// hex strings** in JSON (not base64, which is Swift's default
+    /// JSONEncoder strategy for Data). So we carry them as hex Strings
+    /// on the Swift side and encode/decode via Data(hexString:) /
+    /// hexString at the boundaries.
     public struct Collateral: Codable {
         public let pck_crl_issuer_chain: String
-        public let root_ca_crl: Data
-        public let pck_crl: Data
+        public let root_ca_crl: String        // hex(DER)
+        public let pck_crl: String            // hex(DER)
         public let tcb_info_issuer_chain: String
         public let tcb_info: String
-        public let tcb_info_signature: Data
+        public let tcb_info_signature: String // hex(sig)
         public let qe_identity_issuer_chain: String
         public let qe_identity: String
-        public let qe_identity_signature: Data
+        public let qe_identity_signature: String // hex(sig)
         public let pck_certificate_chain: String?
     }
 
@@ -103,19 +110,21 @@ public struct IntelPCSClient {
         let rootCRL = try await rootCACRL
 
         // TCB + QE responses are envelopes: { <body>: {...}, "signature": "<hex>" }.
-        let (tcbInfoStr, tcbSigBytes) = try decodeEnvelope(json: tcbBody, innerKey: "tcbInfo")
-        let (qeIdentityStr, qeSigBytes) = try decodeEnvelope(json: qeBody, innerKey: "enclaveIdentity")
+        // The signature is already hex — pass through verbatim instead of
+        // round-tripping to Data (which would lose the hex form we want).
+        let (tcbInfoStr, tcbSigHex) = try decodeEnvelope(json: tcbBody, innerKey: "tcbInfo")
+        let (qeIdentityStr, qeSigHex) = try decodeEnvelope(json: qeBody, innerKey: "enclaveIdentity")
 
         return Collateral(
             pck_crl_issuer_chain: crlChain,
-            root_ca_crl: rootCRL,
-            pck_crl: crlBytes,
+            root_ca_crl: rootCRL.hexString,
+            pck_crl: crlBytes.hexString,
             tcb_info_issuer_chain: tcbChain,
             tcb_info: tcbInfoStr,
-            tcb_info_signature: tcbSigBytes,
+            tcb_info_signature: tcbSigHex,
             qe_identity_issuer_chain: qeChain,
             qe_identity: qeIdentityStr,
-            qe_identity_signature: qeSigBytes,
+            qe_identity_signature: qeSigHex,
             pck_certificate_chain: pckChainPEM
         )
     }
@@ -199,8 +208,10 @@ public struct IntelPCSClient {
     // MARK: - JSON envelope decoding
 
     /// TCB / QE Identity responses look like `{ "<innerKey>": {...}, "signature": "<hex>" }`.
-    /// We need the inner object (stringified) + signature (hex → bytes).
-    private func decodeEnvelope(json: String, innerKey: String) throws -> (inner: String, sig: Data) {
+    /// We need the inner object (stringified) + signature (kept as hex
+    /// because dcap-qvl's QuoteCollateralV3 encodes bytes as hex strings
+    /// via serde-human-bytes).
+    private func decodeEnvelope(json: String, innerKey: String) throws -> (inner: String, sigHex: String) {
         guard let data = json.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
@@ -215,13 +226,11 @@ public struct IntelPCSClient {
             throw IntelPCSError.malformedBody(url: baseURL,
                 detail: "missing inner key '\(innerKey)'")
         }
-        guard let sigHex = obj["signature"] as? String,
-              let sigBytes = Data(hexString: sigHex)
-        else {
+        guard let sigHex = obj["signature"] as? String else {
             throw IntelPCSError.malformedBody(url: baseURL,
-                detail: "missing or malformed 'signature' hex field")
+                detail: "missing 'signature' hex field")
         }
-        return (innerStr, sigBytes)
+        return (innerStr, sigHex)
     }
 }
 
