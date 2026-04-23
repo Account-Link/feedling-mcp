@@ -207,30 +207,68 @@ public struct IntelPCSClient {
 
     // MARK: - JSON envelope decoding
 
-    /// TCB / QE Identity responses look like `{ "<innerKey>": {...}, "signature": "<hex>" }`.
-    /// We need the inner object (stringified) + signature (kept as hex
-    /// because dcap-qvl's QuoteCollateralV3 encodes bytes as hex strings
-    /// via serde-human-bytes).
+    /// TCB / QE Identity responses look like
+    /// `{"<innerKey>":{...inner...},"signature":"<hex>"}`.
+    ///
+    /// Critical: Intel signs the inner JSON as it was returned by the
+    /// server — byte-for-byte, original key order. Round-tripping
+    /// through `JSONSerialization` reorders keys and would break the
+    /// downstream TCB signature verification. So we extract the inner
+    /// object's bytes verbatim via brace matching, then pull the
+    /// signature with a targeted regex.
     private func decodeEnvelope(json: String, innerKey: String) throws -> (inner: String, sigHex: String) {
-        guard let data = json.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let prefix = "{\"\(innerKey)\":"
+        guard json.hasPrefix(prefix) else {
+            throw IntelPCSError.malformedBody(url: baseURL,
+                detail: "envelope missing expected prefix \(prefix.prefix(30))")
+        }
+        let chars = Array(json)
+        let innerStart = prefix.count
+        guard innerStart < chars.count, chars[innerStart] == "{" else {
+            throw IntelPCSError.malformedBody(url: baseURL,
+                detail: "envelope: no inner object after prefix")
+        }
+        // Walk balanced braces, minding strings + escapes, to find the
+        // matching close of the inner object.
+        var depth = 0
+        var inString = false
+        var escape = false
+        var innerEnd = -1
+        var i = innerStart
+        while i < chars.count {
+            let c = chars[i]
+            if escape { escape = false; i += 1; continue }
+            if inString {
+                if c == "\\" { escape = true }
+                else if c == "\"" { inString = false }
+            } else {
+                if c == "\"" { inString = true }
+                else if c == "{" { depth += 1 }
+                else if c == "}" {
+                    depth -= 1
+                    if depth == 0 { innerEnd = i; break }
+                }
+            }
+            i += 1
+        }
+        guard innerEnd > innerStart else {
+            throw IntelPCSError.malformedBody(url: baseURL,
+                detail: "envelope: unbalanced inner object braces")
+        }
+        let innerStr = String(chars[innerStart...innerEnd])
+
+        // Signature is after the inner object: ,"signature":"<hex>"}
+        let tail = String(chars[(innerEnd + 1)...])
+        let pattern = #""signature"\s*:\s*"([0-9a-fA-F]+)""#
+        guard let re = try? NSRegularExpression(pattern: pattern),
+              let m = re.firstMatch(in: tail,
+                                    range: NSRange(tail.startIndex..<tail.endIndex, in: tail)),
+              let r = Range(m.range(at: 1), in: tail)
         else {
             throw IntelPCSError.malformedBody(url: baseURL,
-                detail: "envelope was not a JSON object")
+                detail: "envelope: could not find 'signature' hex field")
         }
-        guard let innerObj = obj[innerKey],
-              let innerData = try? JSONSerialization.data(withJSONObject: innerObj,
-                                                          options: [.withoutEscapingSlashes]),
-              let innerStr = String(data: innerData, encoding: .utf8)
-        else {
-            throw IntelPCSError.malformedBody(url: baseURL,
-                detail: "missing inner key '\(innerKey)'")
-        }
-        guard let sigHex = obj["signature"] as? String else {
-            throw IntelPCSError.malformedBody(url: baseURL,
-                detail: "missing 'signature' hex field")
-        }
-        return (innerStr, sigHex)
+        return (innerStr, String(tail[r]))
     }
 }
 
