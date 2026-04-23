@@ -21,22 +21,6 @@ public struct BaseImageReference: Codable, Equatable {
     public let rtmr2: String
     public let savedAt: Date
     public let imageVersion: String?
-
-    public static func from(
-        tcbInfoJSON: String,
-        imageVersion: String?
-    ) -> BaseImageReference? {
-        guard let data = tcbInfoJSON.data(using: .utf8),
-              let tcb = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let m = (tcb["mrtd"] as? String)?.lowercased(),
-              let r0 = (tcb["rtmr0"] as? String)?.lowercased(),
-              let r1 = (tcb["rtmr1"] as? String)?.lowercased(),
-              let r2 = (tcb["rtmr2"] as? String)?.lowercased()
-        else { return nil }
-        return BaseImageReference(
-            mrtd: m, rtmr0: r0, rtmr1: r1, rtmr2: r2,
-            savedAt: Date(), imageVersion: imageVersion)
-    }
 }
 
 public enum BaseImageStore {
@@ -86,25 +70,39 @@ public enum BaseImageReferenceClient {
         if let http = resp as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw BaseImageReferenceError.http(status: http.statusCode)
         }
+        // tcb_info is a nested JSON object, not a string. Decode it
+        // directly via Codable.
         struct Envelope: Decodable {
             let instances: [Instance]
             struct Instance: Decodable {
-                let tcb_info: String
+                let tcb_info: TcbInfo
                 let image_version: String?
             }
+            struct TcbInfo: Decodable {
+                let mrtd: String
+                let rtmr0: String
+                let rtmr1: String
+                let rtmr2: String
+            }
         }
-        guard let env = try? JSONDecoder().decode(Envelope.self, from: body),
-              let first = env.instances.first
-        else {
-            throw BaseImageReferenceError.malformed("missing instances[0]")
+        let env: Envelope
+        do {
+            env = try JSONDecoder().decode(Envelope.self, from: body)
+        } catch {
+            throw BaseImageReferenceError.malformed(
+                "decode: \(String(describing: error).prefix(200))")
         }
-        guard let ref = BaseImageReference.from(
-            tcbInfoJSON: first.tcb_info,
-            imageVersion: first.image_version)
-        else {
-            throw BaseImageReferenceError.malformed("tcb_info missing mrtd/rtmr0-2")
+        guard let first = env.instances.first else {
+            throw BaseImageReferenceError.malformed("instances array empty")
         }
-        return ref
+        return BaseImageReference(
+            mrtd: first.tcb_info.mrtd.lowercased(),
+            rtmr0: first.tcb_info.rtmr0.lowercased(),
+            rtmr1: first.tcb_info.rtmr1.lowercased(),
+            rtmr2: first.tcb_info.rtmr2.lowercased(),
+            savedAt: Date(),
+            imageVersion: first.image_version
+        )
     }
 }
 
