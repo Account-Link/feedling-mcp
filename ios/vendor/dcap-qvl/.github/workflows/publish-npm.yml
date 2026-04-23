@@ -1,0 +1,196 @@
+name: Publish npm Package
+
+on:
+  push:
+    tags:
+      - "npm-v*"  # Trigger on tags like npm-v0.0.1
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g., 0.0.1, leave empty to use package.json)"
+        required: false
+        type: string
+      npm_tag:
+        description: "npm dist-tag (latest, beta, alpha, etc.)"
+        required: false
+        type: string
+        default: "beta"
+      dry_run:
+        description: "Dry run (test without actually publishing)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write  # Required for OIDC
+  contents: write  # Required to commit version changes
+
+jobs:
+  publish-npm:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Determine npm tag and version
+        id: npm-meta
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            # Tag push: npm-v0.1.0 -> version=0.1.0, npm_tag=latest
+            NPM_TAG="latest"
+            VERSION=${GITHUB_REF#refs/tags/npm-v}
+            UPDATE_VERSION="true"  # Update package.json to match tag
+            COMMIT_VERSION="true"  # Commit back to keep repository in sync
+            echo "Triggered by tag push: npm-v$VERSION"
+          else
+            # Manual dispatch
+            NPM_TAG="${{ github.event.inputs.npm_tag || 'beta' }}"
+            if [[ -n "${{ github.event.inputs.version }}" ]]; then
+              # User specified version
+              VERSION="${{ github.event.inputs.version }}"
+              UPDATE_VERSION="true"
+              COMMIT_VERSION="true"  # Commit version changes
+              echo "Triggered by workflow_dispatch with version=$VERSION, npm_tag=$NPM_TAG"
+            else
+              # Use version from package.json
+              VERSION=$(node -e "console.log(require('./dcap-qvl-js/package.json').version)")
+              UPDATE_VERSION="false"
+              COMMIT_VERSION="false"
+              echo "Triggered by workflow_dispatch using package.json version=$VERSION, npm_tag=$NPM_TAG"
+            fi
+          fi
+          echo "npm_tag=$NPM_TAG" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "update_version=$UPDATE_VERSION" >> $GITHUB_OUTPUT
+          echo "commit_version=$COMMIT_VERSION" >> $GITHUB_OUTPUT
+          echo "dry_run=${{ github.event.inputs.dry_run || 'false' }}" >> $GITHUB_OUTPUT
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Upgrade npm for OIDC support
+        run: |
+          npm install -g npm@latest
+          echo "npm version: $(npm --version)"
+
+      - name: Verify OIDC token availability
+        run: |
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL}" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" ]; then
+            echo "✓ OIDC token available"
+            echo "Endpoint: ${ACTIONS_ID_TOKEN_REQUEST_URL}"
+          else
+            echo "✗ OIDC token NOT available"
+            echo "Check workflow permissions include 'id-token: write'"
+            exit 1
+          fi
+
+      - name: Verify repository configuration
+        run: |
+          echo "Checking repository consistency..."
+          GIT_REPO=$(git remote get-url origin | sed 's/.*github.com[/:]//; s/.git$//')
+          PKG_REPO=$(node -e "console.log(require('./dcap-qvl-js/package.json').repository?.url || '')" | sed 's|https://github.com/||; s|git+||; s|.git$||')
+
+          echo "Git remote:   $GIT_REPO"
+          echo "package.json: $PKG_REPO"
+
+          if [ "$GIT_REPO" != "$PKG_REPO" ]; then
+            echo "✗ Repository mismatch!"
+            echo "This will cause 422 error during publish"
+            exit 1
+          fi
+          echo "✓ Repositories match"
+
+      - name: Display package information
+        run: |
+          cd dcap-qvl-js
+          PKG_NAME=$(node -e "console.log(require('./package.json').name)")
+          PKG_VERSION=$(node -e "console.log(require('./package.json').version)")
+          echo "Package: $PKG_NAME"
+          echo "Version: $PKG_VERSION"
+          echo "npm tag: ${{ steps.npm-meta.outputs.npm_tag }}"
+          echo "Dry run: ${{ steps.npm-meta.outputs.dry_run }}"
+          echo "Trigger: ${{ github.event_name }}"
+
+      - name: Install dependencies
+        working-directory: dcap-qvl-js
+        run: npm ci
+
+      - name: Update package version
+        if: steps.npm-meta.outputs.update_version == 'true'
+        working-directory: dcap-qvl-js
+        run: |
+          VERSION="${{ steps.npm-meta.outputs.version }}"
+          echo "Updating package.json version to $VERSION"
+          npm version "$VERSION" --no-git-tag-version
+          echo "Updated version:"
+          node -e "console.log(require('./package.json').version)"
+
+      - name: Publish to npm (Dry Run)
+        if: steps.npm-meta.outputs.dry_run == 'true'
+        working-directory: dcap-qvl-js
+        run: |
+          NPM_TAG="${{ steps.npm-meta.outputs.npm_tag }}"
+          echo "🔍 Dry run mode - simulating publish with tag: $NPM_TAG"
+          npm publish --access public --tag "$NPM_TAG" --provenance --dry-run --verbose
+
+      - name: Publish to npm
+        if: steps.npm-meta.outputs.dry_run != 'true'
+        working-directory: dcap-qvl-js
+        run: |
+          NPM_TAG="${{ steps.npm-meta.outputs.npm_tag }}"
+          echo "Publishing @phala/dcap-qvl with tag: $NPM_TAG"
+          npm publish --access public --tag "$NPM_TAG" --provenance --verbose
+
+      - name: Publish summary
+        if: success() && steps.npm-meta.outputs.dry_run != 'true'
+        run: |
+          PKG_NAME=$(node -e "console.log(require('./dcap-qvl-js/package.json').name)")
+          PKG_VERSION=$(node -e "console.log(require('./dcap-qvl-js/package.json').version)")
+          NPM_TAG="${{ steps.npm-meta.outputs.npm_tag }}"
+          echo ""
+          echo "================================"
+          echo "✓ Published Successfully!"
+          echo "================================"
+          echo "Package: $PKG_NAME@$PKG_VERSION"
+          echo "npm tag: $NPM_TAG"
+          echo ""
+          echo "Install with:"
+          echo "  npm install $PKG_NAME@$NPM_TAG"
+          echo ""
+          echo "View on npm:"
+          echo "  https://www.npmjs.com/package/$PKG_NAME"
+          echo "================================"
+
+      - name: Commit version changes
+        if: success() && steps.npm-meta.outputs.commit_version == 'true' && steps.npm-meta.outputs.dry_run != 'true'
+        run: |
+          VERSION="${{ steps.npm-meta.outputs.version }}"
+
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Determine target branch
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            # For tag push, get the default branch
+            DEFAULT_BRANCH=$(git remote show origin | grep "HEAD branch" | cut -d ":" -f 2 | xargs)
+            echo "Detected default branch: $DEFAULT_BRANCH"
+            # Switch to the default branch
+            git fetch origin "$DEFAULT_BRANCH"
+            git checkout "$DEFAULT_BRANCH"
+          else
+            # For workflow_dispatch, we're already on a branch
+            CURRENT_BRANCH=$(git branch --show-current)
+            echo "Current branch: $CURRENT_BRANCH"
+          fi
+
+          # Commit and push
+          git add dcap-qvl-js/package.json dcap-qvl-js/package-lock.json
+          git commit -m "chore(npm): bump version to $VERSION" \
+            -m "Published @phala/dcap-qvl@$VERSION to npm" \
+            -m "Co-authored-by: github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+          git push

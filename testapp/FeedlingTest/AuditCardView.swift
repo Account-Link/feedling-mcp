@@ -101,9 +101,14 @@ final class AuditViewModel: ObservableObject {
         /// if the quote failed to parse far enough to evaluate.
         var qeReport: QEReportVerdict?
         /// Layer 4 — Intel SGX Extensions on the PCK leaf. Nil if
-        /// absent or unparseable. Values are surfaced, NOT compared
-        /// against Intel's tcbInfo.json (that check is not implemented).
+        /// absent or unparseable.
         var pckExtensions: PCKSGXExtensions?
+        /// Full dcap-qvl verdict — Intel tcbInfo + PCK CRL + signature
+        /// chain all checked by the Phala/dcap-qvl Rust lib we link via
+        /// XCFramework. Nil when the fetch or verify failed; see
+        /// `qvlError` for why.
+        var qvlVerdict: DCAPVerifiedReport?
+        var qvlError: String?
 
         struct BaseImageMeasurements {
             let mrtd: String
@@ -162,6 +167,7 @@ final class AuditViewModel: ObservableObject {
         var bodySigValid = false
         var qeVerdict: QEReportVerdict? = nil
         var pckExt: PCKSGXExtensions? = nil
+        var pckChainPEM: String? = nil
         do {
             let verified = try DCAPVerifier.verify(
                 quote: quoteBytes, trustedIntelRootDER: rootCADER)
@@ -170,8 +176,37 @@ final class AuditViewModel: ObservableObject {
             bodySigValid = verified.bodySignatureValid
             qeVerdict = verified.qeReport
             pckExt = verified.pckExtensions
+            pckChainPEM = String(data: verified.signatureData.pckCertChainPEM, encoding: .utf8)?
+                .trimmingCharacters(in: .controlCharacters.union(.whitespaces))
         } catch {
             lastError = "DCAP verify error: \(error)"
+        }
+
+        // 2b. dcap-qvl full verdict. Fetches Intel collateral from the
+        //     Phala PCCS mirror + runs the complete chain + body + QE +
+        //     TCB-level + CRL check in Rust. This is what row 6 on the
+        //     audit card now flips green/yellow on. Failure is non-fatal
+        //     to the rest of the audit — we just note it.
+        var qvlVerdict: DCAPVerifiedReport? = nil
+        var qvlError: String? = nil
+        if let pckPEM = pckChainPEM, let fmspcBytes = pckExt?.fmspc {
+            let fmspcHex = fmspcBytes.map { String(format: "%02X", $0) }.joined()
+            do {
+                let pcs = IntelPCSClient()
+                let collateral = try await pcs.fetchCollateral(
+                    fmspcHex: fmspcHex, ca: "platform", forSGX: false,
+                    pckChainPEM: pckPEM)
+                let collateralJSON = try JSONEncoder().encode(collateral)
+                let verdictData = try DCAPQVL.verify(
+                    quote: quoteBytes, collateralJSON: collateralJSON,
+                    rootCADER: rootCADER)
+                qvlVerdict = try JSONDecoder().decode(DCAPVerifiedReport.self,
+                                                     from: verdictData)
+            } catch {
+                qvlError = "\(error)"
+            }
+        } else {
+            qvlError = "PCK chain or FMSPC unavailable — skipped dcap-qvl full verify."
         }
 
         // 3. compose_hash binding — two independent checks per
@@ -290,7 +325,9 @@ final class AuditViewModel: ObservableObject {
             releaseGitCommit: bundle.enclave_release?.git_commit,
             onChainTxURL: txURL,
             qeReport: qeVerdict,
-            pckExtensions: pckExt
+            pckExtensions: pckExt,
+            qvlVerdict: qvlVerdict,
+            qvlError: qvlError
         )
     }
 
@@ -354,7 +391,8 @@ fileprivate enum AuditMechanismCopy {
     static let pckChain = "Intel ships a chain of certificates with every TDX quote — the hardware key's identity, signed by a platform key, signed by Intel's root. We walked the full chain offline. This runs entirely on your phone; no server call."
     static let bodySignature = "The attestation payload itself is signed by the enclave's own key, which is in turn signed by Intel's hardware. Verifying this signature proves the report came from this exact enclave at this exact moment."
     static let qeReport = "Body-signature verification alone only proves 'something signed this quote with some P-256 key.' To tie that key back to Intel's hardware we verify the Quoting Enclave report: it's ECDSA-signed by the PCK leaf (Intel's platform cert), and its REPORT_DATA field contains a SHA-256 of the attestation pubkey. Together they say 'Intel's QE vouched for the key that signed this quote.' This closes the loop the chain+body checks above don't."
-    static let pckExtensions = "The PCK certificate carries Intel-proprietary extensions naming this exact CPU platform: FMSPC (platform family/model/stepping), PCE-SVN (security version of the Provisioning Certification Enclave), and CPU-SVN (per-component microcode versions). We surface the raw values; an auditor can query Intel's PCS with the FMSPC to get expected TCB levels and manually verify the SVNs meet the current required level. We do NOT fetch Intel's tcbInfo.json automatically — that comparison, along with the PCK CRL check, is not implemented."
+    static let pckExtensions = "The PCK certificate carries Intel-proprietary extensions naming this exact CPU platform: FMSPC (platform family/model/stepping), PCE-SVN (security version of the Provisioning Certification Enclave), and CPU-SVN (per-component microcode versions). We surface the raw values here; the dcap-qvl row below is what actually compares them against Intel's current required TCB level."
+    static let qvlTCB = "This row is what Phala's Rust dcap-qvl library says when it fetches Intel's tcbInfo.json + PCK CRL from the Phala PCCS mirror and walks the whole thing: PCK chain, body signature, QE report, TCB-level match against Intel's currently-required version, and revocation check. Same library the dstack audit tool shells out to. Green means Intel currently certifies this CPU + microcode as UpToDate."
     static let composeBinding = "The enclave's boot sequence hashes its own exact container recipe into a register called mr_config_id. The quote carries this register; the hash IS the recipe. If we control the app, we control the recipe, and the hash on-chain proves which recipe you're talking to."
     static let tlsBinding = "The certificate your phone just saw during the TLS handshake was generated inside the enclave. Its fingerprint is baked into the signed quote we fetched. Match = this really is the enclave we think it is; no middleman could swap the cert without faking Intel's signature."
     static let mcpTlsBinding = "Where your agent connects (mcp.feedling.app) uses a standard Let's Encrypt certificate. Earlier versions pinned the MCP key inside the enclave too, but that pin was retired in the prod9 migration — the certificate is now issued and served by the dstack-ingress layer that sits in front of the enclave, so the TLS layer is only as trustworthy as any normal HTTPS site (CA + DNS). The real privacy boundary is one level deeper: chat messages, memories, identity, and screen frames are individually sealed with the enclave's content key (`enclave_content_pk` below) BEFORE they leave your phone, and can only be opened inside the enclave. Transport TLS protects bystanders; content-layer envelope crypto protects from everyone including the operator."
@@ -530,6 +568,7 @@ struct AuditCardView: View {
                          mechanism: AuditMechanismCopy.bodySignature)
             qeReportRow(r.qeReport)
             pckExtensionsRow(r.pckExtensions)
+            qvlVerdictRow(r.qvlVerdict, error: r.qvlError)
             composeBindingRow(r.composeBinding)
             AuditRowView(title: "TLS cert bound to attestation",
                          ok: r.tlsCertBindingChecked,
@@ -756,6 +795,43 @@ struct AuditCardView: View {
                          status: .fail,
                          note: "Could not parse the Intel SGX Extensions from the PCK leaf.",
                          mechanism: AuditMechanismCopy.pckExtensions)
+        }
+    }
+
+    // dcap-qvl full verdict row — green only when Intel says "UpToDate".
+    // Other statuses (SWHardeningNeeded, ConfigurationNeeded,
+    // ConfigurationAndSWHardeningNeeded, OutOfDate, Revoked) each produce
+    // a distinct row state; "UpToDate" is the only unambiguous pass.
+    private func qvlVerdictNote(_ v: DCAPVerifiedReport) -> String {
+        var parts: [String] = ["Intel TCB status: \(v.status)."]
+        if !v.advisory_ids.isEmpty {
+            let head = v.advisory_ids.prefix(3).joined(separator: ", ")
+            let suffix = v.advisory_ids.count > 3 ? "…" : ""
+            parts.append("Advisories: \(head)\(suffix)")
+        }
+        if !v.isUpToDate {
+            parts.append("This is a disclosure — the enclave runs, but Intel no longer certifies this exact CPU+microcode combination as UpToDate.")
+        }
+        return parts.joined(separator: " ")
+    }
+
+    @ViewBuilder
+    private func qvlVerdictRow(_ v: DCAPVerifiedReport?, error: String?) -> some View {
+        if let v = v {
+            AuditRowView(title: "Intel TCB level (Phala dcap-qvl)",
+                         ok: v.isUpToDate,
+                         note: qvlVerdictNote(v),
+                         mechanism: AuditMechanismCopy.qvlTCB)
+        } else if let err = error {
+            AuditRowView(title: "Intel TCB level (Phala dcap-qvl)",
+                         status: .info,
+                         note: "Unavailable: \(err.prefix(140))",
+                         mechanism: AuditMechanismCopy.qvlTCB)
+        } else {
+            AuditRowView(title: "Intel TCB level (Phala dcap-qvl)",
+                         status: .info,
+                         note: "Skipped — prerequisites not met.",
+                         mechanism: AuditMechanismCopy.qvlTCB)
         }
     }
 

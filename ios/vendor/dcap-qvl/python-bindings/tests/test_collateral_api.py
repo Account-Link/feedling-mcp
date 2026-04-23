@@ -1,0 +1,130 @@
+"""Test the Python API.
+
+These tests require the extension module to be built (e.g. via `maturin develop`).
+They should not hard-fail collection when the module isn't available.
+"""
+
+import os
+
+import pytest
+
+
+dcap_qvl = pytest.importorskip("dcap_qvl")
+
+RUN_NETWORK = os.getenv("DCAP_QVL_RUN_NETWORK_TESTS") == "1"
+
+
+class TestCollateralAPI:
+    """Test the collateral API functions."""
+
+    def test_module_imports(self):
+        """Test that all expected functions are available."""
+        # Basic functions should always be available
+        assert hasattr(dcap_qvl, "QuoteCollateralV3")
+        assert hasattr(dcap_qvl, "VerifiedReport")
+        assert hasattr(dcap_qvl, "verify")
+
+        # Pure Python functions should be available
+        assert hasattr(dcap_qvl, "get_collateral")
+        assert hasattr(dcap_qvl, "get_collateral_from_pcs")
+        assert hasattr(dcap_qvl, "get_collateral_and_verify")
+
+        # Check __all__ contains all expected functions
+        expected_functions = [
+            "QuoteCollateralV3",
+            "VerifiedReport",
+            "Quote",
+            "verify",
+            "get_collateral",
+            "get_collateral_from_pcs",
+            "get_collateral_and_verify",
+        ]
+
+        for func in expected_functions:
+            assert func in dcap_qvl.__all__, f"{func} not in __all__"
+
+    @pytest.mark.asyncio
+    async def test_get_collateral_invalid_input(self):
+        """Test get_collateral with invalid inputs."""
+        # Test with non-bytes input — PyO3 rejects the str argument at the
+        # binding boundary with its own TypeError; we only assert that it
+        # is a TypeError mentioning the raw_quote argument.
+        with pytest.raises(TypeError, match="raw_quote"):
+            await dcap_qvl.get_collateral("http://example.com", "not bytes")
+
+        # Test with invalid quote (too short)
+        with pytest.raises(ValueError, match="Failed to parse quote"):
+            await dcap_qvl.get_collateral("http://example.com", b"short")
+
+    @pytest.mark.asyncio
+    async def test_get_collateral_from_pcs_invalid_input(self):
+        """Test get_collateral_from_pcs with invalid inputs."""
+        # Test with invalid quote (too short)
+        with pytest.raises(ValueError, match="Failed to parse quote"):
+            await dcap_qvl.get_collateral_from_pcs(b"short")
+
+    @pytest.mark.asyncio
+    async def test_get_collateral_and_verify_invalid_input(self):
+        """Test get_collateral_and_verify with invalid inputs."""
+        # Test with invalid quote (too short)
+        with pytest.raises(ValueError, match="Failed to parse quote"):
+            await dcap_qvl.get_collateral_and_verify(b"short")
+
+    def test_quote_collateral_creation(self):
+        """Test QuoteCollateralV3 creation and serialization."""
+        # Create a sample collateral object
+        collateral = dcap_qvl.QuoteCollateralV3(
+            pck_crl_issuer_chain="test_issuer_chain",
+            root_ca_crl=b"test_root_ca_crl",
+            pck_crl=b"test_pck_crl",
+            tcb_info_issuer_chain="test_tcb_issuer_chain",
+            tcb_info='{"test": "tcb_info"}',
+            tcb_info_signature=b"test_tcb_signature",
+            qe_identity_issuer_chain="test_qe_issuer_chain",
+            qe_identity='{"test": "qe_identity"}',
+            qe_identity_signature=b"test_qe_signature",
+        )
+
+        # Test properties
+        assert collateral.pck_crl_issuer_chain == "test_issuer_chain"
+        assert collateral.root_ca_crl == b"test_root_ca_crl"
+        assert collateral.pck_crl == b"test_pck_crl"
+        assert collateral.tcb_info_issuer_chain == "test_tcb_issuer_chain"
+        assert collateral.tcb_info == '{"test": "tcb_info"}'
+        assert collateral.tcb_info_signature == b"test_tcb_signature"
+        assert collateral.qe_identity_issuer_chain == "test_qe_issuer_chain"
+        assert collateral.qe_identity == '{"test": "qe_identity"}'
+        assert collateral.qe_identity_signature == b"test_qe_signature"
+
+        # Test JSON serialization/deserialization
+        json_str = collateral.to_json()
+        assert isinstance(json_str, str)
+
+        # Create from JSON
+        collateral2 = dcap_qvl.QuoteCollateralV3.from_json(json_str)
+        assert collateral2.pck_crl_issuer_chain == collateral.pck_crl_issuer_chain
+        assert collateral2.tcb_info == collateral.tcb_info
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        not RUN_NETWORK,
+        reason="Network test disabled (set DCAP_QVL_RUN_NETWORK_TESTS=1 to enable)",
+    )
+    async def test_get_collateral_and_verify_network_smoke(self):
+        """Network smoke test for get_collateral_and_verify (Intel PCS)."""
+
+        sample_dir = os.path.join(os.path.dirname(__file__), "..", "..", "sample")
+
+        try:
+            with open(os.path.join(sample_dir, "tdx_quote"), "rb") as f:
+                test_quote = f.read()
+        except FileNotFoundError:
+            pytest.skip("Sample quote files not found")
+
+        result = await dcap_qvl.get_collateral_and_verify(bytes(test_quote))
+        assert hasattr(result, "status")
+        assert hasattr(result, "advisory_ids")
+
+
+if __name__ == "__main__":
+    pytest.main([__file__])

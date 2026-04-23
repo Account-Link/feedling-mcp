@@ -14,7 +14,9 @@
 		2D6C4681A184D00774C9AAD3 /* SampleHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8585B7EF732F6D6EF2D5BEE6 /* SampleHandler.swift */; };
 		34C90373E432EB5F0EA34BCC /* ChatMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEE35E8B1037B48E755426C1 /* ChatMessage.swift */; };
 		397B48D6815658BE862A7452 /* IntelSGXRootCA.der in Resources */ = {isa = PBXBuildFile; fileRef = DC254589B7C9DE146214048D /* IntelSGXRootCA.der */; };
+		3ED44791B682BAC194DA5697 /* DCAPQVL.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CD64A76AF9DDEA53F680AEF /* DCAPQVL.swift */; };
 		413572B886A6EB4E8F6A3587 /* LiveActivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E760771C17EAF8147D096B4E /* LiveActivityManager.swift */; };
+		50B1423F8F175BE01171EE90 /* IntelPCSClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC3449A6B4C5231A51C68E4F /* IntelPCSClient.swift */; };
 		56BEDBB90CCEE5017A47D79C /* WebSocketManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DB161EB74DB2AA3F40F30E0 /* WebSocketManager.swift */; };
 		59D5D2A66B66C1BE35C4AF74 /* FeedlingBroadcastSetupUI.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 163932C9DCA1AD2D29756AA4 /* FeedlingBroadcastSetupUI.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		61F24F4911D4423B125600EF /* SharedConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CDD8AF63E3E29635CACE24C /* SharedConfig.swift */; };
@@ -33,12 +35,13 @@
 		9D3B3F0CBA67EEEE5B6F0867 /* BroadcastSetupViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81D822BE1140DD59ADE787AD /* BroadcastSetupViewController.swift */; };
 		A3AA0B796AD846E609C8715A /* ScreenActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8485AF4D5CF32FCD3BD19600 /* ScreenActivityWidget.swift */; };
 		A3CDDB2378A71F1A511E1A9D /* FeedlingTestApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14B773D2531DF1548E7C3C63 /* FeedlingTestApp.swift */; };
+		BB5748FFB5F4E751066DEB36 /* dcap_qvl.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E5F144489611AF835F8CFC0D /* dcap_qvl.xcframework */; };
 		CB2DF8DCA51CEF662CF65FAB /* ScreenActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 059AB22EE40CB3F08CADCAE2 /* ScreenActivityAttributes.swift */; };
+		CE0A57ADFBB6E7A9A2E0B31A /* CVMEndpoints.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE0A57ADFBB6E7A9A2E0B31B /* CVMEndpoints.swift */; };
 		D13A461DBE8BF38D2B3BBEF3 /* AuditCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F838482FB88280B0AB365FC0 /* AuditCardView.swift */; };
 		E5572F9376D197D99DF91E67 /* FeedlingBroadcast.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = C33E21075035F8499B243C1B /* FeedlingBroadcast.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		E5C880EB40DFDE9E3719B474 /* FeedlingTestWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = E807384089044501BDD54BFA /* FeedlingTestWidgetBundle.swift */; };
 		F4DA5CC70FEBED4D031AE19D /* ChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F3C6BFE5F5FF06EF002CFD3 /* ChatViewModel.swift */; };
-		CE0A57ADFBB6E7A9A2E0B31A /* CVMEndpoints.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE0A57ADFBB6E7A9A2E0B31B /* CVMEndpoints.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -92,6 +95,7 @@
 		3909F8C0719509F4F8260943 /* FeedlingBroadcast.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FeedlingBroadcast.entitlements; sourceTree = "<group>"; };
 		408A6FFA15EE70ECF1B9E9DA /* SampleHandler+WebSocketQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SampleHandler+WebSocketQueue.swift"; sourceTree = "<group>"; };
 		55823AFBDF473E1DBABB4A3E /* FeedlingTestWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FeedlingTestWidget.entitlements; sourceTree = "<group>"; };
+		5CD64A76AF9DDEA53F680AEF /* DCAPQVL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DCAPQVL.swift; path = FeedlingTest/DCAP/DCAPQVL.swift; sourceTree = SOURCE_ROOT; };
 		5F3C6BFE5F5FF06EF002CFD3 /* ChatViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatViewModel.swift; sourceTree = "<group>"; };
 		60A34364A5493B52BCEC8FFB /* EventLogReplay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = EventLogReplay.swift; path = FeedlingTest/EventLogReplay.swift; sourceTree = SOURCE_ROOT; };
 		61A4444D8C2BB0F630FB7A42 /* Verifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Verifier.swift; path = FeedlingTest/DCAP/Verifier.swift; sourceTree = SOURCE_ROOT; };
@@ -110,19 +114,32 @@
 		B47B840768263FD66F28FB11 /* FeedlingTestWidget.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FeedlingTestWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		B9354145BA0CA53600D58644 /* Parser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Parser.swift; path = FeedlingTest/DCAP/Parser.swift; sourceTree = SOURCE_ROOT; };
 		C33E21075035F8499B243C1B /* FeedlingBroadcast.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FeedlingBroadcast.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		CE0A57ADFBB6E7A9A2E0B31B /* CVMEndpoints.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CVMEndpoints.swift; sourceTree = "<group>"; };
 		D833B2E56FA8C84DA0950F72 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		DC254589B7C9DE146214048D /* IntelSGXRootCA.der */ = {isa = PBXFileReference; lastKnownFileType = None; name = IntelSGXRootCA.der; path = FeedlingTest/DCAP/IntelSGXRootCA.der; sourceTree = SOURCE_ROOT; };
 		DEE35E8B1037B48E755426C1 /* ChatMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMessage.swift; sourceTree = "<group>"; };
 		E399D1BD2C8215413FDD2675 /* FeedlingTest.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FeedlingTest.entitlements; sourceTree = "<group>"; };
 		E4454ED28BF794E7F9872A64 /* FrameEnvelope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = FrameEnvelope.swift; path = FeedlingBroadcast/FrameEnvelope.swift; sourceTree = SOURCE_ROOT; };
+		E5F144489611AF835F8CFC0D /* dcap_qvl.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = dcap_qvl.xcframework; path = ../ios/vendor/dcap_qvl.xcframework; sourceTree = SOURCE_ROOT; };
 		E760771C17EAF8147D096B4E /* LiveActivityManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityManager.swift; sourceTree = "<group>"; };
 		E807384089044501BDD54BFA /* FeedlingTestWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedlingTestWidgetBundle.swift; sourceTree = "<group>"; };
+		EC3449A6B4C5231A51C68E4F /* IntelPCSClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = IntelPCSClient.swift; path = FeedlingTest/DCAP/IntelPCSClient.swift; sourceTree = SOURCE_ROOT; };
 		ED7965843E2AE2F74B88A5FC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		EFC04E45A4517F7284A87DB7 /* ContentEncryption.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ContentEncryption.swift; path = FeedlingTest/ContentEncryption.swift; sourceTree = SOURCE_ROOT; };
 		F5D4282756E211274D73C148 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		F838482FB88280B0AB365FC0 /* AuditCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AuditCardView.swift; path = FeedlingTest/AuditCardView.swift; sourceTree = SOURCE_ROOT; };
-		CE0A57ADFBB6E7A9A2E0B31B /* CVMEndpoints.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CVMEndpoints.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		5DEE4B938F17251227591A98 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BB5748FFB5F4E751066DEB36 /* dcap_qvl.xcframework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		0E6B0860E646F7727F69845C /* FeedlingTestWidget */ = {
@@ -193,6 +210,9 @@
 				F838482FB88280B0AB365FC0 /* AuditCardView.swift */,
 				60A34364A5493B52BCEC8FFB /* EventLogReplay.swift */,
 				E4454ED28BF794E7F9872A64 /* FrameEnvelope.swift */,
+				E5F144489611AF835F8CFC0D /* dcap_qvl.xcframework */,
+				5CD64A76AF9DDEA53F680AEF /* DCAPQVL.swift */,
+				EC3449A6B4C5231A51C68E4F /* IntelPCSClient.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -246,6 +266,7 @@
 				F4C004C4CB389E0034E1122E /* Sources */,
 				219D1342B426C7862A8C1E2B /* Embed Foundation Extensions */,
 				BD2B4DFEBFC788A60D3D29D6 /* Resources */,
+				5DEE4B938F17251227591A98 /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -405,6 +426,8 @@
 				831D484187F89765720E6E05 /* ContentEncryption.swift in Sources */,
 				D13A461DBE8BF38D2B3BBEF3 /* AuditCardView.swift in Sources */,
 				12A04CB5B88BD594DB35E87A /* EventLogReplay.swift in Sources */,
+				3ED44791B682BAC194DA5697 /* DCAPQVL.swift in Sources */,
+				50B1423F8F175BE01171EE90 /* IntelPCSClient.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

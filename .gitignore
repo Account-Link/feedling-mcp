@@ -24,5 +24,10 @@ ios/FeedlingDCAP/.swiftpm/
 ios/**/Package.resolved
 .gstack/
 
+# dcap-qvl Rust build outputs (committed XCFramework is what the app links)
+ios/vendor/dcap-qvl/target/
+**/*.rlib
+**/*.rmeta
+
 # Claude Code session scratch (task locks, transient state)
 .claude/

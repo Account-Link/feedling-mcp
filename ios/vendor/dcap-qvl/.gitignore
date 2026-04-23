@@ -1,0 +1,7 @@
+Cargo.lock
+target/
+.claude/
+/test_data
+dcap-qvl-js/node_modules
+# Go bindings local build artifacts
+golang-bindings/lib/

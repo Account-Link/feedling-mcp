@@ -1,0 +1,347 @@
+name: Build and Publish Python Wheels
+
+on:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - "python-bindings" # For testing
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g., 0.3.5). Leave empty to use version from Cargo.toml'
+        required: false
+        type: string
+      publish_target:
+        description: 'Where to publish'
+        required: true
+        type: choice
+        options:
+          - none
+          - testpypi
+          - pypi
+        default: 'none'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-wheels:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Override version if specified
+        if: github.event.inputs.version != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          INPUT_VERSION='${{ github.event.inputs.version }}'
+          VERSION_SEMVER="$INPUT_VERSION"
+
+          # Cargo.toml expects SemVer. PyPI uses PEP 440.
+          # Convert common PEP 440 pre-release forms to SemVer so cargo/maturin can work:
+          #   0.3.12a1  -> 0.3.12-alpha.1
+          #   0.3.12b1  -> 0.3.12-beta.1
+          #   0.3.12rc1 -> 0.3.12-rc.1
+          if [[ "$INPUT_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)(a|b|rc)([0-9]+)$ ]]; then
+            BASE="${BASH_REMATCH[1]}"
+            TAG="${BASH_REMATCH[2]}"
+            NUM="${BASH_REMATCH[3]}"
+            case "$TAG" in
+              a) PRE="alpha" ;;
+              b) PRE="beta" ;;
+              rc) PRE="rc" ;;
+            esac
+            VERSION_SEMVER="${BASE}-${PRE}.${NUM}"
+          fi
+
+          export VERSION_SEMVER
+          python -c 'import os,re,sys; from pathlib import Path; ver=os.environ["VERSION_SEMVER"]; p=Path("Cargo.toml"); t=p.read_text(encoding="utf-8"); t2,n=re.subn("^(version\\s*=\\s*)\"[^\"]*\"", lambda m: m.group(1)+f"\"{ver}\"", t, flags=re.M); (n==1) or sys.exit(f"Failed to patch Cargo.toml version (matches={n})"); p.write_text(t2, encoding="utf-8"); print(f"Updated Cargo.toml version to {ver}")'
+
+          grep '^version' Cargo.toml
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+      - name: Setup Python 3.8
+        run: uv python install 3.8
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          components: rustfmt, clippy
+      - name: Install Zig
+        run: |
+          curl -L https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz | tar -xJ
+          sudo mv zig-linux-x86_64-0.13.0 /opt/zig
+          sudo ln -sf /opt/zig/zig /usr/local/bin/zig
+          zig version
+      - name: Build Linux and macOS wheels with Zig
+        working-directory: python-bindings
+        run: |
+          uv sync
+          uv run python scripts/build_wheels.py \
+            --platforms linux-x86_64 linux-aarch64 linux-x86_64-musl linux-aarch64-musl macos-aarch64 \
+            --zig \
+            --install-targets \
+            --output-dir dist
+      - name: Upload wheels
+        uses: actions/upload-artifact@v6
+        with:
+          name: wheels-cross
+          path: python-bindings/dist
+
+  # Windows build using native runner
+  windows:
+    runs-on: windows-latest
+    env:
+      PYTHONIOENCODING: "utf-8"
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v6
+      - name: Override version if specified
+        if: github.event.inputs.version != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          INPUT_VERSION='${{ github.event.inputs.version }}'
+          VERSION_SEMVER="$INPUT_VERSION"
+          if [[ "$INPUT_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)(a|b|rc)([0-9]+)$ ]]; then
+            BASE="${BASH_REMATCH[1]}"
+            TAG="${BASH_REMATCH[2]}"
+            NUM="${BASH_REMATCH[3]}"
+            case "$TAG" in
+              a) PRE="alpha" ;;
+              b) PRE="beta" ;;
+              rc) PRE="rc" ;;
+            esac
+            VERSION_SEMVER="${BASE}-${PRE}.${NUM}"
+          fi
+          export VERSION_SEMVER
+          python -c 'import os,re,sys; from pathlib import Path; ver=os.environ["VERSION_SEMVER"]; p=Path("Cargo.toml"); t=p.read_text(encoding="utf-8"); t2,n=re.subn("^(version\\s*=\\s*)\"[^\"]*\"", lambda m: m.group(1)+f"\"{ver}\"", t, flags=re.M); (n==1) or sys.exit(f"Failed to patch Cargo.toml version (matches={n})"); p.write_text(t2, encoding="utf-8"); print(f"Updated Cargo.toml version to {ver}")'
+          grep '^version' Cargo.toml
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+      - name: Setup Python 3.8
+        run: uv python install 3.8
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          components: rustfmt, clippy
+      - name: Build Windows wheel
+        working-directory: python-bindings
+        run: |
+          uv sync
+          uv run python scripts/build_wheels.py --platforms windows-x64 --install-targets --output-dir dist
+      - name: Upload wheels
+        uses: actions/upload-artifact@v6
+        with:
+          name: wheels-windows
+          path: python-bindings/dist
+
+  # macOS Intel build using native runner (Zig cross-compilation has issues)
+  macos-intel:
+    runs-on: macos-15-intel # Intel runner
+    steps:
+      - uses: actions/checkout@v6
+      - name: Override version if specified
+        if: github.event.inputs.version != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          INPUT_VERSION='${{ github.event.inputs.version }}'
+          VERSION_SEMVER="$INPUT_VERSION"
+          if [[ "$INPUT_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)(a|b|rc)([0-9]+)$ ]]; then
+            BASE="${BASH_REMATCH[1]}"
+            TAG="${BASH_REMATCH[2]}"
+            NUM="${BASH_REMATCH[3]}"
+            case "$TAG" in
+              a) PRE="alpha" ;;
+              b) PRE="beta" ;;
+              rc) PRE="rc" ;;
+            esac
+            VERSION_SEMVER="${BASE}-${PRE}.${NUM}"
+          fi
+          export VERSION_SEMVER
+          python -c 'import os,re,sys; from pathlib import Path; ver=os.environ["VERSION_SEMVER"]; p=Path("Cargo.toml"); t=p.read_text(encoding="utf-8"); t2,n=re.subn("^(version\\s*=\\s*)\"[^\"]*\"", lambda m: m.group(1)+f"\"{ver}\"", t, flags=re.M); (n==1) or sys.exit(f"Failed to patch Cargo.toml version (matches={n})"); p.write_text(t2, encoding="utf-8"); print(f"Updated Cargo.toml version to {ver}")'
+          grep '^version' Cargo.toml
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+      - name: Setup Python 3.8
+        run: uv python install 3.8
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          components: rustfmt, clippy
+      - name: Build wheel natively
+        working-directory: python-bindings
+        run: |
+          uv sync
+          uv run python scripts/build_wheels.py \
+            --platforms macos-x86_64 \
+            --install-targets \
+            --output-dir dist
+      - name: Upload wheels
+        uses: actions/upload-artifact@v6
+        with:
+          name: wheels-macos-x86_64
+          path: python-bindings/dist
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Override version if specified
+        if: github.event.inputs.version != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          INPUT_VERSION='${{ github.event.inputs.version }}'
+          VERSION_SEMVER="$INPUT_VERSION"
+          if [[ "$INPUT_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)(a|b|rc)([0-9]+)$ ]]; then
+            BASE="${BASH_REMATCH[1]}"
+            TAG="${BASH_REMATCH[2]}"
+            NUM="${BASH_REMATCH[3]}"
+            case "$TAG" in
+              a) PRE="alpha" ;;
+              b) PRE="beta" ;;
+              rc) PRE="rc" ;;
+            esac
+            VERSION_SEMVER="${BASE}-${PRE}.${NUM}"
+          fi
+          export VERSION_SEMVER
+          python -c 'import os,re,sys; from pathlib import Path; ver=os.environ["VERSION_SEMVER"]; p=Path("Cargo.toml"); t=p.read_text(encoding="utf-8"); t2,n=re.subn("^(version\\s*=\\s*)\"[^\"]*\"", lambda m: m.group(1)+f"\"{ver}\"", t, flags=re.M); (n==1) or sys.exit(f"Failed to patch Cargo.toml version (matches={n})"); p.write_text(t2, encoding="utf-8"); print(f"Updated Cargo.toml version to {ver}")'
+          grep '^version' Cargo.toml
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          components: rustfmt, clippy
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install maturin
+        run: python -m pip install --upgrade pip maturin
+
+      - name: Build source distribution
+        working-directory: python-bindings
+        run: maturin sdist --out dist
+
+      - name: Upload source distribution
+        uses: actions/upload-artifact@v6
+        with:
+          name: wheels-sdist
+          path: python-bindings/dist
+
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_target == 'pypi')
+    needs: [build-wheels, windows, macos-intel, sdist]
+    environment:
+      name: pypi
+      url: https://pypi.org/p/dcap-qvl
+    permissions:
+      id-token: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - name: List artifacts
+        run: ls -la dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+          verbose: true
+
+  test-release:
+    name: Test Release
+    runs-on: ubuntu-latest
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/python-bindings') || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_target == 'testpypi')
+    needs: [build-wheels, windows, macos-intel, sdist]
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/dcap-qvl
+    permissions:
+      id-token: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - name: List artifacts
+        run: ls -la dist/
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+          verbose: true
+
+  test-wheels:
+    name: Test Wheels
+    runs-on: ${{ matrix.os }}
+    needs: [build-wheels, windows, macos-intel]
+    if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/')
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+        exclude:
+          # Skip some combinations to reduce CI time
+          - os: windows-latest
+            python-version: "3.9"
+          - os: macos-latest
+            python-version: "3.9"
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+      - name: Setup Python ${{ matrix.python-version }}
+        run: uv venv --python ${{ matrix.python-version }}
+      - name: Download wheels
+        uses: actions/download-artifact@v7
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - name: Find and install wheel
+        shell: bash
+        run: |
+          # Find the appropriate wheel for this platform and Python version
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            WHEEL=$(find dist -name "*manylinux_*_x86_64*.whl" | head -n1)
+          elif [[ "${{ runner.os }}" == "Windows" ]]; then
+            WHEEL=$(find dist -name "*win_amd64*.whl" | head -n1)
+          elif [[ "${{ runner.os }}" == "macOS" ]]; then
+            if [[ "$(uname -m)" == "arm64" ]]; then
+              WHEEL=$(find dist -name "*macosx*arm64*.whl" | head -n1)
+            else
+              WHEEL=$(find dist -name "*macosx*x86_64*.whl" | head -n1)
+            fi
+          fi
+
+          if [[ -n "$WHEEL" ]]; then
+            echo "Installing wheel: $WHEEL"
+            uv pip install "$WHEEL"
+          else
+            echo "No suitable wheel found, installing from source"
+            cd python-bindings
+            uv add maturin
+            uv run maturin develop --features python
+          fi
+      - name: Test installation
+        working-directory: python-bindings
+        run: uv run python tests/test_installation.py
