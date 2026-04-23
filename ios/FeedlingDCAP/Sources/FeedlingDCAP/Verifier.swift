@@ -25,16 +25,17 @@
 //      body) must verify using the attestation public key embedded in
 //      signature_data. We use CryptoKit's P256.Signing.
 //
-// Scope boundaries (intentionally):
+// Scope boundaries — known gaps, NOT scheduled on any roadmap. Callers
+// relying on this verifier for end-to-end assurance should treat each
+// of these as an open trust assumption:
 //   - We do NOT verify the QE report signature or the QE report itself.
-//     For Phase 1 + simulator-level testing those are out of scope; for
-//     production hardening we'll verify that chain too (QE report is
-//     signed by the PCK cert, and its REPORT_DATA is sha256 of the
-//     attestation pubkey — that closes the loop).
-//   - We do NOT check Intel's CRL — revoked PCK certs are a Phase 2
-//     hardening concern.
+//     Closing that loop (QE report is signed by the PCK cert; its
+//     REPORT_DATA is sha256 of the attestation pubkey) would tie the
+//     attestation pubkey back to Intel's PKI. Not implemented.
+//   - We do NOT check Intel's CRL. Revoked PCK certs will still
+//     evaluate as valid here. Not implemented.
 //   - We do NOT parse the PCK extensions to check TCB levels / FMSPC.
-//     That requires Intel-specific OID parsing; also Phase 2.
+//     Requires Intel-specific OID parsing. Not implemented.
 //
 // The tests under Tests/FeedlingDCAPTests/ use the simulator's actual
 // quote — which, importantly, does carry a real Intel PCK chain — so

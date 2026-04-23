@@ -378,8 +378,11 @@ between) it runs the full is-this-real-tea checklist and surfaces a
 user-facing audit card (§5.3).
 
 **Scope of what's load-bearing vs enrichment.** The security-critical
-checks are all local — DCAP quote verification, MRTD/RTMR matching,
-REPORT_DATA binding, TLS fingerprint matching, compose_hash acceptance.
+checks are all local — DCAP quote verification, RTMR3 / mr_config_id
+binding to compose_hash, REPORT_DATA binding, TLS fingerprint matching.
+MRTD + RTMR0-2 are extracted from the quote and surfaced for the user
+but are NOT compared against a pinned reference list (see implementation
+status below the pseudocode).
 Zero network dependencies in that path beyond fetching the enclave's
 own `/attestation`. The on-chain AppAuth read is an **enrichment step**
 that populates the audit card with Basescan links and release timestamps
@@ -392,7 +395,8 @@ the phone at risk during cache periods; (2) RPC providers don't sit in the
 trust path for enforcement; (3) a Base network hiccup degrades the audit
 card but doesn't break the app.
 
-Pseudocode:
+Pseudocode (design intent — see "Implementation status" after the
+block for what the shipped iOS auditor actually does):
 
 ```swift
 func auditFeedling() throws -> AuditReport {
@@ -489,6 +493,18 @@ func auditFeedling() throws -> AuditReport {
     return report
 }
 ```
+
+**Implementation status (2026-04-23):** the shipped iOS auditor
+diverges from step 2 of the pseudocode. `isEndorsedDstackImage()` is
+not implemented and no reference list is bundled in the app. MRTD +
+RTMR0-2 are extracted from the quote and displayed for manual
+inspection but are not compared automatically. The audit card renders
+this as an `.info` (yellow) row titled "Base image measurements
+(surfaced, not pinned)" — explicitly NOT a pass/fail verdict. All
+other steps (hardware attestation, PCK chain, body signature, compose
+binding, TLS fingerprint) are implemented. Closing the base-image gap
+requires pinning a reference MRTD + RTMR0-2 set for the meta-dstack
+build Phala ships; this is not scheduled on any roadmap.
 
 TLS connections to `mcp.feedling.app` use a custom `ServerTrust` evaluator:
 the presented cert's SHA-256 fingerprint must match the one pinned in

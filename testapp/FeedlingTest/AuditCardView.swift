@@ -81,7 +81,11 @@ final class AuditViewModel: ObservableObject {
     struct AuditReport {
         var verifiedAt: Date
         var hardwareAttestationValid: Bool
-        var baseImageEndorsed: Bool
+        /// Raw base-image measurements from the quote. We surface these
+        /// for manual inspection; we do NOT compare them against a pinned
+        /// reference list (there is no such list bundled in the app).
+        /// Nil iff the quote failed to parse.
+        var baseImageMeasurements: BaseImageMeasurements?
         var composeHash: String?
         var chainValid: Bool
         var bodySignatureValid: Bool
@@ -93,6 +97,13 @@ final class AuditViewModel: ObservableObject {
         var enclaveContentPK: String?
         var releaseGitCommit: String?
         var onChainTxURL: URL?
+
+        struct BaseImageMeasurements {
+            let mrtd: String
+            let rtmr0: String
+            let rtmr1: String
+            let rtmr2: String
+        }
     }
 
     func run() async {
@@ -162,6 +173,14 @@ final class AuditViewModel: ObservableObject {
         //          deployments; all zeros on the local simulator)
         let parsed = (try? DCAPParser.parse(quoteBytes))
         let rtmr3FromQuote = parsed?.rtmr3Hex ?? ""
+        let baseMeasurements = parsed.map {
+            AuditReport.BaseImageMeasurements(
+                mrtd: $0.body.mrtd.hexString,
+                rtmr0: $0.body.rtmr0.hexString,
+                rtmr1: $0.body.rtmr1.hexString,
+                rtmr2: $0.body.rtmr2.hexString
+            )
+        }
         let composeBinding = EventLogReplay.verify(
             claimedComposeHash: bundle.compose_hash,
             eventLogJSON: bundle.event_log_json ?? "[]",
@@ -247,7 +266,7 @@ final class AuditViewModel: ObservableObject {
         self.report = AuditReport(
             verifiedAt: Date(),
             hardwareAttestationValid: hardwareValid,
-            baseImageEndorsed: true,             // TODO: check mrtd + rtmr0-2 against shipped list
+            baseImageMeasurements: baseMeasurements,
             composeHash: bundle.compose_hash,
             chainValid: chainValid,
             bodySignatureValid: bodySigValid,
@@ -318,7 +337,7 @@ final class AuditViewModel: ObservableObject {
 // flagged for @sxysun review before beta.
 fileprivate enum AuditMechanismCopy {
     static let hardwareAttestation = "Intel's hardware signs a quote every time the enclave runs. We fetched this quote from the live server and verified Intel's signature against a CA baked into this app. If you trust Intel's silicon, you can trust this check."
-    static let baseImage = "The enclave boots from a measured OS image. Its measurements (MRTD, RTMR0-2) are published by the dstack project and can be reproduced from source. This check confirms the runtime matches a version we've seen before."
+    static let baseImage = "The enclave boots from a measured OS image. Its measurements (MRTD, RTMR0-2) identify the dstack runtime and can in principle be reproduced by building meta-dstack from source. We surface the raw hex values from the attestation quote so you or your agent can compare them manually against dstack's published references — we do NOT automatically compare them to a pinned endorsed list inside this app. Treat this row as a disclosure, not a pass/fail."
     static let pckChain = "Intel ships a chain of certificates with every TDX quote — the hardware key's identity, signed by a platform key, signed by Intel's root. We walked the full chain offline. This runs entirely on your phone; no server call."
     static let bodySignature = "The attestation payload itself is signed by the enclave's own key, which is in turn signed by Intel's hardware. Verifying this signature proves the report came from this exact enclave at this exact moment."
     static let composeBinding = "The enclave's boot sequence hashes its own exact container recipe into a register called mr_config_id. The quote carries this register; the hash IS the recipe. If we control the app, we control the recipe, and the hash on-chain proves which recipe you're talking to."
@@ -486,15 +505,13 @@ struct AuditCardView: View {
             AuditRowView(title: "Hardware attestation valid (Intel TDX)",
                          ok: r.hardwareAttestationValid, note: nil,
                          mechanism: AuditMechanismCopy.hardwareAttestation)
-            AuditRowView(title: "Base image matches endorsed dstack runtime",
-                         ok: r.baseImageEndorsed, note: nil,
-                         mechanism: AuditMechanismCopy.baseImage)
+            baseImageRow(r.baseImageMeasurements)
             AuditRowView(title: "PCK cert chain → Intel SGX Root CA",
                          ok: r.chainValid, note: nil,
                          mechanism: AuditMechanismCopy.pckChain)
             AuditRowView(title: "Body ECDSA signature valid",
                          ok: r.bodySignatureValid,
-                         note: r.bodySignatureValid ? nil : "expected in Phase 2 on real TDX; simulator skips",
+                         note: r.bodySignatureValid ? nil : "fails against the iOS simulator's mock quote; passes on real TDX hardware",
                          mechanism: AuditMechanismCopy.bodySignature)
             composeBindingRow(r.composeBinding)
             AuditRowView(title: "TLS cert bound to attestation",
@@ -635,6 +652,36 @@ struct AuditCardView: View {
             }
         } catch {
             rawJSONText = "Fetch failed: \(error)"
+        }
+    }
+
+    // Base-image row: we render this as `.info` (yellow) because we
+    // extract the raw MRTD + RTMR0-2 from the quote and display them,
+    // but we do NOT compare them to a pinned endorsed reference list.
+    // A green check here would be a lie; a red X would be wrong (the
+    // measurements are genuine, they're just not pinned). Info = "here's
+    // the data, judge it yourself or hand it to your agent." The raw
+    // hex lives in the expand panel so the row stays compact.
+    @ViewBuilder
+    private func baseImageRow(_ m: AuditViewModel.AuditReport.BaseImageMeasurements?) -> some View {
+        if let m = m {
+            let detail = """
+            \(AuditMechanismCopy.baseImage)
+
+            MRTD:  \(m.mrtd)
+            RTMR0: \(m.rtmr0)
+            RTMR1: \(m.rtmr1)
+            RTMR2: \(m.rtmr2)
+            """
+            AuditRowView(title: "Base image measurements (surfaced, not pinned)",
+                         status: .info,
+                         note: "Raw MRTD + RTMR0-2 from the quote. Not compared to a reference list — tap to see values.",
+                         mechanism: detail)
+        } else {
+            AuditRowView(title: "Base image measurements",
+                         status: .fail,
+                         note: "Could not parse the quote; measurements unavailable.",
+                         mechanism: AuditMechanismCopy.baseImage)
         }
     }
 
