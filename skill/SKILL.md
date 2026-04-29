@@ -586,3 +586,106 @@ Ask the user to tap Settings → Live Activity → Start, then send a chat messa
 | `tools/call` from MCP returns 401 | MCP server is passing the wrong key | Confirm `FEEDLING_API_KEY` matches on both services; restart `feedling-mcp` after changes |
 | Live Activity never updates | `.p8` key missing or `APNS_SANDBOX=False` on a TestFlight build | Place `AuthKey_<KEY_ID>.p8` in `~/feedling-data/`; flip `APNS_SANDBOX` in `app.py` for App Store builds |
 | Frames not arriving via WebSocket | Port 9998 blocked or WS auth failing | Open port 9998 in the VPS firewall; confirm iOS app's API key matches the server's `FEEDLING_API_KEY` (the broadcast extension forwards it as a Bearer token) |
+| Chat replies contain `session_id:` or other system lines | CLI agent is outputting raw stdout without a clean mode flag | See **Chat Resident Consumer — CLI agent requirements** below |
+| Can't tell if consumer is running | — | Run `python tools/check_chat_pipeline.py` — see **Chat pipeline self-check** below |
+
+---
+
+## Chat Resident Consumer
+
+`tools/chat_resident_consumer.py` is a generic always-on process that:
+1. Long-polls `/v1/chat/poll` for new user messages
+2. Routes each message to your configured agent backend
+3. Writes the reply back via `/v1/chat/response`
+4. Persists a checkpoint so it never re-processes old messages after restart
+
+**Without a resident consumer (or an MCP-connected agent), iOS chat messages go unanswered.** Just installing the Feedling skill and having an agent CLi configured is not enough — the consumer must be running continuously.
+
+### Quick start
+
+```bash
+cp deploy/chat_resident.env.example ~/feedling-chat-resident.env
+chmod 600 ~/feedling-chat-resident.env
+# Edit the file — fill in FEEDLING_API_URL, FEEDLING_API_KEY, AGENT_MODE, etc.
+
+# Run directly
+python tools/chat_resident_consumer.py
+
+# Or install as systemd unit
+sudo cp deploy/feedling-chat-resident.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now feedling-chat-resident
+```
+
+### AGENT_MODE=http (recommended)
+
+Use this when your agent exposes an HTTP endpoint. No output-parsing concerns.
+
+```
+AGENT_MODE=http
+AGENT_HTTP_URL=http://127.0.0.1:8080/chat   # your agent's endpoint
+AGENT_HTTP_TOKEN=                            # Bearer token if required
+AGENT_HTTP_FIELD=response                    # JSON field containing the reply
+```
+
+The consumer POSTs `{"message": "<user text>"}` and reads the configured field from the JSON response. Works with any REST-compatible agent.
+
+### AGENT_MODE=cli
+
+Use this when your agent is a CLI command. Set `AGENT_CLI_CMD` with `{message}` as a placeholder:
+
+```
+AGENT_MODE=cli
+AGENT_CLI_CMD=mycli ask {message}
+```
+
+**CLI agent requirements — read carefully:**
+
+The command's stdout must contain *only* the reply text (plain text or JSON). Any system lines — session IDs, separators, debug footers — will be stripped by the consumer's extractor, but the safest approach is to configure your agent to output cleanly in the first place.
+
+#### Hermes
+
+Hermes CLI prints a `session_id:` footer after every response. Use `--output-mode` to suppress it:
+
+```
+# JSON output (preferred — unambiguous field extraction)
+AGENT_CLI_CMD=hermes chat -Q --output-mode json -q {message}
+
+# Plain text output (no footer)
+AGENT_CLI_CMD=hermes chat -Q --output-mode text -q {message}
+```
+
+Without `--output-mode`, the consumer's fallback extractor will attempt to strip the `session_id:` line, but this is fragile. **Always set `--output-mode` for Hermes.**
+
+#### Other CLI agents
+
+Check whether your agent has a "quiet" or "script" mode that disables decorative output. If not, set `LOG_LEVEL=DEBUG` and inspect what the consumer receives; add a wrapper script that filters noise if needed.
+
+---
+
+## Chat pipeline self-check
+
+Run this at any time to verify the full loop is healthy:
+
+```bash
+FEEDLING_API_URL=http://127.0.0.1:5001 \
+FEEDLING_API_KEY=<your_key> \
+python tools/check_chat_pipeline.py
+```
+
+It checks four things and exits with a clear status:
+
+| Check | OK | WARN | FAIL |
+|-------|----|------|------|
+| Backend reachable | HTTP 200/401 | — | connection refused / 5xx |
+| API key accepted | 200 | — | 401 Unauthorized |
+| Resident consumer running | systemd active or process found | not running | — |
+| Recent closed loop | user + assistant messages in last 10 min | unanswered user message | — |
+
+Exit codes: `0` = OK · `1` = WARN · `2` = FAIL
+
+**Common misconfigurations caught by this tool:**
+
+- "I configured the skill but nothing happens" → consumer not running (WARN on check 3)
+- "Messages arrive but no replies" → consumer running but agent call failing (WARN on check 4)
+- "I get replies but they contain system noise" → CLI agent not configured with clean output mode

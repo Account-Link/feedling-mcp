@@ -115,7 +115,7 @@
 		B3DB0E6C7C11B4B979F67492 /* FeedlingAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedlingAPI.swift; sourceTree = "<group>"; };
 		B47B840768263FD66F28FB11 /* FeedlingTestWidget.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FeedlingTestWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		B9354145BA0CA53600D58644 /* Parser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Parser.swift; path = FeedlingTest/DCAP/Parser.swift; sourceTree = SOURCE_ROOT; };
-		C33E21075035F8499B243C1B /* FeedlingBroadcast.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FeedlingBroadcast.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		C33E21075035F8499B243C1B /* FeedlingBroadcast.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = FeedlingBroadcast.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		CE0A57ADFBB6E7A9A2E0B31B /* CVMEndpoints.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CVMEndpoints.swift; sourceTree = "<group>"; };
 		D833B2E56FA8C84DA0950F72 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		DC254589B7C9DE146214048D /* IntelSGXRootCA.der */ = {isa = PBXFileReference; lastKnownFileType = None; name = IntelSGXRootCA.der; path = FeedlingTest/DCAP/IntelSGXRootCA.der; sourceTree = SOURCE_ROOT; };
@@ -328,9 +328,6 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1500;
 				TargetAttributes = {
-					143528F74119840BD515D293 = {
-						DevelopmentTeam = DC9JH5DRMY;
-					};
 					282D06B399CCE088372449A9 = {
 						DevelopmentTeam = DC9JH5DRMY;
 					};
@@ -342,7 +339,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 5C7A44734ECB7FD48F277D7B /* Build configuration list for PBXProject "FeedlingBroadcast" */;
+			buildConfigurationList = 5C7A44734ECB7FD48F277D7B /* Build configuration list for PBXProject "FeedlingTest" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -735,7 +732,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
-		5C7A44734ECB7FD48F277D7B /* Build configuration list for PBXProject "FeedlingBroadcast" */ = {
+		5C7A44734ECB7FD48F277D7B /* Build configuration list for PBXProject "FeedlingTest" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				2E9D77041FFEC5C98F259AB4 /* Debug */,

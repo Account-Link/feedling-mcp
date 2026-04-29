@@ -1,0 +1,18 @@
+[Unit]
+Description=Feedling Chat Resident Consumer
+After=network.target feedling-backend.service
+Requires=feedling-backend.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/feedling-mcp
+EnvironmentFile=/home/ubuntu/feedling-chat-resident.env
+ExecStart=/home/ubuntu/feedling-venv/bin/python tools/chat_resident_consumer.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

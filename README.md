@@ -467,3 +467,5 @@ outside a user directory.
 | See landmark diffs by session | `docs/CHANGELOG.md` |
 | Work on visuals / UI | `DESIGN.md` |
 | Move an existing self-hosted user to Feedling Cloud | `docs/MIGRATION.md` |
+| Set up a resident chat consumer for an HTTP/CLI agent | `skill/SKILL.md § Chat Resident Consumer` |
+| Diagnose why chat messages aren't getting replies | `python tools/check_chat_pipeline.py` |
