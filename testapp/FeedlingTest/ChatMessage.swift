@@ -8,6 +8,11 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     let ts: Double
     let source: String?    // "live_activity" | "chat" | "heartbeat"
 
+    // Derived client-side: true when the agent sent this unprompted
+    // (an assistant message preceded by another assistant message, or
+    // the very first message in the thread if it's from the agent).
+    var isProactive: Bool = false
+
     // Envelope fields — populated by the server for v1 items. We decrypt
     // them client-side via ContentEncryption and write the result back
     // into `content` before display.
@@ -19,9 +24,16 @@ struct ChatMessage: Identifiable, Codable, Equatable {
     let visibility: String?
     let owner_user_id: String?
 
-    var isFromOpenClaw: Bool { role == "openclaw" || role == "assistant" }
+    var isFromAgent: Bool { role == "openclaw" || role == "assistant" }
+    var isFromOpenClaw: Bool { isFromAgent }  // backwards compat
     var isFromLiveActivity: Bool { source == "live_activity" }
     var date: Date { Date(timeIntervalSince1970: ts) }
+
+    enum CodingKeys: String, CodingKey {
+        case id, role, content, ts, source
+        case v, body_ct, nonce, K_user, K_enclave, visibility, owner_user_id
+        // isProactive is excluded — derived client-side, never from server JSON
+    }
 
     /// True when the server stored this as a v1 ciphertext envelope that
     /// we haven't decrypted yet (content still empty).

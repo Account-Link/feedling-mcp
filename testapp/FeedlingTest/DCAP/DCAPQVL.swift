@@ -15,8 +15,40 @@
 //   - Layer 4 (raw PCK Intel SGX extensions) is still surfaced from the
 //     Swift side — dcap-qvl also parses them, so we now have two independent
 //     parsers and can sanity-cross-check them.
+//
+// When dcap_qvl.xcframework is not present (e.g. simulator dev builds),
+// the #if canImport guard below compiles stub implementations that throw
+// .unavailable instead of crashing. The audit card shows a "library not
+// linked" note rather than a build error.
 
 import Foundation
+
+// MARK: - Decoded result shapes (always available)
+
+public struct DCAPVerifiedReport: Decodable {
+    public let status: String
+    public let advisory_ids: [String]
+    public let qe_status: TCBStatusWithAdvisory
+    public let platform_status: TCBStatusWithAdvisory
+
+    public struct TCBStatusWithAdvisory: Decodable {
+        public let status: String
+        public let advisory_ids: [String]?
+    }
+
+    public var isUpToDate: Bool { status == "UpToDate" }
+}
+
+public struct DCAPQVLPCKExtension: Decodable {
+    public let fmspc: Data
+    public let pce_svn: Int
+    public let cpu_svn: Data
+    public let sgx_type: Int
+}
+
+// MARK: - FFI bridge (only when the xcframework is linked)
+
+#if canImport(dcap_qvl)
 import dcap_qvl
 
 public enum DCAPQVL {
@@ -35,9 +67,6 @@ public enum DCAPQVL {
         }
     }
 
-    /// C callback — appends the emitted bytes into the Data* passed via
-    /// user_data. `@convention(c)` means no captures; state travels
-    /// through user_data only.
     private static let appendCallback: dcap_output_callback_t = { ptr, len, user in
         guard let user = user, let ptr = ptr else { return 1 }
         let capture = user.assumingMemoryBound(to: Data.self)
@@ -45,10 +74,6 @@ public enum DCAPQVL {
         return 0
     }
 
-    /// Wraps a single FFI call: allocates a Data buffer, installs the
-    /// append callback, invokes `body`, returns the captured bytes.
-    /// On non-zero return from the FFI, throws with the error message
-    /// the Rust side wrote into the buffer.
     private static func invoke(
         _ body: (@escaping dcap_output_callback_t, UnsafeMutableRawPointer) -> Int32
     ) throws -> Data {
@@ -63,10 +88,6 @@ public enum DCAPQVL {
         return captured
     }
 
-    // MARK: - FFI entry points
-
-    /// Parse a TDX/SGX quote structurally. JSON output matches
-    /// `FfiQuote` in src/ffi.rs of the upstream crate.
     public static func parseQuote(_ quote: Data) throws -> Data {
         try quote.withUnsafeBytes { q in
             try invoke { cb, user in
@@ -78,8 +99,6 @@ public enum DCAPQVL {
         }
     }
 
-    /// Parse Intel SGX Extensions out of a PCK PEM blob. JSON output is
-    /// `FfiPckExtension` { ppid, cpu_svn, pce_svn, pce_id, fmspc, sgx_type }.
     public static func parsePCKExtension(fromPEM pem: String) throws -> Data {
         let pemData = Data(pem.utf8)
         return try pemData.withUnsafeBytes { p in
@@ -92,10 +111,6 @@ public enum DCAPQVL {
         }
     }
 
-    /// Full verify: quote + collateral (`QuoteCollateralV3` as JSON) +
-    /// the trusted Intel SGX Root CA (DER). Output JSON is
-    /// `FfiVerifiedReport` { status, advisory_ids, report, ppid,
-    /// qe_status, platform_status }.
     public static func verify(
         quote: Data,
         collateralJSON: Data,
@@ -119,34 +134,41 @@ public enum DCAPQVL {
     }
 }
 
-// MARK: - Decoded result shapes
+#else
 
-/// The parts of `FfiVerifiedReport` the audit card consumes. Extend as
-/// needed; other fields stay in the raw JSON.
-public struct DCAPVerifiedReport: Decodable {
-    /// Overall TCB status: "UpToDate" / "SWHardeningNeeded" /
-    /// "ConfigurationNeeded" / "ConfigurationAndSWHardeningNeeded" /
-    /// "OutOfDate" / "OutOfDateConfigurationNeeded" / "Revoked".
-    public let status: String
-    public let advisory_ids: [String]
-    public let qe_status: TCBStatusWithAdvisory
-    public let platform_status: TCBStatusWithAdvisory
+// Stub — xcframework not linked. All methods throw .unavailable.
+public enum DCAPQVL {
 
-    public struct TCBStatusWithAdvisory: Decodable {
-        public let status: String
-        public let advisory_ids: [String]?
+    public enum Error: Swift.Error, CustomStringConvertible {
+        case unavailable
+        case ffiFailure(code: Int32, message: String)
+        case malformedUTF8
+
+        public var description: String {
+            switch self {
+            case .unavailable:      return "dcap_qvl library not linked in this build"
+            case .ffiFailure(let c, let m): return "dcap-qvl FFI error \(c): \(m)"
+            case .malformedUTF8:    return "dcap-qvl output was not valid UTF-8"
+            }
+        }
     }
 
-    /// True iff the overall platform is at the most-up-to-date level
-    /// Intel currently certifies. Everything else is a disclosure.
-    public var isUpToDate: Bool { status == "UpToDate" }
+    public static func parseQuote(_ quote: Data) throws -> Data {
+        throw Error.unavailable
+    }
+
+    public static func parsePCKExtension(fromPEM pem: String) throws -> Data {
+        throw Error.unavailable
+    }
+
+    public static func verify(
+        quote: Data,
+        collateralJSON: Data,
+        rootCADER: Data,
+        now: Date = Date()
+    ) throws -> Data {
+        throw Error.unavailable
+    }
 }
 
-/// The parts of `FfiPckExtension` we surface alongside our own parser's
-/// values.
-public struct DCAPQVLPCKExtension: Decodable {
-    public let fmspc: Data
-    public let pce_svn: Int
-    public let cpu_svn: Data
-    public let sgx_type: Int
-}
+#endif

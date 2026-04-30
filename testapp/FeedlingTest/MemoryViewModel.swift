@@ -14,6 +14,12 @@ struct MemoryMoment: Codable, Identifiable, Hashable {
     let createdAt: String
     let source: String
 
+    // Optional display fields — written by the agent into the encrypted body
+    var herQuote: String?           // exact words spoken that night
+    var context: String?            // e.g. "late-night work"
+    var linkedDimension: String?    // e.g. "克制 ↑"
+    var quotedInChat: Int?          // how many times this card was quoted in chat
+
     // v1 envelope fields — present when the server stored ciphertext.
     let v: Int?
     let body_ct: String?
@@ -23,32 +29,51 @@ struct MemoryMoment: Codable, Identifiable, Hashable {
     let visibility: String?
     let owner_user_id: String?
 
+    // True when this moment was created today
+    var isFresh: Bool {
+        guard let date = occurredDate else { return false }
+        return Calendar.current.isDateInToday(date)
+    }
+
+    // Month label for grouping in the garden list, e.g. "April 2026"
+    var monthGroup: String {
+        guard let date = occurredDate else { return "" }
+        let fmt = DateFormatter()
+        fmt.dateFormat = "MMMM yyyy"
+        return fmt.string(from: date)
+    }
+
     enum CodingKeys: String, CodingKey {
         case id, type, title, description, source
+        case herQuote = "her_quote"
+        case context
+        case linkedDimension = "linked_dimension"
+        case quotedInChat = "quoted_in_chat"
         case occurredAt = "occurred_at"
         case createdAt = "created_at"
         case v, body_ct, nonce, K_user, K_enclave, visibility, owner_user_id
     }
 
-    /// Backwards-compatible decoder: v0 items have title/description/type
-    /// present and v/body_ct/etc nil; v1 items have empty title/description
-    /// and populated envelope fields.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id          = try c.decode(String.self, forKey: .id)
-        type        = (try? c.decode(String.self, forKey: .type)) ?? ""
-        title       = (try? c.decode(String.self, forKey: .title)) ?? ""
-        description = (try? c.decode(String.self, forKey: .description)) ?? ""
-        occurredAt  = try c.decode(String.self, forKey: .occurredAt)
-        createdAt   = try c.decode(String.self, forKey: .createdAt)
-        source      = (try? c.decode(String.self, forKey: .source)) ?? ""
-        v           = try? c.decode(Int.self, forKey: .v)
-        body_ct     = try? c.decode(String.self, forKey: .body_ct)
-        nonce       = try? c.decode(String.self, forKey: .nonce)
-        K_user      = try? c.decode(String.self, forKey: .K_user)
-        K_enclave   = try? c.decode(String.self, forKey: .K_enclave)
-        visibility  = try? c.decode(String.self, forKey: .visibility)
-        owner_user_id = try? c.decode(String.self, forKey: .owner_user_id)
+        id               = try c.decode(String.self, forKey: .id)
+        type             = (try? c.decode(String.self, forKey: .type)) ?? ""
+        title            = (try? c.decode(String.self, forKey: .title)) ?? ""
+        description      = (try? c.decode(String.self, forKey: .description)) ?? ""
+        occurredAt       = try c.decode(String.self, forKey: .occurredAt)
+        createdAt        = try c.decode(String.self, forKey: .createdAt)
+        source           = (try? c.decode(String.self, forKey: .source)) ?? ""
+        herQuote         = try? c.decode(String.self, forKey: .herQuote)
+        context          = try? c.decode(String.self, forKey: .context)
+        linkedDimension  = try? c.decode(String.self, forKey: .linkedDimension)
+        quotedInChat     = try? c.decode(Int.self, forKey: .quotedInChat)
+        v                = try? c.decode(Int.self, forKey: .v)
+        body_ct          = try? c.decode(String.self, forKey: .body_ct)
+        nonce            = try? c.decode(String.self, forKey: .nonce)
+        K_user           = try? c.decode(String.self, forKey: .K_user)
+        K_enclave        = try? c.decode(String.self, forKey: .K_enclave)
+        visibility       = try? c.decode(String.self, forKey: .visibility)
+        owner_user_id    = try? c.decode(String.self, forKey: .owner_user_id)
     }
 
     var occurredDate: Date? {
@@ -93,12 +118,20 @@ struct MemoryMoment: Codable, Identifiable, Hashable {
         )
         do {
             let pt = try ContentEncryption.unseal(envelope, withUserSK: sk)
-            struct Inner: Decodable { let title: String?; let description: String?; let type: String? }
+            struct Inner: Decodable {
+                let title: String?; let description: String?; let type: String?
+                let her_quote: String?; let context: String?
+                let linked_dimension: String?; let quoted_in_chat: Int?
+            }
             let inner = try JSONDecoder().decode(Inner.self, from: pt)
             var copy = self
-            copy.title = inner.title ?? ""
-            copy.description = inner.description ?? ""
-            copy.type = inner.type ?? ""
+            copy.title           = inner.title ?? ""
+            copy.description     = inner.description ?? ""
+            copy.type            = inner.type ?? ""
+            copy.herQuote        = inner.her_quote
+            copy.context         = inner.context
+            copy.linkedDimension = inner.linked_dimension
+            copy.quotedInChat    = inner.quoted_in_chat
             return copy
         } catch {
             print("[memory] unseal failed id=\(id): \(error)")

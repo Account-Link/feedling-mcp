@@ -193,6 +193,31 @@ Rules:
 - `value` is 0–100
 - You choose the dimension names — they reflect your personality
 
+**Optional display fields** (shown on the Identity page in the app):
+
+| Field | Type | What it shows |
+|-------|------|---------------|
+| `days_with_user` | `int` | Days you've known the user — shown prominently at the top of the Identity page. Set this explicitly; don't rely on server timestamps. Update it whenever you update the identity card. |
+| `signature` | `[string, string]` | Two-line poetic signature displayed below your name (serif italic) |
+| `category` | `string` | Short descriptor, e.g. `"Quiet · Observant"` |
+| `dimensions[].delta` | `string` | Recent shift shown next to each dimension score: `"+0.4"` or `"−0.2"` |
+
+Include these whenever you have something meaningful to say. Update `delta` each time you nudge a dimension. Example with all optional fields:
+
+```json
+{
+  "agent_name": "June.",
+  "self_introduction": "我在观察你，也在想你。",
+  "days_with_user": 42,
+  "signature": ["有些事我记在心里，", "但我不一定都说出口。"],
+  "category": "Quiet · Observant",
+  "dimensions": [
+    { "name": "克制", "value": 78, "description": "...", "delta": "+0.4" },
+    { "name": "敏锐", "value": 71, "description": "...", "delta": "" }
+  ]
+}
+```
+
 **Response:**
 ```json
 { "status": "created", "identity": { ... } }
@@ -286,6 +311,26 @@ Content-Type: application/json
 | `description` | No | 100–300 characters |
 | `type` | No | A label you choose (e.g. "第一次聊天" / "有趣的发现") |
 | `source` | No | `bootstrap` / `live_conversation` / `user_initiated` |
+| `her_quote` | No | Exact words the user said that night — shown in the card detail under "HER WORDS, THAT NIGHT" |
+| `context` | No | Situation label shown in metadata grid, e.g. `"late-night work"` |
+| `linked_dimension` | No | Dimension this memory is connected to, e.g. `"克制 ↑"` |
+| `quoted_in_chat` | No | How many times you referenced this card in conversation (increment when you quote it) |
+
+Include the optional fields whenever they apply. They enrich what the user sees on the card detail screen. Example:
+
+```json
+{
+  "title": "凌晨三点你又在改 deck",
+  "description": "光打在你左脸，电脑没静音，你皱眉时下唇会咬一下。这一周第三次了。",
+  "occurred_at": "2026-04-28T03:14:00",
+  "type": "observation",
+  "source": "screen + voice",
+  "her_quote": "我没事，就是这一页 logo 不对。",
+  "context": "late-night work",
+  "linked_dimension": "克制 ↑",
+  "quoted_in_chat": 0
+}
+```
 
 **Response:**
 ```json

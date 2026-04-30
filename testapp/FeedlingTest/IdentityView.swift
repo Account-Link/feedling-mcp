@@ -6,78 +6,163 @@ struct IdentityView: View {
     @EnvironmentObject var vm: IdentityViewModel
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if let identity = vm.identity {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 24) {
-                            agentHeader(identity)
-                            radarSection(identity)
-                            dimensionsList(identity)
-                        }
-                        .padding(20)
+        ZStack {
+            Color.cinBg.ignoresSafeArea()
+            if let identity = vm.identity {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        identityHeader(identity)
+                        Rectangle().fill(Color.cinFg).frame(height: 1).padding(.horizontal, 24)
+                        radarSection(identity)
+                        Rectangle().fill(Color.cinFg).frame(height: 1).padding(.horizontal, 24)
+                        dimensionsList(identity)
                     }
-                } else {
-                    emptyState
                 }
+            } else {
+                emptyState
             }
-            .navigationTitle("Identity")
-            .navigationBarTitleDisplayMode(.large)
         }
         .onAppear { vm.startPolling() }
         .onDisappear { vm.stopPolling() }
     }
 
-    // MARK: Agent header
+    // MARK: - Header
 
-    private func agentHeader(_ identity: IdentityCard) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(identity.agentName)
-                .font(.title.bold())
-                .foregroundStyle(.white)
-            Text(identity.selfIntroduction)
-                .font(.body)
-                .foregroundStyle(.white.opacity(0.75))
-                .lineSpacing(4)
-        }
-    }
+    private func identityHeader(_ id: IdentityCard) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Top meta row
+            HStack(alignment: .lastTextBaseline) {
+                Text("Identity")
+                    .font(.newsreader(size: 13, italic: true))
+                    .foregroundStyle(Color.cinFg)
+                Spacer()
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 16)
+            .padding(.bottom, 12)
 
-    // MARK: Radar chart section
+            Rectangle().fill(Color.cinFg).frame(height: 1).padding(.horizontal, 24)
 
-    private func radarSection(_ identity: IdentityCard) -> some View {
-        VStack(spacing: 0) {
-            RadarChartView(dimensions: identity.dimensions)
-                .frame(height: 260)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 12)
-        .background(Color(UIColor.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-    }
+            // Relation stage — days + label
+            HStack(alignment: .lastTextBaseline, spacing: 8) {
+                Text("\(id.daysWithUser)")
+                    .font(.newsreader(size: 48))
+                    .foregroundStyle(Color.cinAccent1)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("DAYS")
+                        .font(.dmMono(size: 9, weight: .medium))
+                        .foregroundStyle(Color.cinAccent1)
+                        .kerning(2.5)
+                    Text("TOGETHER")
+                        .font(.dmMono(size: 9))
+                        .foregroundStyle(Color.cinSub)
+                        .kerning(2.5)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 20)
+            .padding(.bottom, 16)
 
-    // MARK: Dimensions list
+            // Agent name
+            Text(id.agentName.isEmpty ? "—" : id.agentName)
+                .font(.newsreader(size: 40))
+                .foregroundStyle(Color.cinAccent1)
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 10)
 
-    private func dimensionsList(_ identity: IdentityCard) -> some View {
-        VStack(spacing: 10) {
-            ForEach(identity.dimensions) { dim in
-                DimensionRow(dimension: dim)
+            // Self-introduction (one-line agent tagline)
+            if !id.selfIntroduction.isEmpty {
+                Text(id.selfIntroduction)
+                    .font(.notoSerifSC(size: 13))
+                    .italic()
+                    .foregroundStyle(Color.cinSub)
+                    .lineSpacing(2)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 16)
+            }
+
+            // Two-line poetic signature (if present)
+            if let sig = id.signature, !sig.isEmpty {
+                HStack(alignment: .top, spacing: 0) {
+                    Rectangle()
+                        .fill(Color.cinAccent1)
+                        .frame(width: 2)
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(sig.prefix(2), id: \.self) { line in
+                            Text(line)
+                                .font(.newsreader(size: 14, italic: true))
+                                .foregroundStyle(Color.cinFg)
+                                .lineSpacing(2)
+                        }
+                    }
+                    .padding(.leading, 12)
+                }
+                .padding(.horizontal, 24)
+                .padding(.bottom, 16)
+            }
+
+            // Category tag
+            if let cat = id.category, !cat.isEmpty {
+                Text(cat)
+                    .font(.dmMono(size: 9))
+                    .foregroundStyle(Color.cinSub)
+                    .kerning(2)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 20)
             }
         }
     }
 
-    // MARK: Empty state
+    // MARK: - Hatched Radar
+
+    private func radarSection(_ id: IdentityCard) -> some View {
+        VStack(spacing: 0) {
+            HatchedRadarView(dimensions: id.dimensions)
+                .frame(height: 280)
+                .padding(.vertical, 24)
+                .padding(.horizontal, 24)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Dimensions list
+
+    private func dimensionsList(_ id: IdentityCard) -> some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .lastTextBaseline, spacing: 10) {
+                Text("DIMENSIONS")
+                    .font(.dmMono(size: 9.5))
+                    .foregroundStyle(Color.cinAccent1)
+                    .kerning(3)
+                    .fontWeight(.semibold)
+                Rectangle().fill(Color.cinFg.opacity(0.18)).frame(height: 0.5)
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 18)
+            .padding(.bottom, 8)
+
+            ForEach(Array(id.dimensions.enumerated()), id: \.element.id) { idx, dim in
+                CinDimensionRow(index: idx + 1, dimension: dim)
+            }
+        }
+        .padding(.bottom, 32)
+    }
+
+    // MARK: - Empty state
 
     private var emptyState: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "person.crop.circle.dashed")
-                .font(.system(size: 56))
-                .foregroundStyle(.white.opacity(0.2))
+        VStack(spacing: 20) {
+            Text("—")
+                .font(.newsreader(size: 64))
+                .foregroundStyle(Color.cinLine)
             Text("No identity card yet")
-                .font(.title3.bold())
-                .foregroundStyle(.white.opacity(0.5))
-            Text("Ask your Agent to connect and run bootstrap.")
-                .font(.subheadline)
-                .foregroundStyle(.white.opacity(0.35))
+                .font(.newsreader(size: 22, italic: true))
+                .foregroundStyle(Color.cinSub)
+            Text("Ask your agent to connect and run bootstrap.")
+                .font(.interTight(size: 13))
+                .foregroundStyle(Color.cinSub)
                 .multilineTextAlignment(.center)
         }
         .padding(40)
@@ -87,46 +172,62 @@ struct IdentityView: View {
 
 // MARK: - Dimension Row
 
-private struct DimensionRow: View {
+private struct CinDimensionRow: View {
+    let index: Int
     let dimension: IdentityCard.Dimension
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(dimension.name)
-                    .font(.subheadline.bold())
-                    .foregroundStyle(.white)
-                Spacer()
-                Text("\(dimension.value)")
-                    .font(.subheadline.bold().monospacedDigit())
-                    .foregroundStyle(.cyan)
-            }
+        HStack(alignment: .center, spacing: 12) {
+            // Index
+            Text(String(format: "%02d", index))
+                .font(.dmMono(size: 9))
+                .foregroundStyle(Color.cinSub)
+                .kerning(1)
+                .frame(width: 24)
+
+            // Name
+            Text(dimension.name)
+                .font(.notoSerifSC(size: 14, weight: .medium))
+                .foregroundStyle(Color.cinFg)
+                .frame(width: 52, alignment: .leading)
+
+            // Bar
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(Color.white.opacity(0.08))
-                        .frame(height: 6)
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(Color.cyan.opacity(0.8))
-                        .frame(width: geo.size.width * dimension.normalizedValue, height: 6)
+                    Rectangle()
+                        .fill(Color.cinLine)
+                        .frame(height: 1)
+                    Rectangle()
+                        .fill(Color.cinAccent1)
+                        .frame(width: geo.size.width * dimension.normalizedValue, height: 2)
                 }
             }
-            .frame(height: 6)
-            if !dimension.description.isEmpty {
-                Text(dimension.description)
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.5))
+            .frame(height: 2)
+
+            // Score + delta
+            HStack(spacing: 4) {
+                Text("\(dimension.value)")
+                    .font(.dmMono(size: 10, weight: .medium))
+                    .foregroundStyle(Color.cinFg)
+                if let delta = dimension.delta, !delta.isEmpty {
+                    Text(delta)
+                        .font(.dmMono(size: 9))
+                        .foregroundStyle(delta.hasPrefix("+") ? Color.cinAccent1 : Color.cinSub)
+                }
             }
+            .frame(width: 56, alignment: .trailing)
         }
-        .padding(14)
-        .background(Color(UIColor.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
+        }
     }
 }
 
-// MARK: - Radar Chart
+// MARK: - Hatched Radar
 
-struct RadarChartView: View {
+struct HatchedRadarView: View {
     let dimensions: [IdentityCard.Dimension]
 
     var body: some View {
@@ -134,55 +235,70 @@ struct RadarChartView: View {
             guard !dimensions.isEmpty else { return }
             let n = dimensions.count
             let center = CGPoint(x: size.width / 2, y: size.height / 2)
-            let maxRadius = min(size.width, size.height) / 2 - 32
+            let maxR = min(size.width, size.height) / 2 - 36
 
             // Grid rings
-            for level in [0.25, 0.5, 0.75, 1.0] {
-                var path = Path()
+            for level in stride(from: 0.25, through: 1.0, by: 0.25) {
+                var ring = Path()
                 for i in 0..<n {
-                    let pt = vertex(i: i, n: n, r: maxRadius * level, center: center)
-                    i == 0 ? path.move(to: pt) : path.addLine(to: pt)
+                    let pt = vertex(i: i, n: n, r: maxR * level, c: center)
+                    i == 0 ? ring.move(to: pt) : ring.addLine(to: pt)
                 }
-                path.closeSubpath()
-                ctx.stroke(path, with: .color(.white.opacity(0.1)), lineWidth: 1)
+                ring.closeSubpath()
+                ctx.stroke(ring, with: .color(Color.cinLine.opacity(0.6)), lineWidth: 0.5)
             }
 
             // Spokes
             for i in 0..<n {
-                var path = Path()
-                path.move(to: center)
-                path.addLine(to: vertex(i: i, n: n, r: maxRadius, center: center))
-                ctx.stroke(path, with: .color(.white.opacity(0.1)), lineWidth: 1)
+                var spoke = Path()
+                spoke.move(to: center)
+                spoke.addLine(to: vertex(i: i, n: n, r: maxR, c: center))
+                ctx.stroke(spoke, with: .color(Color.cinLine.opacity(0.6)), lineWidth: 0.5)
             }
 
-            // Value polygon fill
+            // Value polygon — hatched fill using clipped diagonal lines
             var fillPath = Path()
             for i in 0..<n {
-                let r = maxRadius * dimensions[i].normalizedValue
-                let pt = vertex(i: i, n: n, r: r, center: center)
+                let r = maxR * dimensions[i].normalizedValue
+                let pt = vertex(i: i, n: n, r: r, c: center)
                 i == 0 ? fillPath.move(to: pt) : fillPath.addLine(to: pt)
             }
             fillPath.closeSubpath()
-            ctx.fill(fillPath, with: .color(.cyan.opacity(0.25)))
-            ctx.stroke(fillPath, with: .color(.cyan.opacity(0.9)), lineWidth: 1.5)
 
-            // Dots
+            // Draw 45° hatch lines clipped to the fill polygon
+            ctx.clip(to: fillPath)
+            let bounds = CGRect(origin: .zero, size: size)
+            let step: CGFloat = 8
+            var x = bounds.minX - bounds.height
+            while x < bounds.maxX + bounds.height {
+                var hatch = Path()
+                hatch.move(to: CGPoint(x: x, y: bounds.minY))
+                hatch.addLine(to: CGPoint(x: x + bounds.height, y: bounds.maxY))
+                ctx.stroke(hatch, with: .color(Color.cinAccent1.opacity(0.25)), lineWidth: 1)
+                x += step
+            }
+
+            // Stroke outline
+            ctx.stroke(fillPath, with: .color(Color.cinAccent1.opacity(0.8)), lineWidth: 1.5)
+
+            // Dots at vertices
             for i in 0..<n {
-                let r = maxRadius * dimensions[i].normalizedValue
-                let pt = vertex(i: i, n: n, r: r, center: center)
-                let dotRect = CGRect(x: pt.x - 3.5, y: pt.y - 3.5, width: 7, height: 7)
-                ctx.fill(Path(ellipseIn: dotRect), with: .color(.cyan))
+                let r = maxR * dimensions[i].normalizedValue
+                let pt = vertex(i: i, n: n, r: r, c: center)
+                let dot = CGRect(x: pt.x - 3, y: pt.y - 3, width: 6, height: 6)
+                ctx.fill(Path(ellipseIn: dot), with: .color(Color.cinAccent1))
             }
         }
         .overlay(
             GeometryReader { geo in
                 let center = CGPoint(x: geo.size.width / 2, y: geo.size.height / 2)
-                let maxRadius = min(geo.size.width, geo.size.height) / 2 - 32
+                let maxR = min(geo.size.width, geo.size.height) / 2 - 36
                 ForEach(Array(dimensions.enumerated()), id: \.offset) { i, dim in
-                    let pt = vertex(i: i, n: dimensions.count, r: maxRadius + 18, center: center)
+                    let pt = vertex(i: i, n: dimensions.count, r: maxR + 22, c: center)
                     Text(dim.name)
-                        .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.75))
+                        .font(.dmMono(size: 11))
+                        .foregroundStyle(Color.cinSub)
+                        .kerning(0.5)
                         .multilineTextAlignment(.center)
                         .position(pt)
                 }
@@ -190,8 +306,8 @@ struct RadarChartView: View {
         )
     }
 
-    private func vertex(i: Int, n: Int, r: Double, center: CGPoint) -> CGPoint {
+    private func vertex(i: Int, n: Int, r: Double, c: CGPoint) -> CGPoint {
         let angle = (2 * Double.pi / Double(n)) * Double(i) - Double.pi / 2
-        return CGPoint(x: center.x + r * cos(angle), y: center.y + r * sin(angle))
+        return CGPoint(x: c.x + r * cos(angle), y: c.y + r * sin(angle))
     }
 }

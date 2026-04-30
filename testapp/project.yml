@@ -10,6 +10,22 @@ settings:
   DEVELOPMENT_TEAM: DC9JH5DRMY
   SWIFT_VERSION: "5.9"
 
+schemes:
+  FeedlingTest:
+    build:
+      targets:
+        FeedlingTest: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+
 targets:
 
   FeedlingTest:
@@ -44,6 +60,15 @@ targets:
           UIColorName: ""
         UIBackgroundModes:
           - remote-notification
+        UIAppFonts:
+          - Newsreader-VariableFont_opsz,wght.ttf
+          - Newsreader-Italic-VariableFont_opsz,wght.ttf
+          - NotoSerifSC-Regular.ttf
+          - NotoSerifSC-Medium.ttf
+          - DMMono-Regular.ttf
+          - DMMono-Medium.ttf
+          - InterTight-Regular.ttf
+          - InterTight-Medium.ttf
     settings:
       DEVELOPMENT_TEAM: DC9JH5DRMY
       PRODUCT_BUNDLE_IDENTIFIER: com.feedling.mcp

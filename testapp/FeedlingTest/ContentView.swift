@@ -29,7 +29,7 @@ struct ContentView: View {
             if !onboardingShown {
                 OnboardingView(onDone: {
                     FeedlingAPI.shared.hasCompletedOnboardingV1 = true
-                    withAnimation(FeedlingMotion.enter) { onboardingShown = true }
+                    withAnimation(.easeOut(duration: 0.35)) { onboardingShown = true }
                 })
                 .transition(.opacity)
             } else {
@@ -44,29 +44,38 @@ struct ContentView: View {
     }
 
     private var rootTabs: some View {
-        TabView(selection: $router.selectedTab) {
-            ChatView()
-                .environmentObject(chatViewModel)
-                .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right.fill") }
-                .tag(AppTab.chat)
+        GeometryReader { geo in
+            ZStack(alignment: .bottom) {
+                Color.cinBg.ignoresSafeArea()
 
-            IdentityView()
-                .environmentObject(identityViewModel)
-                .tabItem { Label("Identity", systemImage: "person.crop.square.filled.and.at.rectangle") }
-                .tag(AppTab.identity)
+                // Tab content — all views stay alive, opacity switches active tab
+                ZStack {
+                    ChatView()
+                        .environmentObject(chatViewModel)
+                        .environmentObject(identityViewModel)
+                        .opacity(router.selectedTab == .chat ? 1 : 0)
 
-            MemoryGardenView()
-                .environmentObject(memoryViewModel)
-                .tabItem { Label("Garden", systemImage: "leaf.fill") }
-                .tag(AppTab.garden)
+                    IdentityView()
+                        .environmentObject(identityViewModel)
+                        .opacity(router.selectedTab == .identity ? 1 : 0)
 
-            SettingsView()
-                .tabItem { Label("Settings", systemImage: "gearshape.fill") }
-                .tag(AppTab.settings)
+                    MemoryGardenView()
+                        .environmentObject(memoryViewModel)
+                        .environmentObject(chatViewModel)
+                        .environmentObject(router)
+                        .opacity(router.selectedTab == .garden ? 1 : 0)
+
+                    SettingsView()
+                        .opacity(router.selectedTab == .settings ? 1 : 0)
+                }
+                .padding(.bottom, 52 + geo.safeAreaInsets.bottom)
+
+                CinnabarTabBar(selectedTab: $router.selectedTab,
+                               bottomInset: geo.safeAreaInsets.bottom)
+            }
+            .ignoresSafeArea(edges: .bottom)
         }
-        .tint(Color.feedlingSage)
-        .preferredColorScheme(.dark)
-        // T2.5: Auto-navigate to Identity on first bootstrap
+        .preferredColorScheme(.light)
         .onChange(of: identityViewModel.didJustBootstrap) { didBootstrap in
             if didBootstrap {
                 router.selectedTab = .identity
@@ -110,216 +119,318 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-
-                // Screen Recording Button
-                VStack(spacing: 6) {
-                    Text("SCREEN RECORDING")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 20)
-                        .padding(.top, 12)
-                    ZStack {
-                        BroadcastPickerView()
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 52)
-                    }
-                    .background(Color(UIColor.secondarySystemGroupedBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 8)
-                }
-                .background(Color(UIColor.systemGroupedBackground))
-
-                List {
-                    // Phase B: Privacy is its own top-level destination.
-                    // The Settings → Privacy page contains the hero row,
-                    // audit card, export / delete / reset, visibility,
-                    // and the "run your own" branch.
-                    Section {
-                        NavigationLink {
-                            PrivacyPageView()
-                        } label: {
-                            Label {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Privacy")
-                                        .font(.headline)
-                                        .foregroundStyle(Color.feedlingInk)
-                                    Text("Encrypted data, export, delete, audit")
-                                        .font(.footnote)
-                                        .foregroundStyle(Color.feedlingInkMuted)
+            ZStack {
+                Color.cinBg.ignoresSafeArea()
+                ScrollView {
+                    VStack(spacing: 0) {
+                        settingsHeader
+                        Rectangle().fill(Color.cinFg).frame(height: 1)
+                        settingsSection("SYSTEM") {
+                            cinRow("Screen Recording") {
+                                BroadcastPickerView()
+                                    .frame(width: 120, height: 32)
+                            }
+                        }
+                        settingsSection("STORAGE") {
+                            cinRow("Backend") {
+                                Picker("", selection: $api.storageMode) {
+                                    Text("Cloud").tag(FeedlingAPI.StorageMode.cloud)
+                                    Text("Self-hosted").tag(FeedlingAPI.StorageMode.selfHosted)
                                 }
-                            } icon: {
-                                Image(systemName: "lock.shield")
-                                    .foregroundStyle(Color.feedlingSage)
+                                .pickerStyle(.segmented)
+                                .frame(width: 160)
+                                .onChange(of: api.storageMode) { newMode in
+                                    if newMode == .cloud {
+                                        api.configureCloud()
+                                        Task { await api.ensureRegisteredIfCloud() }
+                                    }
+                                }
+                            }
+                            if api.storageMode == .selfHosted {
+                                cinInputRow("URL", placeholder: "https://…", text: $selfHostedURL)
+                                    .onAppear { selfHostedURL = api.baseURL }
+                                cinInputRow("API Key", placeholder: "sk-…", text: $selfHostedKey)
+                                    .onAppear { selfHostedKey = api.apiKey }
+                                cinActionRow("SAVE CONFIG ↗", color: .cinFg) {
+                                    api.configureSelfHosted(url: selfHostedURL, apiKey: selfHostedKey)
+                                    showToast("Saved")
+                                }
+                                .disabled(selfHostedURL.isEmpty)
                             }
                         }
-                    }
-
-                    // Storage toggle
-                    Section("Storage") {
-                        Picker("Backend", selection: $api.storageMode) {
-                            Text("Feedling Cloud").tag(FeedlingAPI.StorageMode.cloud)
-                            Text("Self-hosted").tag(FeedlingAPI.StorageMode.selfHosted)
-                        }
-                        .pickerStyle(.segmented)
-                        .onChange(of: api.storageMode) { newMode in
-                            if newMode == .cloud {
-                                api.configureCloud()
-                                Task { await api.ensureRegisteredIfCloud() }
-                            }
-                        }
-
-                        if api.storageMode == .selfHosted {
-                            TextField("https://my-vps.example:5001", text: $selfHostedURL)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-                                .font(.caption.monospaced())
-                                .onAppear { selfHostedURL = api.baseURL }
-                            TextField("API key", text: $selfHostedKey)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-                                .font(.caption.monospaced())
-                                .onAppear { selfHostedKey = api.apiKey }
-                            Button("Save self-hosted config") {
-                                api.configureSelfHosted(url: selfHostedURL, apiKey: selfHostedKey)
-                                showToast("Saved")
-                            }
-                            .disabled(selfHostedURL.isEmpty)
-                        }
-                    }
-
-                    // Agent setup
-                    Section("Agent Setup") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("MCP connection string")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Text(api.mcpConnectionString)
-                                .font(.caption2.monospaced())
-                                .lineLimit(3)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(8)
-                                .background(Color(UIColor.tertiarySystemGroupedBackground))
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
-                            Button {
+                        settingsSection("AGENT") {
+                            cinCopyRow("MCP String", value: api.mcpConnectionString, label: "COPY ↗") {
                                 UIPasteboard.general.string = api.mcpConnectionString
                                 showToast("Copied MCP string")
-                            } label: {
-                                Label("Copy MCP string", systemImage: "doc.on.doc")
                             }
-                        }
-                        .padding(.vertical, 4)
-
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("OpenClaw env vars")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Text(api.envExportBlock)
-                                .font(.caption2.monospaced())
-                                .lineLimit(3)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(8)
-                                .background(Color(UIColor.tertiarySystemGroupedBackground))
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
-                            Button {
+                            cinCopyRow("Env Vars", value: api.envExportBlock, label: "COPY ↗") {
                                 UIPasteboard.general.string = api.envExportBlock
                                 showToast("Copied env vars")
-                            } label: {
-                                Label("Copy env vars", systemImage: "doc.on.doc")
                             }
-                        }
-                        .padding(.vertical, 4)
-
-                        if api.storageMode == .cloud {
-                            Button(role: .destructive) {
-                                Task {
-                                    await api.regenerateCredentials()
-                                    showToast("Key regenerated")
+                            if api.storageMode == .cloud {
+                                cinActionRow("REGENERATE API KEY ↗", color: .cinAccent2) {
+                                    Task {
+                                        await api.regenerateCredentials()
+                                        showToast("Key regenerated")
+                                    }
                                 }
-                            } label: {
-                                Label("Regenerate API key", systemImage: "arrow.triangle.2.circlepath")
                             }
                         }
-                    }
-
-                    // Connection
-                    Section("Connection") {
-                        LabeledContent("API") {
-                            Text(api.baseURL)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                        LabeledContent("User ID") {
-                            Text(api.userId.isEmpty ? "—" : api.userId)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                    }
-
-                    // Live Activity status
-                    Section("Live Activity") {
-                        HStack {
-                            Circle()
-                                .fill(lam.isActive ? Color.green : Color.gray)
-                                .frame(width: 10, height: 10)
-                            Text(lam.isActive ? "Active" : "Inactive")
-                                .foregroundStyle(lam.isActive ? .primary : .secondary)
-                        }
-                        if let state = lam.lastState {
-                            LabeledContent("Title", value: state.title)
-                            LabeledContent("Body", value: state.body)
-                        }
-                    }
-
-                    // Controls
-                    Section("Controls") {
-                        if !lam.isActive {
-                            Button {
-                                Task { await lam.startActivity() }
-                            } label: {
-                                Label("Start Live Activity", systemImage: "play.fill")
+                        settingsSection("CONNECTION") {
+                            cinRow("API") {
+                                Text(api.baseURL)
+                                    .font(.dmMono(size: 9))
+                                    .foregroundStyle(Color.cinSub)
+                                    .lineLimit(1)
                             }
-                        } else {
-                            Button(role: .destructive) {
-                                Task { await lam.stopActivity() }
-                            } label: {
-                                Label("Stop Live Activity", systemImage: "stop.fill")
-                            }
-                            Button {
-                                let state = mockStates[mockIndex % mockStates.count]
-                                mockIndex += 1
-                                Task { await lam.updateActivity(state: state) }
-                            } label: {
-                                Label("Simulate Push Update", systemImage: "arrow.clockwise")
+                            cinRow("User ID") {
+                                Text(api.userId.isEmpty ? "—" : String(api.userId.prefix(16)) + "…")
+                                    .font(.dmMono(size: 9))
+                                    .foregroundStyle(Color.cinSub)
+                                    .lineLimit(1)
                             }
                         }
-                    }
-
-                    // Push tokens
-                    Section("Push Tokens") {
-                        tokenRow(label: "Device Token", value: lam.deviceToken)
-                        tokenRow(label: "Activity Token", value: lam.activityPushToken)
-                        if #available(iOS 17.2, *) {
-                            tokenRow(label: "Push-to-Start Token", value: lam.pushToStartToken)
+                        settingsSection("LIVE ACTIVITY") {
+                            cinRow("Status") {
+                                HStack(spacing: 6) {
+                                    Circle()
+                                        .fill(lam.isActive ? Color.cinAccent1 : Color.cinLine)
+                                        .frame(width: 7, height: 7)
+                                    Text(lam.isActive ? "Active" : "Inactive")
+                                        .font(.dmMono(size: 10))
+                                        .foregroundStyle(lam.isActive ? Color.cinAccent1 : Color.cinSub)
+                                }
+                            }
+                            if let state = lam.lastState {
+                                cinRow("Last Title") {
+                                    Text(state.title).font(.dmMono(size: 9)).foregroundStyle(Color.cinSub)
+                                }
+                            }
+                            if !lam.isActive {
+                                cinActionRow("START LIVE ACTIVITY ↗", color: .cinFg) {
+                                    Task { await lam.startActivity() }
+                                }
+                            } else {
+                                cinActionRow("SIMULATE UPDATE ↗", color: .cinFg) {
+                                    let s = mockStates[mockIndex % mockStates.count]; mockIndex += 1
+                                    Task { await lam.updateActivity(state: s) }
+                                }
+                                cinActionRow("STOP LIVE ACTIVITY ↗", color: .cinAccent2) {
+                                    Task { await lam.stopActivity() }
+                                }
+                            }
                         }
+                        settingsSection("TOKENS") {
+                            cinTokenRow("Device Token", value: lam.deviceToken)
+                            cinTokenRow("Activity Token", value: lam.activityPushToken)
+                            if #available(iOS 17.2, *) {
+                                cinTokenRow("Push-to-Start Token", value: lam.pushToStartToken)
+                            }
+                        }
+                        settingsSection("PRIVACY") {
+                            NavigationLink {
+                                PrivacyPageView()
+                            } label: {
+                                HStack {
+                                    Text("Privacy & Audit")
+                                        .font(.notoSerifSC(size: 13.5))
+                                        .foregroundStyle(Color.cinFg)
+                                    Spacer()
+                                    Text("OPEN ↗")
+                                        .font(.dmMono(size: 9.5, weight: .medium))
+                                        .foregroundStyle(Color.cinAccent1)
+                                        .kerning(2)
+                                }
+                                .padding(.vertical, 12)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        settingsFooter
                     }
                 }
             }
-            .navigationTitle("Feedling")
+            .navigationBarHidden(true)
             .overlay(alignment: .bottom) {
                 if let msg = showCopiedToast {
                     Text(msg)
-                        .font(.caption.weight(.medium))
+                        .font(.dmMono(size: 9))
+                        .kerning(1.5)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
-                        .background(.ultraThinMaterial, in: Capsule())
+                        .background(Color.cinFg)
+                        .foregroundStyle(Color.cinBg)
                         .padding(.bottom, 24)
                         .transition(.opacity)
                 }
+            }
+        }
+    }
+
+    private var settingsHeader: some View {
+        HStack(alignment: .lastTextBaseline) {
+            Text("Settings")
+                .font(.newsreader(size: 13, italic: true))
+                .foregroundStyle(Color.cinFg)
+            Spacer()
+            Text("v 0.5.0")
+                .font(.dmMono(size: 9))
+                .foregroundStyle(Color.cinSub)
+                .kerning(2)
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 16)
+        .padding(.bottom, 12)
+    }
+
+    private var settingsFooter: some View {
+        HStack {
+            Text("她记得的，比她说的多。")
+                .font(.newsreader(size: 11, italic: true))
+                .foregroundStyle(Color.cinSub)
+            Spacer()
+            Text("FEEDLING")
+                .font(.dmMono(size: 8.5))
+                .foregroundStyle(Color.cinSub)
+                .kerning(2)
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 20)
+        .padding(.bottom, 32)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Color.cinFg).frame(height: 1)
+        }
+    }
+
+    @ViewBuilder
+    private func settingsSection<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .lastTextBaseline, spacing: 10) {
+                Text(label)
+                    .font(.dmMono(size: 9.5, weight: .medium))
+                    .foregroundStyle(Color.cinAccent1)
+                    .kerning(3)
+                Rectangle().fill(Color.cinFg.opacity(0.18)).frame(height: 0.5)
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 18)
+            .padding(.bottom, 8)
+            content()
+        }
+    }
+
+    @ViewBuilder
+    private func cinRow<V: View>(_ name: String, @ViewBuilder value: () -> V) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text(name)
+                .font(.notoSerifSC(size: 13.5))
+                .foregroundStyle(Color.cinFg)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            value()
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
+        }
+    }
+
+    @ViewBuilder
+    private func cinInputRow(_ name: String, placeholder: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(name)
+                .font(.dmMono(size: 8.5))
+                .foregroundStyle(Color.cinSub)
+                .kerning(2)
+            TextField(placeholder, text: text)
+                .font(.dmMono(size: 10))
+                .foregroundStyle(Color.cinFg)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .padding(.vertical, 6)
+                .padding(.horizontal, 8)
+                .overlay(Rectangle().stroke(Color.cinLine, lineWidth: 1))
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 10)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
+        }
+    }
+
+    @ViewBuilder
+    private func cinCopyRow(_ name: String, value: String, label: String, action: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(name)
+                    .font(.notoSerifSC(size: 13.5))
+                    .foregroundStyle(Color.cinFg)
+                Spacer()
+                Button(action: action) {
+                    Text(label)
+                        .font(.dmMono(size: 9.5, weight: .medium))
+                        .foregroundStyle(Color.cinAccent1)
+                        .kerning(2)
+                }
+                .buttonStyle(.plain)
+            }
+            Text(value)
+                .font(.dmMono(size: 8.5))
+                .foregroundStyle(Color.cinSub)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 6)
+                .padding(.horizontal, 8)
+                .background(Color.cinAccent1Soft)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
+        }
+    }
+
+    @ViewBuilder
+    private func cinActionRow(_ label: String, color: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.dmMono(size: 9.5, weight: .medium))
+                .foregroundStyle(color)
+                .kerning(2)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 12)
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
+        }
+    }
+
+    @ViewBuilder
+    private func cinTokenRow(_ label: String, value: String?) -> some View {
+        if let value {
+            HStack {
+                Text(label)
+                    .font(.notoSerifSC(size: 13.5))
+                    .foregroundStyle(Color.cinFg)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text(String(value.prefix(12)) + "…")
+                    .font(.dmMono(size: 8.5))
+                    .foregroundStyle(Color.cinSub)
+                Button {
+                    UIPasteboard.general.string = value
+                    showToast("Copied")
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.caption)
+                        .foregroundStyle(Color.cinAccent1)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 12)
+            .overlay(alignment: .top) {
+                Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
             }
         }
     }
@@ -542,134 +653,191 @@ private struct OnboardingControlRows: View {
 
 struct PrivacyPageView: View {
     @ObservedObject private var api = FeedlingAPI.shared
+    @Environment(\.dismiss) private var dismiss
     @State private var showExportSheet = false
     @State private var showDeleteSheet = false
     @State private var showResetSheet = false
     @State private var toast: String? = nil
 
     var body: some View {
-        List {
-            Section {
-                NavigationLink {
-                    AuditCardPage()
-                } label: {
-                    PrivacyHeroRow()
-                }
-                .listRowInsets(EdgeInsets(top: Spacing.sm, leading: Spacing.md,
-                                          bottom: Spacing.sm, trailing: Spacing.md))
-            }
-            Section("Your data") {
-                Button {
-                    showExportSheet = true
-                } label: {
-                    Label("Export my data", systemImage: "square.and.arrow.up")
-                        .foregroundStyle(Color.feedlingInk)
-                }
-                Button {
-                    showDeleteSheet = true
-                } label: {
-                    Label("Delete my data", systemImage: "trash")
-                        .foregroundStyle(.red)
-                }
-                Button {
-                    showResetSheet = true
-                } label: {
-                    Label("Reset & re-import (advanced)",
-                          systemImage: "arrow.triangle.2.circlepath")
-                        .foregroundStyle(Color.feedlingInk)
-                }
-            }
-            Section("Where your data lives") {
-                NavigationLink {
-                    StorageBackendView()
-                } label: {
-                    Label("Backend: \(api.storageMode == .cloud ? "Feedling Cloud" : "Self-hosted")",
-                          systemImage: "server.rack")
-                }
-                NavigationLink {
-                    RunbookView()
-                } label: {
-                    Label("Help me run my own server", systemImage: "doc.text.magnifyingglass")
-                }
-            }
-            Section("Advanced") {
-                NavigationLink {
-                    AuditCardPage()
-                } label: {
-                    Label("Re-run privacy audit", systemImage: "checkmark.shield")
-                }
-                Button {
-                    FeedlingAPI.shared.hasCompletedOnboardingV1 = false
-                    toast = "Intro will show on next launch"
-                } label: {
-                    Label("Show the intro again", systemImage: "sparkles")
-                        .foregroundStyle(Color.feedlingInk)
+        ZStack {
+            Color.cinBg.ignoresSafeArea()
+            ScrollView {
+                VStack(spacing: 0) {
+                    privacyHeader
+                    Rectangle().fill(Color.cinFg).frame(height: 1)
+                    privacySection("AUDIT") {
+                        NavigationLink {
+                            AuditCardPage()
+                        } label: {
+                            HStack(alignment: .top) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(api.enclaveComposeHash != nil
+                                         ? "Everything you've written is encrypted"
+                                         : "Privacy audit not yet run")
+                                        .font(.notoSerifSC(size: 13.5))
+                                        .foregroundStyle(Color.cinFg)
+                                    if let h = api.enclaveComposeHash {
+                                        Text("Compose \(h.prefix(8))…")
+                                            .font(.dmMono(size: 8.5))
+                                            .foregroundStyle(Color.cinSub)
+                                    }
+                                }
+                                Spacer()
+                                Text("OPEN ↗")
+                                    .font(.dmMono(size: 9.5, weight: .medium))
+                                    .foregroundStyle(Color.cinAccent1)
+                                    .kerning(2)
+                            }
+                            .padding(.vertical, 14)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 24)
+                        .overlay(alignment: .top) {
+                            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
+                        }
+                    }
+                    privacySection("YOUR DATA") {
+                        privacyActionRow("EXPORT MY DATA ↗", color: .cinFg) { showExportSheet = true }
+                        privacyActionRow("DELETE MY DATA ↗", color: .cinAccent2) { showDeleteSheet = true }
+                        privacyActionRow("RESET & RE-IMPORT ↗", color: .cinSub) { showResetSheet = true }
+                    }
+                    privacySection("WHERE YOUR DATA LIVES") {
+                        NavigationLink {
+                            StorageBackendView()
+                        } label: {
+                            privacyLinkRow("Backend: \(api.storageMode == .cloud ? "Feedling Cloud" : "Self-hosted")")
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 24)
+                        .overlay(alignment: .top) {
+                            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
+                        }
+
+                        NavigationLink {
+                            RunbookView()
+                        } label: {
+                            privacyLinkRow("Self-hosting runbook")
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 24)
+                        .overlay(alignment: .top) {
+                            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
+                        }
+                    }
+                    privacySection("ADVANCED") {
+                        NavigationLink {
+                            AuditCardPage()
+                        } label: {
+                            privacyLinkRow("Re-run privacy audit")
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 24)
+                        .overlay(alignment: .top) {
+                            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
+                        }
+
+                        privacyActionRow("SHOW INTRO AGAIN ↗", color: .cinSub) {
+                            FeedlingAPI.shared.hasCompletedOnboardingV1 = false
+                            showToast("Intro will show on next launch")
+                        }
+                    }
+                    Spacer(minLength: 40)
                 }
             }
         }
-        .navigationTitle("Privacy")
-        .navigationBarTitleDisplayMode(.large)
+        .navigationBarHidden(true)
         .sheet(isPresented: $showExportSheet) { ExportSheet() }
         .sheet(isPresented: $showDeleteSheet) { DeleteSheet() }
         .sheet(isPresented: $showResetSheet) { ResetAndReimportSheet() }
         .overlay(alignment: .bottom) {
             if let msg = toast {
-                Text(msg).feedlingCaption()
-                    .padding(.horizontal, Spacing.md).padding(.vertical, Spacing.sm)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .padding(.bottom, Spacing.xl)
+                Text(msg)
+                    .font(.dmMono(size: 9))
+                    .kerning(1.5)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Color.cinFg)
+                    .foregroundStyle(Color.cinBg)
+                    .padding(.bottom, 24)
                     .transition(.opacity)
             }
         }
-        .onChange(of: toast) { newValue in
-            if newValue != nil {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                    withAnimation { toast = nil }
-                }
-            }
-        }
     }
-}
 
-private struct PrivacyHeroRow: View {
-    @ObservedObject private var api = FeedlingAPI.shared
-    @State private var lastVerifiedAt: Date? = nil
-
-    var body: some View {
-        HStack(spacing: Spacing.md) {
-            Image(systemName: heroIcon)
-                .font(.system(size: 28))
-                .foregroundStyle(heroColor)
-                .frame(width: 40)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(heroTitle)
-                    .font(.headline)
-                    .foregroundStyle(Color.feedlingInk)
-                Text(heroSubtitle)
-                    .font(.footnote)
-                    .foregroundStyle(Color.feedlingInkMuted)
+    private var privacyHeader: some View {
+        HStack(alignment: .lastTextBaseline) {
+            Button(action: { dismiss() }) {
+                Text("← settings")
+                    .font(.dmMono(size: 9.5))
+                    .foregroundStyle(Color.cinFg)
+                    .kerning(2)
             }
+            .buttonStyle(.plain)
             Spacer()
+            Text("PRIVACY & AUDIT")
+                .font(.dmMono(size: 9))
+                .foregroundStyle(Color.cinSub)
+                .kerning(2)
         }
-        .padding(.vertical, Spacing.sm)
-        .contentShape(Rectangle())
+        .padding(.horizontal, 24)
+        .padding(.top, 16)
+        .padding(.bottom, 12)
     }
 
-    private var heroIcon: String {
-        api.enclaveComposeHash != nil ? "checkmark.shield.fill" : "shield"
-    }
-    private var heroColor: Color {
-        api.enclaveComposeHash != nil ? Color.feedlingSage : Color.feedlingInkMuted
-    }
-    private var heroTitle: String {
-        if api.enclaveComposeHash == nil { return "Privacy audit not yet run" }
-        return "Everything you've written is encrypted"
-    }
-    private var heroSubtitle: String {
-        if let h = api.enclaveComposeHash {
-            return "Compose \(h.prefix(8))… · tap for full audit"
+    @ViewBuilder
+    private func privacySection<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .lastTextBaseline, spacing: 10) {
+                Text(label)
+                    .font(.dmMono(size: 9.5, weight: .medium))
+                    .foregroundStyle(Color.cinAccent1)
+                    .kerning(3)
+                Rectangle().fill(Color.cinFg.opacity(0.18)).frame(height: 0.5)
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 18)
+            .padding(.bottom, 8)
+            content()
         }
-        return "Tap to run the audit"
+    }
+
+    private func privacyLinkRow(_ title: String) -> some View {
+        HStack {
+            Text(title)
+                .font(.notoSerifSC(size: 13.5))
+                .foregroundStyle(Color.cinFg)
+            Spacer()
+            Text("OPEN ↗")
+                .font(.dmMono(size: 9.5, weight: .medium))
+                .foregroundStyle(Color.cinAccent1)
+                .kerning(2)
+        }
+        .padding(.vertical, 12)
+    }
+
+    @ViewBuilder
+    private func privacyActionRow(_ label: String, color: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.dmMono(size: 9.5, weight: .medium))
+                .foregroundStyle(color)
+                .kerning(2)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.vertical, 12)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 24)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
+        }
+    }
+
+    private func showToast(_ message: String) {
+        withAnimation { toast = message }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            withAnimation { toast = nil }
+        }
     }
 }
 

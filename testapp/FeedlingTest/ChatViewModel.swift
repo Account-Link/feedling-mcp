@@ -50,9 +50,23 @@ class ChatViewModel: ObservableObject {
         return msgs.map { $0.decryptedIfNeeded(withUserSK: sk) }
     }
 
+    // Walk a sorted message list and stamp isProactive on agent messages
+    // that arrived without a preceding user turn (pure unsolicited messages).
+    private func stampProactive(_ msgs: [ChatMessage]) -> [ChatMessage] {
+        var result = msgs
+        var lastWasAgent = true  // treat thread start as "no user yet"
+        for i in result.indices {
+            if result[i].isFromAgent {
+                result[i].isProactive = lastWasAgent
+                lastWasAgent = true
+            } else {
+                lastWasAgent = false
+            }
+        }
+        return result
+    }
+
     func loadHistory() async {
-        // Pull a larger initial window so user messages are not drowned by
-        // assistant-only bursts (e.g. replayed auto-replies).
         guard let req = FeedlingAPI.shared.authorizedRequest(
             path: "/v1/chat/history",
             queryItems: [URLQueryItem(name: "since", value: "0"), URLQueryItem(name: "limit", value: "200")]
@@ -60,7 +74,7 @@ class ChatViewModel: ObservableObject {
         do {
             let (data, _) = try await URLSession.shared.data(for: req)
             let resp = try JSONDecoder().decode(ChatHistoryResponse.self, from: data)
-            messages = decryptBatch(resp.messages)
+            messages = stampProactive(decryptBatch(resp.messages))
             latestTs = messages.last?.ts ?? 0
             let roleCounts = Dictionary(grouping: messages, by: { $0.role }).mapValues { $0.count }
             print("[chat] loadHistory count=\(messages.count) roles=\(roleCounts)")
@@ -78,23 +92,33 @@ class ChatViewModel: ObservableObject {
             let (data, _) = try await URLSession.shared.data(for: req)
             let rawResp = try JSONDecoder().decode(ChatHistoryResponse.self, from: data)
             let resp = ChatHistoryResponse(messages: decryptBatch(rawResp.messages), total: rawResp.total)
-            // Only process OpenClaw messages via polling.
-            // User messages are inserted optimistically — ignoring server echoes prevents duplicates.
-            let newFromOpenClaw = resp.messages.filter { m in
-                m.ts > latestTs && (m.role == "openclaw" || m.role == "assistant")
+            let newFromAgent = resp.messages.filter { m in
+                m.ts > latestTs && m.isFromAgent
             }
-            guard !newFromOpenClaw.isEmpty else { return }
+            guard !newFromAgent.isEmpty else { return }
             let existingIds = Set(messages.map { $0.id })
-            let toAppend = newFromOpenClaw.filter { !existingIds.contains($0.id) }
+            let toAppend = newFromAgent.filter { !existingIds.contains($0.id) }
             if !toAppend.isEmpty {
-                messages.append(contentsOf: toAppend)
-                latestTs = newFromOpenClaw.last!.ts
+                // Re-stamp the full thread so newly appended messages get correct isProactive
+                let combined = stampProactive(messages + toAppend)
+                messages = combined
+                latestTs = newFromAgent.last!.ts
                 isWaitingForReply = false
                 waitingTimeoutTask?.cancel()
             }
         } catch {
             print("[chat] fetchNew error: \(error)")
         }
+    }
+
+    // MARK: - Quote a memory card in chat
+
+    /// Formats a memory card as a quoted reference and pre-fills the input
+    /// field so the user can send it (with or without additional text).
+    func quoteInChat(moment: MemoryMoment) {
+        let header = "[\(moment.type.uppercased())] \(moment.title)"
+        let body = moment.description.isEmpty ? "" : "\n\(moment.description)"
+        inputText = header + body
     }
 
     // MARK: - Send

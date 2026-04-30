@@ -373,6 +373,21 @@ final class FeedlingAPI: ObservableObject {
         }
     }
 
+    func deleteMemory(id: String) async throws {
+        guard var req = authorizedRequest(path: "/v1/memory/delete",
+                                          queryItems: [URLQueryItem(name: "id", value: id)]) else {
+            throw NSError(domain: "DeleteMemory", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "could not build request"])
+        }
+        req.httpMethod = "DELETE"
+        let (_, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            throw NSError(domain: "DeleteMemory",
+                          code: (resp as? HTTPURLResponse)?.statusCode ?? 0,
+                          userInfo: [NSLocalizedDescriptionKey: "HTTP failure"])
+        }
+    }
+
     // MARK: - Phase B: export + delete
 
     struct ExportResult {
@@ -822,21 +837,15 @@ final class AttestationTrustShim: NSObject, URLSessionDelegate {
 
 
 // ============================================================================
-// Design tokens — inlined from the planned Design.swift.
-//
-// Xcode's project.pbxproj needs four coordinated entries to pick up a new
-// Swift file; editing that from the filesystem is risky. These tokens live
-// here instead so they compile reliably. When DESIGN.md / these tokens
-// change, update both the design doc and this block in the same commit.
-//
-// Source of truth for semantics: DESIGN.md at the repo root.
+// Cinnabar design tokens — Feedling visual identity.
+// Source of truth: DESIGN.md at the repo root.
+// All UI files must import these tokens; no raw hex / raw font strings.
 // ============================================================================
 
 // MARK: - Color palette
 
 extension Color {
 
-    /// Create a Color from a hex literal like "#5E7F6E".
     init(hex: String) {
         let s = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
         var v: UInt64 = 0
@@ -847,71 +856,57 @@ extension Color {
         self.init(.sRGB, red: r, green: g, blue: b, opacity: 1)
     }
 
-    /// Pair a light-mode and dark-mode Color; resolves per trait.
-    static func feedlingAdaptive(light: Color, dark: Color) -> Color {
-        Color(uiColor: UIColor { traits in
-            traits.userInterfaceStyle == .dark ? UIColor(dark) : UIColor(light)
-        })
-    }
-
-    /// Primary accent — muted sage-green. NOT iOS system blue.
-    static let feedlingSage = feedlingAdaptive(
-        light: Color(hex: "#5E7F6E"),
-        dark: Color(hex: "#8FAD9D"))
-
-    static let feedlingPaper = feedlingAdaptive(
-        light: Color(hex: "#FBFAF7"),
-        dark: Color(hex: "#0F0D0A"))
-
-    static let feedlingSurface = feedlingAdaptive(
-        light: Color(hex: "#FFFFFF"),
-        dark: Color(hex: "#1A1814"))
-
-    static let feedlingInk = feedlingAdaptive(
-        light: Color(hex: "#1A1814"),
-        dark: Color(hex: "#F2EEE6"))
-
-    static let feedlingInkMuted = feedlingAdaptive(
-        light: Color(hex: "#6B6762"),
-        dark: Color(hex: "#A69F92"))
-
-    static let feedlingDivider = feedlingAdaptive(
-        light: Color(hex: "#E9E6DF"),
-        dark: Color(hex: "#2A2721"))
+    // Background — warm parchment
+    static let cinBg          = Color(hex: "#f3eee2")
+    // Primary ink — warm near-black
+    static let cinFg          = Color(hex: "#1a1814")
+    // Subdued text — warm mid-grey
+    static let cinSub         = Color(hex: "#7a7065")
+    // Hairline rules
+    static let cinLine        = Color(hex: "#d6cfc0")
+    // Accent 1 — 朱砂 cinnabar (agent messages, highlights)
+    static let cinAccent1     = Color(hex: "#b8442e")
+    // Accent 1 soft — warm tint for agent bubble fill
+    static let cinAccent1Soft = Color(hex: "#f0e8df")
+    // Accent 2 — 群青 indigo (user messages)
+    static let cinAccent2     = Color(hex: "#2c4a6b")
+    // Accent 2 soft — cool tint (reserved for user-side elements)
+    static let cinAccent2Soft = Color(hex: "#dce4ee")
 }
 
 // MARK: - Typography
 
 extension Font {
-    static let feedlingDisplayLarge  = Font.system(size: 34, weight: .regular, design: .serif)
-    static let feedlingDisplayMedium = Font.system(size: 28, weight: .regular, design: .serif)
-    static let feedlingDisplaySmall  = Font.system(size: 22, weight: .regular, design: .serif)
-
-    static func feedlingMono(size: CGFloat = 13) -> Font {
-        .system(size: size, weight: .regular, design: .monospaced)
+    static func newsreader(size: CGFloat, italic: Bool = false) -> Font {
+        if italic {
+            return Font.custom("Newsreader-Italic-VariableFont_opsz,wght", size: size)
+        }
+        return Font.custom("Newsreader-VariableFont_opsz,wght", size: size)
     }
-}
 
-enum FeedlingDisplaySize { case large, medium, small }
+    static func notoSerifSC(size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        switch weight {
+        case .medium: return Font.custom("NotoSerifSC-Medium", size: size)
+        default:      return Font.custom("NotoSerifSC-Regular", size: size)
+        }
+    }
 
-extension View {
-    func feedlingBody() -> some View {
-        self.font(.body).foregroundStyle(Color.feedlingInk)
+    static func dmMono(size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        switch weight {
+        case .medium: return Font.custom("DMMono-Medium", size: size)
+        default:      return Font.custom("DMMono-Regular", size: size)
+        }
     }
-    func feedlingCaption() -> some View {
-        self.font(.footnote).foregroundStyle(Color.feedlingInkMuted)
-    }
-    @ViewBuilder
-    func feedlingDisplay(_ size: FeedlingDisplaySize = .medium) -> some View {
-        switch size {
-        case .large:  self.font(.feedlingDisplayLarge).foregroundStyle(Color.feedlingInk)
-        case .medium: self.font(.feedlingDisplayMedium).foregroundStyle(Color.feedlingInk)
-        case .small:  self.font(.feedlingDisplaySmall).foregroundStyle(Color.feedlingInk)
+
+    static func interTight(size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        switch weight {
+        case .medium: return Font.custom("InterTight-Medium", size: size)
+        default:      return Font.custom("InterTight-Regular", size: size)
         }
     }
 }
 
-// MARK: - Spacing + Radius
+// MARK: - Spacing
 
 enum Spacing {
     static let xs:  CGFloat = 4
@@ -923,11 +918,35 @@ enum Spacing {
     static let xl3: CGFloat = 64
 }
 
-enum Radius {
-    static let sm:   CGFloat = 6
-    static let md:   CGFloat = 12
-    static let lg:   CGFloat = 16
-    static let full: CGFloat = 9999
+// MARK: - Button styles
+
+struct CinPrimaryButtonStyle: ButtonStyle {
+    var destructive: Bool = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.dmMono(size: 10, weight: .medium))
+            .kerning(2.5)
+            .textCase(.uppercase)
+            .foregroundStyle(Color.cinBg)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .background((destructive ? Color.cinAccent2 : Color.cinFg).opacity(configuration.isPressed ? 0.75 : 1))
+            .contentShape(Rectangle())
+    }
+}
+
+struct CinSecondaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.dmMono(size: 10))
+            .kerning(2.5)
+            .textCase(.uppercase)
+            .foregroundStyle(Color.cinFg)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .overlay(Rectangle().stroke(Color.cinFg, lineWidth: 1))
+            .opacity(configuration.isPressed ? 0.6 : 1)
+            .contentShape(Rectangle())
+    }
 }
 
 // MARK: - Motion
@@ -943,32 +962,40 @@ enum FeedlingMotion {
     static let exit:   Animation = .easeIn(duration: 0.25)
 }
 
-// MARK: - Primary button style
+// MARK: - Legacy token aliases (used by utility screens — do not use in new code)
 
-struct FeedlingPrimaryButtonStyle: ButtonStyle {
-    var destructive: Bool = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.headline)
-            .foregroundStyle(Color.white)
-            .frame(maxWidth: .infinity, minHeight: 48)
-            .background(
-                RoundedRectangle(cornerRadius: Radius.md)
-                    .fill(destructive ? Color.red : Color.feedlingSage)
-                    .opacity(configuration.isPressed ? 0.8 : 1)
-            )
-            .contentShape(Rectangle())
-    }
+extension Color {
+    static var feedlingSage:    Color { .cinAccent1 }
+    static var feedlingPaper:   Color { .cinBg }
+    static var feedlingSurface: Color { .cinBg }
+    static var feedlingInk:     Color { .cinFg }
+    static var feedlingInkMuted:Color { .cinSub }
+    static var feedlingDivider: Color { .cinLine }
 }
 
-struct FeedlingSecondaryButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.callout)
-            .foregroundStyle(Color.feedlingInkMuted)
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .opacity(configuration.isPressed ? 0.6 : 1)
-            .contentShape(Rectangle())
+extension Font {
+    static func feedlingMono(size: CGFloat = 13) -> Font { .dmMono(size: size) }
+}
+
+typealias FeedlingPrimaryButtonStyle   = CinPrimaryButtonStyle
+typealias FeedlingSecondaryButtonStyle = CinSecondaryButtonStyle
+
+// View modifiers used by onboarding + utility screens
+enum FeedlingDisplaySize { case large, medium, small }
+
+extension View {
+    func feedlingBody() -> some View {
+        self.font(.notoSerifSC(size: 14)).foregroundStyle(Color.cinFg)
+    }
+    func feedlingCaption() -> some View {
+        self.font(.interTight(size: 11)).foregroundStyle(Color.cinSub)
+    }
+    @ViewBuilder
+    func feedlingDisplay(_ size: FeedlingDisplaySize = .medium) -> some View {
+        switch size {
+        case .large:  self.font(.newsreader(size: 34)).foregroundStyle(Color.cinFg)
+        case .medium: self.font(.newsreader(size: 28)).foregroundStyle(Color.cinFg)
+        case .small:  self.font(.newsreader(size: 22)).foregroundStyle(Color.cinFg)
+        }
     }
 }

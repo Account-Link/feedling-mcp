@@ -2,23 +2,45 @@ import SwiftUI
 
 struct ChatView: View {
     @EnvironmentObject var vm: ChatViewModel
+    @EnvironmentObject var identityVM: IdentityViewModel
+
+    var agentName: String { identityVM.identity?.agentName.isEmpty == false ? identityVM.identity!.agentName : "—" }
+    var dayCount: Int { identityVM.identity?.daysWithUser ?? 0 }
 
     var body: some View {
-        NavigationStack {
-            ZStack(alignment: .bottom) {
-                Color.black.ignoresSafeArea()
-                VStack(spacing: 0) {
-                    messageList
-                    inputBar
-                }
+        ZStack(alignment: .bottom) {
+            Color.cinBg.ignoresSafeArea()
+            VStack(spacing: 0) {
+                header
+                Divider().overlay(Color.cinFg)
+                messageList
             }
-            .navigationTitle("OpenClaw")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(Color(white: 0.07), for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
-            .toolbarColorScheme(.dark, for: .navigationBar)
+            inputBar
         }
         .onAppear { vm.startPolling() }
+    }
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack(alignment: .bottom) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(agentName)
+                    .font(.newsreader(size: 22))
+                    .foregroundStyle(Color.cinAccent1)
+                Text("HERE · DAY \(dayCount)")
+                    .font(.dmMono(size: 9))
+                    .foregroundStyle(Color.cinSub)
+                    .kerning(1.8)
+            }
+            Spacer()
+            Text("···")
+                .font(.dmMono(size: 12))
+                .foregroundStyle(Color.cinSub)
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
     }
 
     // MARK: - Message list
@@ -26,172 +48,208 @@ struct ChatView: View {
     private var messageList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 10) {
-                    ForEach(vm.messages) { msg in
-                        MessageBubble(message: msg)
-                            .id(msg.id)
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(vm.messages.enumerated()), id: \.element.id) { idx, msg in
+                        Group {
+                            if msg.isFromAgent && msg.isProactive {
+                                ProactiveDivider(date: msg.date)
+                            }
+                            CinMessageBubble(message: msg, agentName: agentName)
+                                .id(msg.id)
+                        }
                     }
                     if vm.isWaitingForReply {
-                        TypingIndicator()
+                        CinTypingIndicator(agentName: agentName)
                             .id("__typing__")
                     }
+                    Color.clear.frame(height: 88)  // clearance for input bar
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
+                .padding(.horizontal, 18)
+                .padding(.top, 18)
             }
-            .background(Color.black)
+            .background(Color.cinBg)
             .scrollDismissesKeyboard(.interactively)
             .onTapGesture { dismissKeyboard() }
-            .onChange(of: vm.messages.count) { _ in
-                scrollToBottom(proxy)
-            }
+            .onChange(of: vm.messages.count) { _ in scrollToBottom(proxy) }
             .onChange(of: vm.isWaitingForReply) { _ in
                 if vm.isWaitingForReply { scrollToBottom(proxy) }
             }
-            .onAppear {
-                scrollToBottom(proxy, animated: false)
-            }
+            .onAppear { scrollToBottom(proxy, animated: false) }
         }
     }
 
     // MARK: - Input bar
 
     private var inputBar: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            TextField("给 OpenClaw 发消息…", text: $vm.inputText, axis: .vertical)
-                .lineLimit(1...5)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(Color(white: 0.14))
-                .foregroundStyle(.white)
-                .tint(.cyan)
-                .clipShape(RoundedRectangle(cornerRadius: 22))
-                .submitLabel(.send)
-                .onSubmit {
-                    Task { await vm.sendMessage() }
-                }
+        VStack(spacing: 0) {
+            Rectangle().fill(Color.cinLine).frame(height: 1)
+            HStack(alignment: .bottom, spacing: 10) {
+                TextField("", text: $vm.inputText, axis: .vertical)
+                    .lineLimit(1...5)
+                    .font(.notoSerifSC(size: 13))
+                    .foregroundStyle(Color.cinFg)
+                    .tint(Color.cinAccent1)
+                    .placeholder(when: vm.inputText.isEmpty) {
+                        Text("给 \(agentName) 写点什么…")
+                            .font(.notoSerifSC(size: 13, weight: .regular))
+                            .italic()
+                            .foregroundStyle(Color.cinSub)
+                    }
+                    .submitLabel(.send)
+                    .onSubmit { Task { await vm.sendMessage() } }
+                    .frame(maxWidth: .infinity)
 
-            Button {
-                Task { await vm.sendMessage() }
-            } label: {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 34))
-                    .foregroundStyle(vm.inputText.trimmingCharacters(in: .whitespaces).isEmpty
-                                     ? Color(white: 0.3) : .cyan)
+                Button {
+                    Task { await vm.sendMessage() }
+                } label: {
+                    Text("SEND")
+                        .font(.dmMono(size: 9, weight: .medium))
+                        .kerning(2.5)
+                        .foregroundStyle(Color.cinBg)
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 6)
+                        .background(
+                            vm.inputText.trimmingCharacters(in: .whitespaces).isEmpty
+                                ? Color.cinSub : Color.cinAccent1
+                        )
+                }
+                .disabled(vm.inputText.trimmingCharacters(in: .whitespaces).isEmpty || vm.isSending)
             }
-            .disabled(vm.inputText.trimmingCharacters(in: .whitespaces).isEmpty || vm.isSending)
+            .padding(.horizontal, 16)
+            .padding(.top, 11)
+            .padding(.bottom, 28)
+            .background(Color(hex: "#fbf7ec"))
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
-        .padding(.bottom, 20)
-        .background(Color(white: 0.07))
     }
 
     private func dismissKeyboard() {
-        UIApplication.shared.sendAction(
-            #selector(UIResponder.resignFirstResponder),
-            to: nil, from: nil, for: nil
-        )
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
-        let anchor: UnitPoint = .bottom
-        if vm.isWaitingForReply {
-            if animated {
-                withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo("__typing__", anchor: anchor) }
-            } else {
-                proxy.scrollTo("__typing__", anchor: anchor)
-            }
-        } else if let last = vm.messages.last {
-            if animated {
-                withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(last.id, anchor: anchor) }
-            } else {
-                proxy.scrollTo(last.id, anchor: anchor)
-            }
+        let target = vm.isWaitingForReply ? "__typing__" : vm.messages.last?.id
+        guard let target else { return }
+        if animated {
+            withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(target, anchor: .bottom) }
+        } else {
+            proxy.scrollTo(target, anchor: .bottom)
         }
     }
 }
 
-// MARK: - MessageBubble
+// MARK: - Proactive divider
 
-struct MessageBubble: View {
-    let message: ChatMessage
+private struct ProactiveDivider: View {
+    let date: Date
+
+    private var timeString: String {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "HH:mm"
+        return fmt.string(from: date)
+    }
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 0) {
-            if message.isFromOpenClaw {
-                bubbleContent
-                Spacer(minLength: 56)
-            } else {
-                Spacer(minLength: 56)
-                bubbleContent
-            }
+        HStack(spacing: 8) {
+            Rectangle().fill(Color.cinLine).frame(height: 0.5)
+            Text("SHE REACHED OUT · \(timeString)")
+                .font(.dmMono(size: 8.5))
+                .foregroundStyle(Color.cinSub)
+                .kerning(2)
+                .fixedSize()
+            Rectangle().fill(Color.cinLine).frame(height: 0.5)
         }
-    }
-
-    private var bubbleContent: some View {
-        VStack(alignment: message.isFromOpenClaw ? .leading : .trailing, spacing: 4) {
-
-            // Sender label (OpenClaw only)
-            if message.isFromOpenClaw {
-                HStack(spacing: 4) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.cyan)
-                    Text("OpenClaw")
-                        .font(.caption2.bold())
-                        .foregroundStyle(.cyan)
-                    if message.isFromLiveActivity {
-                        Text("· Dynamic Island")
-                            .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.35))
-                    }
-                }
-                .padding(.leading, 4)
-            }
-
-            // Bubble
-            Text(message.content)
-                .font(.system(size: 15))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(message.isFromOpenClaw
-                             ? Color(white: 0.16)
-                             : Color.cyan.opacity(0.9))
-                .clipShape(RoundedRectangle(cornerRadius: 18))
-
-            // Timestamp
-            Text(message.date, style: .time)
-                .font(.system(size: 10))
-                .foregroundStyle(.white.opacity(0.25))
-                .padding(.horizontal, 4)
-        }
+        .padding(.vertical, 14)
     }
 }
 
-// MARK: - TypingIndicator
+// MARK: - Message bubble
 
-struct TypingIndicator: View {
+struct CinMessageBubble: View {
+    let message: ChatMessage
+    let agentName: String
+
+    var body: some View {
+        if message.isFromAgent {
+            agentBubble
+        } else {
+            userBubble
+        }
+    }
+
+    private var agentBubble: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 0) {
+                Text(agentName.uppercased())
+                    .font(.dmMono(size: 8.5))
+                    .foregroundStyle(Color.cinAccent1)
+                    .kerning(2.5)
+                Spacer()
+            }
+            .padding(.bottom, 5)
+            .padding(.leading, 2)
+
+            Text(message.content)
+                .font(.notoSerifSC(size: 13.5))
+                .foregroundStyle(Color.cinFg)
+                .lineSpacing(4)
+                .padding(.horizontal, 15)
+                .padding(.vertical, 12)
+                .frame(maxWidth: UIScreen.main.bounds.width * 0.82, alignment: .leading)
+                .background(Color.cinAccent1Soft)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.bottom, 14)
+    }
+
+    private var userBubble: some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: UIScreen.main.bounds.width * 0.22)
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(message.content)
+                    .font(.notoSerifSC(size: 13.5))
+                    .foregroundStyle(Color.cinBg)
+                    .lineSpacing(4)
+                    .padding(.horizontal, 15)
+                    .padding(.vertical, 12)
+                    .background(Color.cinAccent2)
+                Text(message.date, style: .time)
+                    .font(.dmMono(size: 8))
+                    .foregroundStyle(Color.cinSub)
+                    .kerning(1.5)
+                    .padding(.trailing, 2)
+            }
+        }
+        .padding(.bottom, 14)
+    }
+}
+
+// MARK: - Typing indicator
+
+struct CinTypingIndicator: View {
+    let agentName: String
     @State private var phase: Int = 0
     @State private var tickerTask: Task<Void, Never>?
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 0) {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(agentName.uppercased())
+                .font(.dmMono(size: 8.5))
+                .foregroundStyle(Color.cinAccent1)
+                .kerning(2.5)
+                .padding(.leading, 2)
             HStack(spacing: 5) {
-                ForEach(0..<3) { i in
+                ForEach(0..<3, id: \.self) { i in
                     Circle()
-                        .fill(Color.white.opacity(phase == i ? 0.8 : 0.25))
-                        .frame(width: 7, height: 7)
+                        .fill(phase == i ? Color.cinAccent1 : Color.cinLine)
+                        .frame(width: 6, height: 6)
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 13)
-            .background(Color(white: 0.16))
-            .clipShape(RoundedRectangle(cornerRadius: 18))
-            Spacer(minLength: 56)
+            .padding(.horizontal, 15)
+            .padding(.vertical, 12)
+            .background(Color.cinAccent1Soft)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.bottom, 14)
         .onAppear {
             tickerTask?.cancel()
             tickerTask = Task {
@@ -202,9 +260,18 @@ struct TypingIndicator: View {
                 }
             }
         }
-        .onDisappear {
-            tickerTask?.cancel()
-            tickerTask = nil
+        .onDisappear { tickerTask?.cancel(); tickerTask = nil }
+    }
+}
+
+// MARK: - Placeholder helper
+
+extension View {
+    @ViewBuilder
+    func placeholder<Content: View>(when show: Bool, @ViewBuilder placeholder: () -> Content) -> some View {
+        ZStack(alignment: .leading) {
+            if show { placeholder() }
+            self
         }
     }
 }
