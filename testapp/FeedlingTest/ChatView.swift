@@ -1,8 +1,14 @@
+import AVFoundation
+import Speech
 import SwiftUI
 
 struct ChatView: View {
     @EnvironmentObject var vm: ChatViewModel
     @EnvironmentObject var identityVM: IdentityViewModel
+    @StateObject private var voice = VoiceInputManager()
+
+    @State private var voicePrefix: String = ""
+    @State private var micPulse: Bool = false
 
     var agentName: String { identityVM.identity?.agentName.isEmpty == false ? identityVM.identity!.agentName : "—" }
     var dayCount: Int { identityVM.identity?.daysWithUser ?? 0 }
@@ -18,6 +24,20 @@ struct ChatView: View {
             inputBar
         }
         .onAppear { vm.startPolling() }
+        .onDisappear { voice.stop() }
+        .onChange(of: voice.liveTranscript) { text in
+            guard !text.isEmpty else { return }
+            vm.inputText = voicePrefix + text
+        }
+        .onChange(of: voice.isRecording) { recording in
+            if recording {
+                withAnimation(.easeInOut(duration: 0.65).repeatForever(autoreverses: true)) {
+                    micPulse = true
+                }
+            } else {
+                withAnimation(.default) { micPulse = false }
+            }
+        }
     }
 
     // MARK: - Header
@@ -83,14 +103,35 @@ struct ChatView: View {
     private var inputBar: some View {
         VStack(spacing: 0) {
             Rectangle().fill(Color.cinLine).frame(height: 1)
-            HStack(alignment: .bottom, spacing: 10) {
+            HStack(alignment: .bottom, spacing: 0) {
+                // Mic button
+                Button {
+                    if voice.isRecording {
+                        voice.stop()
+                    } else {
+                        voicePrefix = vm.inputText.isEmpty ? "" : vm.inputText + " "
+                        dismissKeyboard()
+                        voice.start()
+                    }
+                } label: {
+                    Image(systemName: voice.isRecording ? "mic.fill" : "mic")
+                        .font(.system(size: 15, weight: voice.isRecording ? .medium : .light))
+                        .foregroundStyle(voice.isRecording ? Color.cinAccent1 : Color.cinSub)
+                        .opacity(voice.isRecording && micPulse ? 0.35 : 1.0)
+                        .frame(width: 36, height: 36)
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, 4)
+
+                Rectangle().fill(Color.cinLine).frame(width: 1, height: 18).padding(.horizontal, 8)
+
                 TextField("", text: $vm.inputText, axis: .vertical)
                     .lineLimit(1...5)
                     .font(.notoSerifSC(size: 13))
                     .foregroundStyle(Color.cinFg)
                     .tint(Color.cinAccent1)
                     .placeholder(when: vm.inputText.isEmpty) {
-                        Text("给 \(agentName) 写点什么…")
+                        Text(voice.isRecording ? "正在听…" : "给 \(agentName) 写点什么…")
                             .font(.notoSerifSC(size: 13, weight: .regular))
                             .italic()
                             .foregroundStyle(Color.cinSub)
@@ -114,6 +155,7 @@ struct ChatView: View {
                         )
                 }
                 .disabled(vm.inputText.trimmingCharacters(in: .whitespaces).isEmpty || vm.isSending)
+                .padding(.leading, 10)
             }
             .padding(.horizontal, 16)
             .padding(.top, 11)
@@ -273,5 +315,84 @@ extension View {
             if show { placeholder() }
             self
         }
+    }
+}
+
+// MARK: - Voice Input Manager
+
+final class VoiceInputManager: ObservableObject {
+    @Published var isRecording = false
+    @Published var liveTranscript = ""
+
+    private let recognizer: SFSpeechRecognizer? =
+        SFSpeechRecognizer(locale: Locale(identifier: "zh-CN")) ?? SFSpeechRecognizer()
+    private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var task: SFSpeechRecognitionTask?
+    private let engine = AVAudioEngine()
+
+    func start() {
+        SFSpeechRecognizer.requestAuthorization { [weak self] status in
+            guard status == .authorized else { return }
+            AVAudioSession.sharedInstance().requestRecordPermission { granted in
+                guard granted else { return }
+                DispatchQueue.main.async { self?.beginSession() }
+            }
+        }
+    }
+
+    private func beginSession() {
+        task?.cancel(); task = nil
+        liveTranscript = ""
+
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.record, mode: .measurement, options: .duckOthers)
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
+        } catch { return }
+
+        request = SFSpeechAudioBufferRecognitionRequest()
+        request?.shouldReportPartialResults = true
+        guard let request, let recognizer else { return }
+
+        task = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            if let result {
+                DispatchQueue.main.async {
+                    self?.liveTranscript = result.bestTranscription.formattedString
+                }
+            }
+            if error != nil || result?.isFinal == true {
+                DispatchQueue.main.async { self?.stop() }
+            }
+        }
+
+        let node = engine.inputNode
+        node.installTap(onBus: 0, bufferSize: 1024, format: node.outputFormat(forBus: 0)) { [weak self] buf, _ in
+            self?.request?.append(buf)
+        }
+
+        engine.prepare()
+        do {
+            try engine.start()
+            DispatchQueue.main.async { self.isRecording = true }
+        } catch {
+            cleanUp()
+        }
+    }
+
+    func stop() {
+        engine.stop()
+        if engine.inputNode.numberOfInputs > 0 {
+            engine.inputNode.removeTap(onBus: 0)
+        }
+        request?.endAudio()
+        request = nil
+        task?.cancel(); task = nil
+        isRecording = false
+        liveTranscript = ""
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    private func cleanUp() {
+        request = nil; task = nil; isRecording = false; liveTranscript = ""
     }
 }
