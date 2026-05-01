@@ -125,12 +125,7 @@ struct SettingsView: View {
                     VStack(spacing: 0) {
                         settingsHeader
                         Rectangle().fill(Color.cinFg).frame(height: 1)
-                        settingsSection("SYSTEM") {
-                            cinRow("Screen Recording") {
-                                BroadcastPickerView()
-                                    .frame(width: 120, height: 32)
-                            }
-                        }
+                        screenRecordingCard
                         settingsSection("STORAGE") {
                             cinRow("Backend") {
                                 Picker("", selection: $api.storageMode) {
@@ -280,6 +275,65 @@ struct SettingsView: View {
         .padding(.horizontal, 24)
         .padding(.top, 16)
         .padding(.bottom, 12)
+    }
+
+    private var screenRecordingCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Section label (matches other settingsSection headers)
+            HStack(alignment: .lastTextBaseline, spacing: 10) {
+                Text("SCREEN RECORDING")
+                    .font(.dmMono(size: 9.5, weight: .medium))
+                    .foregroundStyle(Color.cinAccent1)
+                    .kerning(3)
+                Rectangle().fill(Color.cinFg.opacity(0.18)).frame(height: 0.5)
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 18)
+            .padding(.bottom, 12)
+
+            // Card
+            VStack(alignment: .leading, spacing: 0) {
+                // Description
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("开启后 Agent 可以实时看到屏幕内容")
+                        .font(.notoSerifSC(size: 13.5))
+                        .foregroundStyle(Color.cinFg)
+                    Text("用于持续了解你正在做什么，让 Agent 的建议更贴近当下")
+                        .font(.interTight(size: 11.5))
+                        .foregroundStyle(Color.cinSub)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, 18)
+                .padding(.top, 16)
+                .padding(.bottom, 14)
+
+                Rectangle().fill(Color.cinAccent1.opacity(0.2)).frame(height: 1)
+
+                // Tap-to-record row — BroadcastPickerView is the actual tap target;
+                // the SwiftUI label floats on top with hit-testing disabled.
+                ZStack {
+                    HStack(spacing: 8) {
+                        Circle().fill(Color.cinAccent1).frame(width: 7, height: 7)
+                        Text("TAP TO START RECORDING ↗")
+                            .font(.dmMono(size: 9, weight: .medium))
+                            .foregroundStyle(Color.cinAccent1)
+                            .kerning(2.5)
+                    }
+                    .allowsHitTesting(false)
+
+                    BroadcastPickerView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .opacity(0.011)
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 52)
+            }
+            .background(Color.cinAccent1Soft)
+            .overlay { Rectangle().stroke(Color.cinAccent1.opacity(0.3), lineWidth: 1) }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 8)
+        }
     }
 
     private var settingsFooter: some View {
@@ -476,21 +530,19 @@ struct SettingsView: View {
 
 struct BroadcastPickerView: UIViewRepresentable {
     func makeUIView(context: Context) -> RPSystemBroadcastPickerView {
-        let picker = RPSystemBroadcastPickerView(frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width - 32, height: 52))
+        let picker = RPSystemBroadcastPickerView(frame: .zero)
         picker.preferredExtension = "com.feedling.mcp.broadcast"
         picker.showsMicrophoneButton = false
         picker.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         for subview in picker.subviews {
             if let button = subview as? UIButton {
-                button.imageView?.tintColor = .white
+                button.imageView?.tintColor = .clear
                 button.backgroundColor = .clear
             }
         }
         return picker
     }
-    func updateUIView(_ uiView: RPSystemBroadcastPickerView, context: Context) {
-        uiView.frame = CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width - 32, height: 52)
-    }
+    func updateUIView(_ uiView: RPSystemBroadcastPickerView, context: Context) { }
 }
 
 

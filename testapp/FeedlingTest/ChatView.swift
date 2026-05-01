@@ -54,9 +54,26 @@ struct ChatView: View {
                     .kerning(1.8)
             }
             Spacer()
-            Text("···")
-                .font(.dmMono(size: 12))
-                .foregroundStyle(Color.cinSub)
+            // Recording button — BroadcastPickerView is the tap target;
+            // visual label floats on top with hit-testing disabled.
+            ZStack {
+                VStack(spacing: 3) {
+                    Circle()
+                        .fill(Color.cinSub.opacity(0.5))
+                        .frame(width: 7, height: 7)
+                    Text("REC")
+                        .font(.dmMono(size: 7.5))
+                        .foregroundStyle(Color.cinSub)
+                        .kerning(1.5)
+                }
+                .allowsHitTesting(false)
+
+                BroadcastPickerView()
+                    .frame(width: 44, height: 36)
+                    .opacity(0.011)
+            }
+            .frame(width: 44, height: 36)
+            .overlay { Rectangle().stroke(Color.cinLine, lineWidth: 1).allowsHitTesting(false) }
         }
         .padding(.horizontal, 24)
         .padding(.top, 14)
