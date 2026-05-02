@@ -25,5 +25,16 @@
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.widgetkit-extension</string>
 	</dict>
+	<key>UIAppFonts</key>
+	<array>
+		<string>Newsreader-VariableFont_opsz,wght.ttf</string>
+		<string>Newsreader-Italic-VariableFont_opsz,wght.ttf</string>
+		<string>NotoSerifSC-Regular.ttf</string>
+		<string>NotoSerifSC-Medium.ttf</string>
+		<string>DMMono-Regular.ttf</string>
+		<string>DMMono-Medium.ttf</string>
+		<string>InterTight-Regular.ttf</string>
+		<string>InterTight-Medium.ttf</string>
+	</array>
 </dict>
 </plist>

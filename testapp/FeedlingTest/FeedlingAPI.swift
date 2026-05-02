@@ -22,6 +22,8 @@ final class FeedlingAPI: ObservableObject {
         static let storageMode = "feedling.storageMode"       // "cloud" or "self_hosted"
         static let hasRegistered = "feedling.hasRegistered"
         static let registrationFailed = "feedling.registrationFailed"
+        static let cloudApiKey = "feedling.cloudApiKey"
+        static let cloudUserId = "feedling.cloudUserId"
     }
 
     enum StorageMode: String {
@@ -78,9 +80,12 @@ final class FeedlingAPI: ObservableObject {
 
     // MARK: - Public config
 
-    /// Point the app at a self-hosted server. Clears any previously stored
-    /// cloud-registration api_key — the user provides their own.
+    /// Point the app at a self-hosted server. Saves any cloud credentials before switching away.
     func configureSelfHosted(url: String, apiKey: String) {
+        if storageMode == .cloud && !self.apiKey.isEmpty {
+            UserDefaults.standard.set(self.apiKey, forKey: Keys.cloudApiKey)
+            UserDefaults.standard.set(self.userId, forKey: Keys.cloudUserId)
+        }
         let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanedURL = trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed
         self.storageMode = .selfHosted
@@ -91,15 +96,31 @@ final class FeedlingAPI: ObservableObject {
         persist()
     }
 
-    /// Go back to Feedling cloud. Triggers registration on next launch if we
-    /// don't already hold cloud credentials.
+    /// Switch to self-hosted mode, preserving cloud credentials so they can be restored later.
+    func enterSelfHostedMode() {
+        if storageMode == .cloud && !apiKey.isEmpty {
+            UserDefaults.standard.set(apiKey, forKey: Keys.cloudApiKey)
+            UserDefaults.standard.set(userId, forKey: Keys.cloudUserId)
+        }
+        storageMode = .selfHosted
+        persist()
+    }
+
+    /// Go back to Feedling cloud. Restores previously saved cloud credentials if available.
     func configureCloud() {
+        let savedKey = UserDefaults.standard.string(forKey: Keys.cloudApiKey) ?? ""
+        let savedUserId = UserDefaults.standard.string(forKey: Keys.cloudUserId) ?? ""
         self.storageMode = .cloud
         self.baseURL = Self.defaultCloudURL
-        self.apiKey = ""
-        self.userId = ""
-        UserDefaults.standard.set(false, forKey: Keys.hasRegistered)
-        UserDefaults.standard.set(false, forKey: Keys.registrationFailed)
+        if !savedKey.isEmpty {
+            self.apiKey = savedKey
+            self.userId = savedUserId
+        } else {
+            self.apiKey = ""
+            self.userId = ""
+            UserDefaults.standard.set(false, forKey: Keys.hasRegistered)
+            UserDefaults.standard.set(false, forKey: Keys.registrationFailed)
+        }
         persist()
     }
 
@@ -464,6 +485,8 @@ final class FeedlingAPI: ObservableObject {
 
     /// Discard current credentials and regenerate. Asks server to register fresh.
     func regenerateCredentials() async {
+        UserDefaults.standard.removeObject(forKey: Keys.cloudApiKey)
+        UserDefaults.standard.removeObject(forKey: Keys.cloudUserId)
         self.apiKey = ""
         self.userId = ""
         UserDefaults.standard.set(false, forKey: Keys.hasRegistered)

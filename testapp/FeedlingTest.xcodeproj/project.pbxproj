@@ -36,6 +36,7 @@
 		A1342E092AF06A379D8C9825 /* DCAPQVL.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A19FD1364EF06641F6EE2D8 /* DCAPQVL.swift */; };
 		A3AA0B796AD846E609C8715A /* ScreenActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8485AF4D5CF32FCD3BD19600 /* ScreenActivityWidget.swift */; };
 		A3CDDB2378A71F1A511E1A9D /* FeedlingTestApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14B773D2531DF1548E7C3C63 /* FeedlingTestApp.swift */; };
+		C83C124663797489C1BFE393 /* Fonts in Resources */ = {isa = PBXBuildFile; fileRef = EE37094391F6BB9C2D424ED9 /* Fonts */; };
 		CB2DF8DCA51CEF662CF65FAB /* ScreenActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 059AB22EE40CB3F08CADCAE2 /* ScreenActivityAttributes.swift */; };
 		D2D80C1733F407DB01A6FEEF /* InterTight-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 73F3D2316F4D793B8771AD70 /* InterTight-Medium.ttf */; };
 		E0E195322F3EEC9E7D9FD010 /* DMMono-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 3A1334F790E91A80F93AF4AD /* DMMono-Medium.ttf */; };
@@ -144,6 +145,7 @@
 		E96943835F627DA60766D69C /* IntelSGXRootCA.der */ = {isa = PBXFileReference; path = IntelSGXRootCA.der; sourceTree = "<group>"; };
 		EAD923C73CFB230F5965E087 /* MemoryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryViewModel.swift; sourceTree = "<group>"; };
 		ED7965843E2AE2F74B88A5FC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		EE37094391F6BB9C2D424ED9 /* Fonts */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Fonts; path = FeedlingTest/Fonts; sourceTree = SOURCE_ROOT; };
 		F5D4282756E211274D73C148 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		F73D3F5C02B003A4063CF014 /* NotoSerifSC-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "NotoSerifSC-Regular.ttf"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -209,6 +211,7 @@
 		C831B4CFDB28B188E676559F = {
 			isa = PBXGroup;
 			children = (
+				EE37094391F6BB9C2D424ED9 /* Fonts */,
 				F1DBCEF6E245A9D5B9B4D198 /* FeedlingBroadcast */,
 				E2A4CBFE3B81EA82329D4D55 /* FeedlingBroadcastSetupUI */,
 				0E9CF1DFFEF7EBFABD8DA3E0 /* FeedlingTest */,
@@ -318,6 +321,7 @@
 			buildConfigurationList = D4BD810697F1A6C80AD6D748 /* Build configuration list for PBXNativeTarget "FeedlingTestWidget" */;
 			buildPhases = (
 				CC4F879D8D0429D4613015B2 /* Sources */,
+				A4C79E42AC8D7C0193B5005F /* Resources */,
 			);
 			buildRules = (
 			);
@@ -406,6 +410,14 @@
 				801DD050DB2CFC7E87646BF7 /* Newsreader-VariableFont_opsz,wght.ttf in Resources */,
 				FEBE412B8022B1CD1ED99E6C /* NotoSerifSC-Medium.ttf in Resources */,
 				54F410F09BA339F380E1A986 /* NotoSerifSC-Regular.ttf in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A4C79E42AC8D7C0193B5005F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C83C124663797489C1BFE393 /* Fonts in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -5,6 +5,9 @@ import SwiftUI
 struct IdentityView: View {
     @EnvironmentObject var vm: IdentityViewModel
 
+    private let isChinese: Bool =
+        Locale.preferredLanguages.first?.hasPrefix("zh") ?? false
+
     var body: some View {
         ZStack {
             Color.cinBg.ignoresSafeArea()
@@ -83,25 +86,6 @@ struct IdentityView: View {
                     .padding(.bottom, 16)
             }
 
-            // Two-line poetic signature (if present)
-            if let sig = id.signature, !sig.isEmpty {
-                HStack(alignment: .top, spacing: 0) {
-                    Rectangle()
-                        .fill(Color.cinAccent1)
-                        .frame(width: 2)
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(sig.prefix(2), id: \.self) { line in
-                            Text(line)
-                                .font(.newsreader(size: 14, italic: true))
-                                .foregroundStyle(Color.cinFg)
-                                .lineSpacing(2)
-                        }
-                    }
-                    .padding(.leading, 12)
-                }
-                .padding(.horizontal, 24)
-                .padding(.bottom, 16)
-            }
 
             // Category tag
             if let cat = id.category, !cat.isEmpty {
@@ -137,7 +121,6 @@ struct IdentityView: View {
                     .foregroundStyle(Color.cinAccent1)
                     .kerning(3)
                     .fontWeight(.semibold)
-                Rectangle().fill(Color.cinFg.opacity(0.18)).frame(height: 0.5)
             }
             .padding(.horizontal, 24)
             .padding(.top, 18)
@@ -154,13 +137,15 @@ struct IdentityView: View {
 
     private var emptyState: some View {
         VStack(spacing: 20) {
-            Text("—")
-                .font(.newsreader(size: 64))
+            Image(systemName: "sparkles")
+                .font(.system(size: 44, weight: .thin))
                 .foregroundStyle(Color.cinLine)
-            Text("No identity card yet")
+            Text(isChinese ? "还没有身份卡" : "No identity card yet")
                 .font(.newsreader(size: 22, italic: true))
                 .foregroundStyle(Color.cinSub)
-            Text("Ask your agent to connect and run bootstrap.")
+            Text(isChinese
+                 ? "让你的 AI 连接并运行 bootstrap。"
+                 : "Ask your AI to connect and run bootstrap.")
                 .font(.interTight(size: 13))
                 .foregroundStyle(Color.cinSub)
                 .multilineTextAlignment(.center)
@@ -220,7 +205,7 @@ private struct CinDimensionRow: View {
         .padding(.horizontal, 24)
         .padding(.vertical, 12)
         .overlay(alignment: .top) {
-            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
+            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.horizontal, 24)
         }
     }
 }

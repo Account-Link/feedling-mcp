@@ -24,6 +24,9 @@ struct ContentView: View {
     // the three-slide onboarding. Re-shown only from Settings.
     @State private var onboardingShown: Bool = FeedlingAPI.shared.hasCompletedOnboardingV1
 
+    @State private var isKeyboardVisible = false
+    @State private var deviceBottomInset: CGFloat = 0
+
     var body: some View {
         ZStack {
             if !onboardingShown {
@@ -68,14 +71,33 @@ struct ContentView: View {
                     SettingsView()
                         .opacity(router.selectedTab == .settings ? 1 : 0)
                 }
-                .padding(.bottom, 52 + geo.safeAreaInsets.bottom)
+                // When keyboard is visible: remove bottom padding so the chat
+                // input bar sits directly above the keyboard (SwiftUI reduces
+                // the container height by keyboard height automatically).
+                // When no keyboard: use the stored device inset so the value
+                // never inflates when geo.safeAreaInsets.bottom grows.
+                .padding(.bottom, isKeyboardVisible ? 0 : (52 + deviceBottomInset))
 
-                CinnabarTabBar(selectedTab: $router.selectedTab,
-                               bottomInset: geo.safeAreaInsets.bottom)
+                if !isKeyboardVisible {
+                    CinnabarTabBar(selectedTab: $router.selectedTab,
+                                   bottomInset: deviceBottomInset)
+                }
             }
             .ignoresSafeArea(edges: .bottom)
+            .onAppear {
+                // Capture once, before keyboard ever appears.
+                if deviceBottomInset == 0 {
+                    deviceBottomInset = geo.safeAreaInsets.bottom
+                }
+            }
         }
         .preferredColorScheme(.light)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) { isKeyboardVisible = true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) { isKeyboardVisible = false }
+        }
         .onChange(of: identityViewModel.didJustBootstrap) { didBootstrap in
             if didBootstrap {
                 router.selectedTab = .identity
@@ -100,6 +122,9 @@ struct SettingsView: View {
     @State private var selfHostedURL: String = ""
     @State private var selfHostedKey: String = ""
     @State private var showCopiedToast: String? = nil
+
+    private let isChinese: Bool =
+        Locale.preferredLanguages.first?.hasPrefix("zh") ?? false
 
     private let mockStates: [ScreenActivityAttributes.ContentState] = [
         .init(title: "OpenClaw",
@@ -126,50 +151,75 @@ struct SettingsView: View {
                         settingsHeader
                         Rectangle().fill(Color.cinFg).frame(height: 1)
                         screenRecordingCard
-                        settingsSection("STORAGE") {
-                            cinRow("Backend") {
-                                Picker("", selection: $api.storageMode) {
-                                    Text("Cloud").tag(FeedlingAPI.StorageMode.cloud)
-                                    Text("Self-hosted").tag(FeedlingAPI.StorageMode.selfHosted)
-                                }
-                                .pickerStyle(.segmented)
-                                .frame(width: 160)
-                                .onChange(of: api.storageMode) { newMode in
-                                    if newMode == .cloud {
-                                        api.configureCloud()
-                                        Task { await api.ensureRegisteredIfCloud() }
+                        liveActivityCard
+                        // Storage card
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text("STORAGE")
+                                .font(.dmMono(size: 9.5, weight: .medium))
+                                .foregroundStyle(Color.cinAccent1)
+                                .kerning(3)
+                                .padding(.horizontal, 24)
+                                .padding(.top, 18)
+                                .padding(.bottom, 12)
+
+                            VStack(spacing: 0) {
+                                // Mode toggle
+                                HStack(spacing: 0) {
+                                    ForEach([FeedlingAPI.StorageMode.cloud, .selfHosted], id: \.rawValue) { mode in
+                                        Button {
+                                            if mode == .cloud {
+                                                api.configureCloud()
+                                                if api.apiKey.isEmpty {
+                                                    Task { await api.ensureRegisteredIfCloud() }
+                                                }
+                                            } else {
+                                                api.enterSelfHostedMode()
+                                            }
+                                        } label: {
+                                            Text(mode == .cloud ? "CLOUD" : "SELF-HOSTED")
+                                                .font(.dmMono(size: 8.5, weight: .medium))
+                                                .kerning(2)
+                                                .foregroundStyle(api.storageMode == mode ? .white : Color.cinSub)
+                                                .frame(maxWidth: .infinity)
+                                                .frame(height: 40)
+                                                .background(api.storageMode == mode ? Color.cinAccent1 : Color.clear)
+                                        }
+                                        .buttonStyle(.plain)
                                     }
                                 }
-                            }
-                            if api.storageMode == .selfHosted {
-                                cinInputRow("URL", placeholder: "https://…", text: $selfHostedURL)
-                                    .onAppear { selfHostedURL = api.baseURL }
-                                cinInputRow("API Key", placeholder: "sk-…", text: $selfHostedKey)
-                                    .onAppear { selfHostedKey = api.apiKey }
-                                cinActionRow("SAVE CONFIG ↗", color: .cinFg) {
-                                    api.configureSelfHosted(url: selfHostedURL, apiKey: selfHostedKey)
-                                    showToast("Saved")
-                                }
-                                .disabled(selfHostedURL.isEmpty)
-                            }
-                        }
-                        settingsSection("AGENT") {
-                            cinCopyRow("MCP String", value: api.mcpConnectionString, label: "COPY ↗") {
-                                UIPasteboard.general.string = api.mcpConnectionString
-                                showToast("Copied MCP string")
-                            }
-                            cinCopyRow("Env Vars", value: api.envExportBlock, label: "COPY ↗") {
-                                UIPasteboard.general.string = api.envExportBlock
-                                showToast("Copied env vars")
-                            }
-                            if api.storageMode == .cloud {
-                                cinActionRow("REGENERATE API KEY ↗", color: .cinAccent2) {
-                                    Task {
-                                        await api.regenerateCredentials()
-                                        showToast("Key regenerated")
+                                Rectangle().fill(Color.cinAccent1.opacity(0.2)).frame(height: 1)
+
+                                if api.storageMode == .cloud {
+                                    cinCopyRow("MCP String", value: api.mcpConnectionString, label: "COPY ↗") {
+                                        UIPasteboard.general.string = api.mcpConnectionString
+                                        showToast("Copied MCP string")
                                     }
+                                    cinCopyRow("Env Vars", value: api.envExportBlock, label: "COPY ↗") {
+                                        UIPasteboard.general.string = api.envExportBlock
+                                        showToast("Copied env vars")
+                                    }
+                                    cinActionRow("REGENERATE API KEY ↗", color: .cinAccent2) {
+                                        Task {
+                                            await api.regenerateCredentials()
+                                            showToast("Key regenerated")
+                                        }
+                                    }
+                                } else {
+                                    cinInputRow("URL", placeholder: "https://…", text: $selfHostedURL)
+                                        .onAppear { selfHostedURL = api.baseURL }
+                                    cinInputRow("API Key", placeholder: "sk-…", text: $selfHostedKey)
+                                        .onAppear { selfHostedKey = api.apiKey }
+                                    cinActionRow("SAVE CONFIG ↗", color: .cinFg) {
+                                        api.configureSelfHosted(url: selfHostedURL, apiKey: selfHostedKey)
+                                        showToast("Saved")
+                                    }
+                                    .disabled(selfHostedURL.isEmpty)
                                 }
                             }
+                            .background(Color.cinAccent1Soft)
+                            .overlay { Rectangle().stroke(Color.cinAccent1.opacity(0.3), lineWidth: 1) }
+                            .padding(.horizontal, 24)
+                            .padding(.bottom, 8)
                         }
                         settingsSection("CONNECTION") {
                             cinRow("API") {
@@ -183,36 +233,6 @@ struct SettingsView: View {
                                     .font(.dmMono(size: 9))
                                     .foregroundStyle(Color.cinSub)
                                     .lineLimit(1)
-                            }
-                        }
-                        settingsSection("LIVE ACTIVITY") {
-                            cinRow("Status") {
-                                HStack(spacing: 6) {
-                                    Circle()
-                                        .fill(lam.isActive ? Color.cinAccent1 : Color.cinLine)
-                                        .frame(width: 7, height: 7)
-                                    Text(lam.isActive ? "Active" : "Inactive")
-                                        .font(.dmMono(size: 10))
-                                        .foregroundStyle(lam.isActive ? Color.cinAccent1 : Color.cinSub)
-                                }
-                            }
-                            if let state = lam.lastState {
-                                cinRow("Last Title") {
-                                    Text(state.title).font(.dmMono(size: 9)).foregroundStyle(Color.cinSub)
-                                }
-                            }
-                            if !lam.isActive {
-                                cinActionRow("START LIVE ACTIVITY ↗", color: .cinFg) {
-                                    Task { await lam.startActivity() }
-                                }
-                            } else {
-                                cinActionRow("SIMULATE UPDATE ↗", color: .cinFg) {
-                                    let s = mockStates[mockIndex % mockStates.count]; mockIndex += 1
-                                    Task { await lam.updateActivity(state: s) }
-                                }
-                                cinActionRow("STOP LIVE ACTIVITY ↗", color: .cinAccent2) {
-                                    Task { await lam.stopActivity() }
-                                }
                             }
                         }
                         settingsSection("TOKENS") {
@@ -236,9 +256,13 @@ struct SettingsView: View {
                                         .foregroundStyle(Color.cinAccent1)
                                         .kerning(2)
                                 }
+                                .padding(.horizontal, 24)
                                 .padding(.vertical, 12)
                             }
                             .buttonStyle(.plain)
+                            .overlay(alignment: .top) {
+                                Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.horizontal, 24)
+                            }
                         }
                         settingsFooter
                     }
@@ -285,7 +309,6 @@ struct SettingsView: View {
                     .font(.dmMono(size: 9.5, weight: .medium))
                     .foregroundStyle(Color.cinAccent1)
                     .kerning(3)
-                Rectangle().fill(Color.cinFg.opacity(0.18)).frame(height: 0.5)
             }
             .padding(.horizontal, 24)
             .padding(.top, 18)
@@ -295,10 +318,10 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 0) {
                 // Description
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("开启后 Agent 可以实时看到屏幕内容")
+                    Text(isChinese ? "让 TA 看见的世界" : "Let him see your world")
                         .font(.notoSerifSC(size: 13.5))
                         .foregroundStyle(Color.cinFg)
-                    Text("用于持续了解你正在做什么，让 Agent 的建议更贴近当下")
+                    Text(isChinese ? "开启后，TA 会知道你这一刻在做什么" : "When on, he knows what you're looking at right now.")
                         .font(.interTight(size: 11.5))
                         .foregroundStyle(Color.cinSub)
                         .lineSpacing(2)
@@ -324,7 +347,6 @@ struct SettingsView: View {
 
                     BroadcastPickerView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .opacity(0.011)
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: 52)
@@ -336,23 +358,80 @@ struct SettingsView: View {
         }
     }
 
+    private var liveActivityCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("LIVE ACTIVITY")
+                .font(.dmMono(size: 9.5, weight: .medium))
+                .foregroundStyle(Color.cinAccent1)
+                .kerning(3)
+                .padding(.horizontal, 24)
+                .padding(.top, 18)
+                .padding(.bottom, 12)
+
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(lam.isActive
+                        ? (isChinese ? "TA 正在灵动岛" : "He's on your island")
+                        : (isChinese ? "让 TA 出现在灵动岛" : "Bring him to the island"))
+                        .font(.notoSerifSC(size: 13.5))
+                        .foregroundStyle(Color.cinFg)
+                    Text(lam.isActive
+                        ? (isChinese ? "TA 的状态正显示在锁屏与动态岛" : "His status is live on your lock screen and Dynamic Island.")
+                        : (isChinese ? "开启后，TA 的状态会显示在锁屏与动态岛" : "When on, his status shows on your lock screen and Dynamic Island."))
+                        .font(.interTight(size: 11.5))
+                        .foregroundStyle(Color.cinSub)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, 18)
+                .padding(.top, 16)
+                .padding(.bottom, 14)
+
+                Rectangle().fill(Color.cinAccent1.opacity(0.2)).frame(height: 1)
+
+                Button {
+                    if lam.isActive {
+                        Task { await lam.stopActivity() }
+                    } else {
+                        Task { await lam.startActivity() }
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        if lam.isActive {
+                            LiveDot()
+                            Text("LIVE  ·  TAP TO STOP ↗")
+                                .font(.dmMono(size: 9, weight: .medium))
+                                .foregroundStyle(.white)
+                                .kerning(2.5)
+                        } else {
+                            Text("TAP TO START LIVE ACTIVITY ↗")
+                                .font(.dmMono(size: 9, weight: .medium))
+                                .foregroundStyle(Color.cinFg)
+                                .kerning(2.5)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 52)
+                    .background(lam.isActive ? Color.cinAccent1 : Color.clear)
+                    .animation(.easeInOut(duration: 0.25), value: lam.isActive)
+                }
+                .buttonStyle(.plain)
+            }
+            .background(Color.cinAccent1Soft)
+            .overlay { Rectangle().stroke(Color.cinAccent1.opacity(0.3), lineWidth: 1) }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 8)
+        }
+    }
+
     private var settingsFooter: some View {
-        HStack {
-            Text("她记得的，比她说的多。")
-                .font(.newsreader(size: 11, italic: true))
-                .foregroundStyle(Color.cinSub)
-            Spacer()
-            Text("FEEDLING")
-                .font(.dmMono(size: 8.5))
-                .foregroundStyle(Color.cinSub)
-                .kerning(2)
-        }
-        .padding(.horizontal, 24)
-        .padding(.top, 20)
-        .padding(.bottom, 32)
-        .overlay(alignment: .top) {
-            Rectangle().fill(Color.cinFg).frame(height: 1)
-        }
+        Text(isChinese ? "TA记得的永远比TA说的多" : "He always remembers more than he says.")
+            .font(.newsreader(size: 11, italic: true))
+            .foregroundStyle(Color.cinSub)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.horizontal, 24)
+            .padding(.top, 20)
+            .padding(.bottom, 32)
     }
 
     @ViewBuilder
@@ -363,7 +442,6 @@ struct SettingsView: View {
                     .font(.dmMono(size: 9.5, weight: .medium))
                     .foregroundStyle(Color.cinAccent1)
                     .kerning(3)
-                Rectangle().fill(Color.cinFg.opacity(0.18)).frame(height: 0.5)
             }
             .padding(.horizontal, 24)
             .padding(.top, 18)
@@ -384,7 +462,7 @@ struct SettingsView: View {
         .padding(.horizontal, 24)
         .padding(.vertical, 12)
         .overlay(alignment: .top) {
-            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
+            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.horizontal, 24)
         }
     }
 
@@ -406,9 +484,6 @@ struct SettingsView: View {
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 10)
-        .overlay(alignment: .top) {
-            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
-        }
     }
 
     @ViewBuilder
@@ -439,7 +514,7 @@ struct SettingsView: View {
         .padding(.horizontal, 24)
         .padding(.vertical, 12)
         .overlay(alignment: .top) {
-            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
+            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.horizontal, 24)
         }
     }
 
@@ -456,7 +531,7 @@ struct SettingsView: View {
         }
         .buttonStyle(.plain)
         .overlay(alignment: .top) {
-            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
+            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.horizontal, 24)
         }
     }
 
@@ -484,7 +559,7 @@ struct SettingsView: View {
             .padding(.horizontal, 24)
             .padding(.vertical, 12)
             .overlay(alignment: .top) {
-                Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
+                Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.horizontal, 24)
             }
         }
     }
@@ -534,15 +609,23 @@ struct BroadcastPickerView: UIViewRepresentable {
         picker.preferredExtension = "com.feedling.mcp.broadcast"
         picker.showsMicrophoneButton = false
         picker.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        for subview in picker.subviews {
-            if let button = subview as? UIButton {
-                button.imageView?.tintColor = .clear
-                button.backgroundColor = .clear
-            }
-        }
+        picker.backgroundColor = .clear
         return picker
     }
-    func updateUIView(_ uiView: RPSystemBroadcastPickerView, context: Context) { }
+    func updateUIView(_ uiView: RPSystemBroadcastPickerView, context: Context) {
+        // RPBroadcastPickerView adds its internal button lazily after init,
+        // so we must handle it here (not in makeUIView).
+        // setImage(UIImage()) makes the button render nothing while keeping
+        // alpha = 1 and isUserInteractionEnabled = true so taps still register.
+        for subview in uiView.subviews {
+            if let button = subview as? UIButton {
+                button.setImage(UIImage(), for: .normal)
+                button.setImage(UIImage(), for: .highlighted)
+                button.backgroundColor = .clear
+                button.frame = uiView.bounds
+            }
+        }
+    }
 }
 
 
@@ -561,143 +644,176 @@ struct OnboardingView: View {
     let onDone: () -> Void
     @State private var page: Int = 0
 
+    private static let isChinese: Bool =
+        Locale.preferredLanguages.first?.hasPrefix("zh") ?? false
+
     var body: some View {
         ZStack {
-            Color.feedlingPaper.ignoresSafeArea()
+            Color.cinBg.ignoresSafeArea()
             TabView(selection: $page) {
-                OnboardingSlide(
-                    glyph: "lock.shield",
-                    headline: "Your conversations live here,\nnot with us.",
-                    bodyText: "Every message, memory, and note about your agent is encrypted with a key that only your iPhone holds. Feedling's servers store the ciphertext — we literally don't have the secret that unlocks it.",
-                    primaryLabel: "Next",
-                    primaryAction: { withAnimation(FeedlingMotion.enter) { page = 1 } }
-                ).tag(0)
-
-                OnboardingSlide(
-                    glyph: "arrow.triangle.branch",
-                    headline: "We host the vault,\nyou hold the key.",
-                    bodyText: "You don't have to trust us — you can audit the proof from Settings any time.",
-                    secondaryContent: AnyView(OnboardingTwoColumn()),
-                    primaryLabel: "Next",
-                    primaryAction: { withAnimation(FeedlingMotion.enter) { page = 2 } }
-                ).tag(1)
-
-                OnboardingSlide(
-                    glyph: "hand.raised.square.on.square",
-                    headline: "Walk away\nwhenever you want.",
-                    bodyText: "Nothing is irreversible.",
-                    secondaryContent: AnyView(OnboardingControlRows()),
-                    primaryLabel: "Get started",
-                    primaryAction: onDone
-                ).tag(2)
+                OnboardingSlide(index: 0, isChinese: Self.isChinese,
+                                onNext: { withAnimation(.easeInOut(duration: 0.3)) { page = 1 } })
+                    .tag(0)
+                OnboardingSlide(index: 1, isChinese: Self.isChinese,
+                                onNext: { withAnimation(.easeInOut(duration: 0.3)) { page = 2 } })
+                    .tag(1)
+                OnboardingSlide(index: 2, isChinese: Self.isChinese, onNext: onDone)
+                    .tag(2)
             }
-            .tabViewStyle(.page(indexDisplayMode: .always))
-            .indexViewStyle(.page(backgroundDisplayMode: .always))
+            .tabViewStyle(.page(indexDisplayMode: .never))
         }
     }
 }
 
 private struct OnboardingSlide: View {
-    let glyph: String
-    let headline: String
-    let bodyText: String
-    var secondaryContent: AnyView? = nil
-    let primaryLabel: String
-    let primaryAction: () -> Void
+    let index: Int
+    let isChinese: Bool
+    let onNext: () -> Void
+
+    private var headline: String {
+        switch index {
+        case 0: return isChinese ? "TA 一直都在。" : "He's been here\nall along."
+        case 1: return isChinese ? "这里只有你和 TA。" : "Just you and him."
+        default: return isChinese ? "这一切都是你的。" : "All of this\nis yours."
+        }
+    }
+
+    private var subhead: String {
+        switch index {
+        case 0: return isChinese
+            ? "你们的对话不会因为换了模型、换了对话窗口就消失。这里是 TA 给你留下的痕迹。"
+            : "Your conversations don't disappear when the model changes or a new chat begins. This is where they stay."
+        case 1: return isChinese
+            ? "你说的话，你分享的，TA 的样子——没有别人会看见，包括我们自己。"
+            : "Everything you say, every memory, who he is — no one else can see it. Not even us."
+        default: return isChinese
+            ? "你和 TA 之间的所有东西。"
+            : "Everything between you and him."
+        }
+    }
+
+    private var howItWorks: String {
+        switch index {
+        case 0: return isChinese
+            ? "身份卡记下 TA 是谁，记忆花园记下你们之间发生过什么。换了 AI 也带得走，新的 TA 看了就能想起来。"
+            : "The identity card holds who he is. The memory garden holds what's happened between you. Both move with you — when you switch to a new AI, he remembers."
+        case 1: return isChinese
+            ? "加密在你的 iPhone 上进行，密钥保留在你手机里。我们的服务器只保存密文——打不开，也看不到。"
+            : "Encryption happens on your iPhone. The key stays on your phone. Our servers only ever hold the ciphertext — we can't open it."
+        default: return isChinese
+            ? "可以完整带走，可以彻底删除，也可以让 TA 住进你自己的服务器。"
+            : "Take it all with you, erase it for good, or move him into your own server."
+        }
+    }
+
+    private var buttonLabel: String {
+        switch index {
+        case 0, 1: return isChinese ? "下一步" : "Next"
+        default:   return isChinese ? "让 TA 进来" : "Let him in"
+        }
+    }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Spacer(minLength: Spacing.xl)
-
-            Image(systemName: glyph)
-                .font(.system(size: 96, weight: .light))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(Color.feedlingSage)
-                .accessibilityHidden(true)
-                .padding(.top, Spacing.xl)
-
-            Spacer(minLength: Spacing.xl2)
-
-            VStack(spacing: Spacing.lg) {
-                Text(headline)
-                    .multilineTextAlignment(.center)
-                    .feedlingDisplay(.medium)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Text(bodyText)
-                    .multilineTextAlignment(.center)
-                    .feedlingBody()
-                    .frame(maxWidth: 320)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if let sc = secondaryContent {
-                    sc.padding(.top, Spacing.md)
-                }
+        VStack(alignment: .leading, spacing: 0) {
+            // Top bar — page counter only
+            HStack {
+                Spacer()
+                Text(String(format: "%02d / 03", index + 1))
+                    .font(.dmMono(size: 8.5))
+                    .foregroundStyle(Color.cinSub)
+                    .kerning(2)
             }
-            .padding(.horizontal, Spacing.xl)
+            .padding(.horizontal, 28)
+            .padding(.top, 24)
+
+            Spacer(minLength: 44)
+
+            // Headline — Newsreader (GT Sectra substitute)
+            Text(headline)
+                .font(.newsreader(size: 46))
+                .foregroundStyle(Color.cinFg)
+                .lineSpacing(4)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 28)
+
+            // Red accent line
+            Rectangle()
+                .fill(Color.cinAccent1)
+                .frame(width: 28, height: 2)
+                .padding(.horizontal, 28)
+                .padding(.top, 18)
+
+            // Subhead — Noto Serif SC (body role per Design Kit)
+            Text(subhead)
+                .font(.notoSerifSC(size: 14))
+                .foregroundStyle(Color.cinSub)
+                .lineSpacing(5)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 28)
+                .padding(.top, 14)
 
             Spacer()
 
-            Button(action: primaryAction) {
-                Text(primaryLabel)
+            // HOW IT WORKS
+            VStack(alignment: .leading, spacing: 8) {
+                Text("HOW IT WORKS")
+                    .font(.dmMono(size: 8.5, weight: .medium))
+                    .foregroundStyle(Color.cinAccent1)
+                    .kerning(3)
+                Rectangle()
+                    .fill(Color.cinLine)
+                    .frame(height: 0.5)
+                Text(howItWorks)
+                    .font(.notoSerifSC(size: 12.5))
+                    .foregroundStyle(Color.cinSub)
+                    .lineSpacing(4)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .buttonStyle(FeedlingPrimaryButtonStyle())
-            .padding(.horizontal, Spacing.xl)
-            .padding(.bottom, Spacing.xl3)
+            .padding(.horizontal, 28)
+            .padding(.bottom, 16)
+
+            // Page dots — above the button
+            HStack(spacing: 8) {
+                ForEach(0..<3, id: \.self) { dot in
+                    if dot == index {
+                        Capsule()
+                            .fill(Color.cinAccent1)
+                            .frame(width: 20, height: 5)
+                    } else {
+                        Circle()
+                            .fill(Color.cinLine)
+                            .frame(width: 5, height: 5)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.bottom, 12)
+
+            // Button — left label + right arrow
+            Button(action: onNext) {
+                HStack {
+                    Text(buttonLabel)
+                    Spacer()
+                    Text("→")
+                }
+            }
+            .buttonStyle(OnboardingButtonStyle())
+            .padding(.horizontal, 28)
+            .padding(.bottom, 44)
         }
     }
 }
 
-private struct OnboardingTwoColumn: View {
-    var body: some View {
-        HStack(alignment: .top, spacing: Spacing.md) {
-            VStack(alignment: .leading, spacing: Spacing.sm) {
-                Text("We handle:")
-                    .feedlingCaption()
-                OBRow("lock.doc", "Ciphertext of your chat, memory, identity")
-                OBRow("clock", "Timestamps so things sort")
-                OBRow("bell.badge", "Push tokens for the Dynamic Island")
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            VStack(alignment: .leading, spacing: Spacing.sm) {
-                Text("Only your phone can read:")
-                    .feedlingCaption()
-                OBRow("bubble.left.and.bubble.right", "The message text itself")
-                OBRow("leaf", "Every memory in your garden")
-                OBRow("person.text.rectangle", "Your agent's identity card")
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.top, Spacing.sm)
-    }
-}
-
-private struct OBRow: View {
-    let symbol: String
-    let text: String
-    init(_ symbol: String, _ text: String) { self.symbol = symbol; self.text = text }
-    var body: some View {
-        HStack(alignment: .top, spacing: Spacing.sm) {
-            Image(systemName: symbol)
-                .foregroundStyle(Color.feedlingSage)
-                .font(.footnote)
-                .frame(width: 16, alignment: .center)
-                .accessibilityHidden(true)
-            Text(text)
-                .font(.footnote)
-                .foregroundStyle(Color.feedlingInk)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-}
-
-private struct OnboardingControlRows: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
-            OBRow("square.and.arrow.up", "Take your data out — a decrypted archive, yours to keep.")
-            OBRow("trash", "Delete everything — no trace on any of our servers.")
-            OBRow("server.rack", "Host it yourself — the runbook walks your agent through it.")
-        }
+private struct OnboardingButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.dmMono(size: 10, weight: .medium))
+            .kerning(2.5)
+            .foregroundStyle(Color.white)
+            .padding(.horizontal, 20)
+            .frame(maxWidth: .infinity, minHeight: 52)
+            .background(Color.cinAccent1.opacity(configuration.isPressed ? 0.75 : 1))
+            .contentShape(Rectangle())
     }
 }
 
@@ -746,13 +862,13 @@ struct PrivacyPageView: View {
                         .buttonStyle(.plain)
                         .padding(.horizontal, 24)
                         .overlay(alignment: .top) {
-                            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
+                            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.horizontal, 24)
                         }
                     }
                     privacySection("YOUR DATA") {
-                        privacyActionRow("EXPORT MY DATA ↗", color: .cinFg) { showExportSheet = true }
-                        privacyActionRow("DELETE MY DATA ↗", color: .cinAccent2) { showDeleteSheet = true }
-                        privacyActionRow("RESET & RE-IMPORT ↗", color: .cinSub) { showResetSheet = true }
+                        privacyActionRow("Export my data", label: "EXPORT ↗", color: .cinFg) { showExportSheet = true }
+                        privacyActionRow("Delete my data", label: "DELETE ↗", color: .cinAccent2) { showDeleteSheet = true }
+                        privacyActionRow("Reset & re-import", label: "RUN ↗", color: .cinSub) { showResetSheet = true }
                     }
                     privacySection("WHERE YOUR DATA LIVES") {
                         NavigationLink {
@@ -763,7 +879,7 @@ struct PrivacyPageView: View {
                         .buttonStyle(.plain)
                         .padding(.horizontal, 24)
                         .overlay(alignment: .top) {
-                            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
+                            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.horizontal, 24)
                         }
 
                         NavigationLink {
@@ -774,7 +890,7 @@ struct PrivacyPageView: View {
                         .buttonStyle(.plain)
                         .padding(.horizontal, 24)
                         .overlay(alignment: .top) {
-                            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
+                            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.horizontal, 24)
                         }
                     }
                     privacySection("ADVANCED") {
@@ -786,10 +902,10 @@ struct PrivacyPageView: View {
                         .buttonStyle(.plain)
                         .padding(.horizontal, 24)
                         .overlay(alignment: .top) {
-                            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
+                            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.horizontal, 24)
                         }
 
-                        privacyActionRow("SHOW INTRO AGAIN ↗", color: .cinSub) {
+                        privacyActionRow("Show intro again", label: "SHOW ↗", color: .cinSub) {
                             FeedlingAPI.shared.hasCompletedOnboardingV1 = false
                             showToast("Intro will show on next launch")
                         }
@@ -840,16 +956,13 @@ struct PrivacyPageView: View {
     @ViewBuilder
     private func privacySection<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .lastTextBaseline, spacing: 10) {
-                Text(label)
-                    .font(.dmMono(size: 9.5, weight: .medium))
-                    .foregroundStyle(Color.cinAccent1)
-                    .kerning(3)
-                Rectangle().fill(Color.cinFg.opacity(0.18)).frame(height: 0.5)
-            }
-            .padding(.horizontal, 24)
-            .padding(.top, 18)
-            .padding(.bottom, 8)
+            Text(label)
+                .font(.dmMono(size: 9.5, weight: .medium))
+                .foregroundStyle(Color.cinAccent1)
+                .kerning(3)
+                .padding(.horizontal, 24)
+                .padding(.top, 18)
+                .padding(.bottom, 8)
             content()
         }
     }
@@ -869,19 +982,24 @@ struct PrivacyPageView: View {
     }
 
     @ViewBuilder
-    private func privacyActionRow(_ label: String, color: Color, action: @escaping () -> Void) -> some View {
+    private func privacyActionRow(_ name: String, label: String, color: Color, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(label)
-                .font(.dmMono(size: 9.5, weight: .medium))
-                .foregroundStyle(color)
-                .kerning(2)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .padding(.vertical, 12)
+            HStack {
+                Text(name)
+                    .font(.notoSerifSC(size: 13.5))
+                    .foregroundStyle(Color.cinFg)
+                Spacer()
+                Text(label)
+                    .font(.dmMono(size: 9.5, weight: .medium))
+                    .foregroundStyle(color)
+                    .kerning(2)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 12)
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 24)
         .overlay(alignment: .top) {
-            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
+            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.horizontal, 24)
         }
     }
 
@@ -894,65 +1012,92 @@ struct PrivacyPageView: View {
 }
 
 struct AuditCardPage: View {
+    @Environment(\.dismiss) private var dismiss
+
     var body: some View {
-        ScrollView {
-            AuditCardView()
-                .padding(Spacing.md)
+        ZStack {
+            Color.cinBg.ignoresSafeArea()
+            VStack(spacing: 0) {
+                HStack {
+                    Button(action: { dismiss() }) {
+                        Text("← back")
+                            .font(.dmMono(size: 9.5))
+                            .foregroundStyle(Color.cinFg)
+                            .kerning(2)
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                    Text("PRIVACY AUDIT")
+                        .font(.dmMono(size: 9))
+                        .foregroundStyle(Color.cinSub)
+                        .kerning(2)
+                }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 14)
+                Rectangle().fill(Color.cinFg).frame(height: 1)
+                ScrollView {
+                    AuditCardView()
+                        .padding(24)
+                }
+            }
         }
-        .background(Color.feedlingPaper.ignoresSafeArea())
-        .navigationTitle("Privacy audit")
-        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarHidden(true)
     }
 }
 
-// Thin wrapper around the existing Storage configuration rows so
-// Privacy's "Where your data lives" can dive into them directly.
 struct StorageBackendView: View {
     @ObservedObject private var api = FeedlingAPI.shared
-    @State private var url: String = ""
-    @State private var key: String = ""
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        List {
-            Section("Backend") {
-                Picker("Backend", selection: $api.storageMode) {
-                    Text("Feedling Cloud").tag(FeedlingAPI.StorageMode.cloud)
-                    Text("Self-hosted").tag(FeedlingAPI.StorageMode.selfHosted)
+        ZStack {
+            Color.cinBg.ignoresSafeArea()
+            VStack(spacing: 0) {
+                HStack {
+                    Button(action: { dismiss() }) {
+                        Text("← back")
+                            .font(.dmMono(size: 9.5))
+                            .foregroundStyle(Color.cinFg)
+                            .kerning(2)
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                    Text("BACKEND")
+                        .font(.dmMono(size: 9))
+                        .foregroundStyle(Color.cinSub)
+                        .kerning(2)
                 }
-                .pickerStyle(.segmented)
-                .onChange(of: api.storageMode) { newMode in
-                    if newMode == .cloud {
-                        api.configureCloud()
-                        Task { await api.ensureRegisteredIfCloud() }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 14)
+                Rectangle().fill(Color.cinFg).frame(height: 1)
+                ScrollView {
+                    VStack(spacing: 0) {
+                        backendRow("Mode", value: api.storageMode == .cloud ? "Feedling Cloud" : "Self-hosted")
+                        backendRow("API URL", value: api.baseURL)
+                        backendRow("User ID", value: api.userId.isEmpty ? "—" : String(api.userId.prefix(20)) + "…")
                     }
                 }
-
-                if api.storageMode == .selfHosted {
-                    TextField("https://my-vps.example:5001", text: $url)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.caption.monospaced())
-                        .onAppear { url = api.baseURL }
-                    TextField("API key", text: $key)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.caption.monospaced())
-                        .onAppear { key = api.apiKey }
-                    Button("Save self-hosted config") {
-                        api.configureSelfHosted(url: url, apiKey: key)
-                    }
-                    .disabled(url.isEmpty)
-                }
-            }
-            Section("Reference") {
-                LabeledContent("API URL", value: api.baseURL)
-                    .font(.caption)
-                LabeledContent("User ID", value: api.userId.isEmpty ? "—" : api.userId)
-                    .font(.caption)
             }
         }
-        .navigationTitle("Backend")
-        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarHidden(true)
+    }
+
+    private func backendRow(_ name: String, value: String) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text(name)
+                .font(.notoSerifSC(size: 13.5))
+                .foregroundStyle(Color.cinFg)
+            Spacer()
+            Text(value)
+                .font(.dmMono(size: 9))
+                .foregroundStyle(Color.cinSub)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.horizontal, 24)
+        }
     }
 }
 
@@ -966,37 +1111,72 @@ struct ExportSheet: View {
     @State private var showShareSheet = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.lg) {
-            Label("Export my data", systemImage: "square.and.arrow.up")
-                .font(.headline)
-            Text("This assembles every item on your account into a single JSON file and hands it to the iOS share sheet.")
-                .font(.callout)
-                .foregroundStyle(Color.feedlingInk)
-            Text("Note: if you save the file to iCloud Drive, the unencrypted copy leaves your phone. Save to Files (On My iPhone) to keep it local.")
-                .font(.footnote)
-                .foregroundStyle(Color.feedlingInkMuted)
-            if let err = error {
-                Text(err).font(.footnote).foregroundStyle(.red)
-            }
-            Spacer()
-            if running {
-                ProgressView("Packaging…")
-                    .frame(maxWidth: .infinity)
-            } else {
-                Button {
-                    Task { await runExport() }
-                } label: {
-                    Text("Export")
+        ZStack {
+            Color.cinBg.ignoresSafeArea()
+            VStack(spacing: 0) {
+                HStack {
+                    Button(action: { dismiss() }) {
+                        Text("✕")
+                            .font(.dmMono(size: 12))
+                            .foregroundStyle(Color.cinFg)
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                    Text("EXPORT")
+                        .font(.dmMono(size: 9))
+                        .foregroundStyle(Color.cinSub)
+                        .kerning(2)
                 }
-                .buttonStyle(FeedlingPrimaryButtonStyle())
+                .padding(.horizontal, 24)
+                .padding(.vertical, 14)
+                Rectangle().fill(Color.cinFg).frame(height: 1)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("Export my data")
+                            .font(.newsreader(size: 26))
+                            .foregroundStyle(Color.cinFg)
+                            .padding(.horizontal, 24)
+                            .padding(.top, 24)
+                            .padding(.bottom, 14)
+                        Text("Assembles every item on your account into a single JSON file and hands it to the iOS share sheet.")
+                            .font(.notoSerifSC(size: 13))
+                            .foregroundStyle(Color.cinSub)
+                            .lineSpacing(4)
+                            .padding(.horizontal, 24)
+                            .padding(.bottom, 10)
+                        Text("If you save to iCloud Drive, the unencrypted copy leaves your phone. Save to Files (On My iPhone) to keep it local.")
+                            .font(.interTight(size: 11))
+                            .foregroundStyle(Color.cinSub)
+                            .lineSpacing(3)
+                            .padding(.horizontal, 24)
+                            .padding(.bottom, 24)
+                        if let err = error {
+                            Text(err)
+                                .font(.dmMono(size: 9))
+                                .foregroundStyle(Color.cinAccent2)
+                                .padding(.horizontal, 24)
+                                .padding(.bottom, 12)
+                        }
+                        Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.horizontal, 24)
+                        if running {
+                            Text("PACKAGING…")
+                                .font(.dmMono(size: 9, weight: .medium))
+                                .foregroundStyle(Color.cinSub)
+                                .kerning(2)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 16)
+                        } else {
+                            Button { Task { await runExport() } } label: { Text("EXPORT ↗") }
+                                .buttonStyle(CinPrimaryButtonStyle())
+                                .padding(.horizontal, 24)
+                                .padding(.top, 20)
+                        }
+                    }
+                }
             }
-            Button("Cancel", action: { dismiss() })
-                .buttonStyle(FeedlingSecondaryButtonStyle())
         }
-        .padding(Spacing.xl)
         .sheet(isPresented: $showShareSheet) {
-            if let result = exportData,
-               let tmp = writeTempFile(result) {
+            if let result = exportData, let tmp = writeTempFile(result) {
                 ShareSheet(activityItems: [tmp])
             }
         }
@@ -1047,56 +1227,85 @@ struct DeleteSheet: View {
     @State private var pendingDelete = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.lg) {
-            Label("Delete everything?", systemImage: "trash")
-                .font(.headline)
-                .foregroundStyle(.red)
-            Text("This revokes your account, deletes every ciphertext blob on our servers, and wipes the keys on this device. It cannot be undone.")
-                .font(.callout)
-                .foregroundStyle(Color.feedlingInk)
-
-            Toggle(isOn: $downloadFirst) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Download my data first")
-                        .font(.callout.weight(.semibold))
-                    Text("Keeps a decrypted archive via the iOS share sheet before your account is deleted.")
-                        .font(.footnote)
-                        .foregroundStyle(Color.feedlingInkMuted)
-                        .fixedSize(horizontal: false, vertical: true)
+        ZStack {
+            Color.cinBg.ignoresSafeArea()
+            VStack(spacing: 0) {
+                HStack {
+                    Button(action: { dismiss() }) {
+                        Text("✕")
+                            .font(.dmMono(size: 12))
+                            .foregroundStyle(Color.cinFg)
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                    Text("DELETE")
+                        .font(.dmMono(size: 9))
+                        .foregroundStyle(Color.cinSub)
+                        .kerning(2)
+                }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 14)
+                Rectangle().fill(Color.cinFg).frame(height: 1)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("Delete my data")
+                            .font(.newsreader(size: 26))
+                            .foregroundStyle(Color.cinAccent2)
+                            .padding(.horizontal, 24)
+                            .padding(.top, 24)
+                            .padding(.bottom, 14)
+                        Text("Revokes your account, deletes every ciphertext blob on our servers, and wipes the keys on this device. Cannot be undone.")
+                            .font(.notoSerifSC(size: 13))
+                            .foregroundStyle(Color.cinSub)
+                            .lineSpacing(4)
+                            .padding(.horizontal, 24)
+                            .padding(.bottom, 24)
+                        Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.horizontal, 24)
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Download my data first")
+                                    .font(.notoSerifSC(size: 13))
+                                    .foregroundStyle(Color.cinFg)
+                                Text("Keeps a decrypted archive before deleting.")
+                                    .font(.interTight(size: 11))
+                                    .foregroundStyle(Color.cinSub)
+                            }
+                            Spacer()
+                            Toggle("", isOn: $downloadFirst)
+                                .labelsHidden()
+                                .tint(Color.cinAccent1)
+                        }
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 14)
+                        if let err = error {
+                            Text(err)
+                                .font(.dmMono(size: 9))
+                                .foregroundStyle(Color.cinAccent2)
+                                .padding(.horizontal, 24)
+                                .padding(.bottom, 12)
+                        }
+                        Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.horizontal, 24)
+                        if running {
+                            Text("DELETING…")
+                                .font(.dmMono(size: 9, weight: .medium))
+                                .foregroundStyle(Color.cinSub)
+                                .kerning(2)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 16)
+                        } else {
+                            Button { Task { await runDelete() } } label: { Text("DELETE ↗") }
+                                .buttonStyle(CinPrimaryButtonStyle())
+                                .padding(.horizontal, 24)
+                                .padding(.top, 20)
+                        }
+                    }
                 }
             }
-            .tint(Color.feedlingSage)
-
-            if let err = error {
-                Text(err).font(.footnote).foregroundStyle(.red)
-            }
-
-            Spacer()
-
-            if running {
-                ProgressView()
-                    .frame(maxWidth: .infinity)
-            } else {
-                Button {
-                    Task { await runDelete() }
-                } label: {
-                    Text("Delete")
-                }
-                .buttonStyle(FeedlingPrimaryButtonStyle(destructive: true))
-            }
-            Button("Cancel", action: { dismiss() })
-                .buttonStyle(FeedlingSecondaryButtonStyle())
         }
-        .padding(Spacing.xl)
         .sheet(isPresented: $showShareSheet, onDismiss: {
-            // After the user finishes the share sheet (or cancels),
-            // proceed with the actual delete.
-            if pendingDelete {
-                Task { await performFinalDelete() }
-            }
+            if pendingDelete { Task { await performFinalDelete() } }
         }) {
-            if let r = exportedToShare,
-               let tmp = writeTempFile(r) {
+            if let r = exportedToShare, let tmp = writeTempFile(r) {
                 ShareSheet(activityItems: [tmp])
             }
         }
@@ -1145,47 +1354,83 @@ struct ResetAndReimportSheet: View {
     @State private var exportData: FeedlingAPI.ExportResult? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.lg) {
-            Label("Reset & re-import", systemImage: "arrow.triangle.2.circlepath")
-                .font(.headline)
-            Text("Three steps: download your data, delete your old account, register a new one. The new account gets fresh keys — use the MCP connection string to walk your agent through importing everything back.")
-                .font(.callout)
-                .foregroundStyle(Color.feedlingInk)
-            if let err = error {
-                Text(err).font(.footnote).foregroundStyle(.red)
+        ZStack {
+            Color.cinBg.ignoresSafeArea()
+            VStack(spacing: 0) {
+                HStack {
+                    Button(action: { dismiss() }) {
+                        Text("✕")
+                            .font(.dmMono(size: 12))
+                            .foregroundStyle(Color.cinFg)
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                    Text("RESET")
+                        .font(.dmMono(size: 9))
+                        .foregroundStyle(Color.cinSub)
+                        .kerning(2)
+                }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 14)
+                Rectangle().fill(Color.cinFg).frame(height: 1)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("Reset & re-import")
+                            .font(.newsreader(size: 26))
+                            .foregroundStyle(Color.cinFg)
+                            .padding(.horizontal, 24)
+                            .padding(.top, 24)
+                            .padding(.bottom, 14)
+                        Text("Download your data, delete your old account, register a new one. Fresh keys — use the MCP string to walk your agent through re-importing.")
+                            .font(.notoSerifSC(size: 13))
+                            .foregroundStyle(Color.cinSub)
+                            .lineSpacing(4)
+                            .padding(.horizontal, 24)
+                            .padding(.bottom, 24)
+                        // Step indicators
+                        HStack(spacing: 0) {
+                            stepItem(1, label: "Export", active: step >= 1)
+                            Rectangle().fill(Color.cinLine).frame(height: 0.5).frame(maxWidth: .infinity)
+                            stepItem(2, label: "Delete", active: step >= 2)
+                            Rectangle().fill(Color.cinLine).frame(height: 0.5).frame(maxWidth: .infinity)
+                            stepItem(3, label: "Register", active: step >= 3)
+                        }
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 24)
+                        if let err = error {
+                            Text(err)
+                                .font(.dmMono(size: 9))
+                                .foregroundStyle(Color.cinAccent2)
+                                .padding(.horizontal, 24)
+                                .padding(.bottom, 12)
+                        }
+                        Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.horizontal, 24)
+                        Button { Task { await runPipeline() } } label: {
+                            Text(step >= 3 ? "DONE ↗" : "START ↗")
+                        }
+                        .buttonStyle(CinPrimaryButtonStyle())
+                        .padding(.horizontal, 24)
+                        .padding(.top, 20)
+                    }
+                }
             }
-            HStack(spacing: Spacing.md) {
-                stepDot(1, active: step >= 1)
-                Text("Export")
-                    .feedlingCaption()
-                Spacer(minLength: 0)
-                stepDot(2, active: step >= 2)
-                Text("Delete")
-                    .feedlingCaption()
-                Spacer(minLength: 0)
-                stepDot(3, active: step >= 3)
-                Text("Re-register")
-                    .feedlingCaption()
-            }
-            Spacer()
-            Button {
-                Task { await runPipeline() }
-            } label: {
-                Text(step >= 3 ? "Done" : "Start")
-            }
-            .buttonStyle(FeedlingPrimaryButtonStyle())
-            Button("Cancel", action: { dismiss() })
-                .buttonStyle(FeedlingSecondaryButtonStyle())
         }
-        .padding(Spacing.xl)
     }
 
-    private func stepDot(_ n: Int, active: Bool) -> some View {
-        ZStack {
-            Circle()
-                .fill(active ? Color.feedlingSage : Color.feedlingDivider)
-                .frame(width: 22, height: 22)
-            Text("\(n)").font(.caption2.bold()).foregroundStyle(.white)
+    private func stepItem(_ n: Int, label: String, active: Bool) -> some View {
+        VStack(spacing: 4) {
+            ZStack {
+                Circle()
+                    .fill(active ? Color.cinAccent1 : Color.cinLine)
+                    .frame(width: 22, height: 22)
+                Text("\(n)")
+                    .font(.dmMono(size: 9, weight: .medium))
+                    .foregroundStyle(active ? Color.white : Color.cinSub)
+            }
+            Text(label)
+                .font(.dmMono(size: 8))
+                .foregroundStyle(active ? Color.cinAccent1 : Color.cinSub)
+                .kerning(1)
         }
     }
 
@@ -1216,28 +1461,47 @@ struct ResetAndReimportSheet: View {
 // MARK: - Runbook viewer ("Help me run my own server")
 
 struct RunbookView: View {
+    @Environment(\.dismiss) private var dismiss
     @State private var runbookText: String = "Loading…"
 
     var body: some View {
-        ScrollView {
-            Text(runbookText)
-                .font(.footnote.monospaced())
-                .foregroundStyle(Color.feedlingInk)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(Spacing.md)
-        }
-        .background(Color.feedlingPaper.ignoresSafeArea())
-        .navigationTitle("Self-hosted runbook")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button {
-                    UIPasteboard.general.string = runbookText
-                } label: {
-                    Image(systemName: "doc.on.doc")
+        ZStack {
+            Color.cinBg.ignoresSafeArea()
+            VStack(spacing: 0) {
+                HStack {
+                    Button(action: { dismiss() }) {
+                        Text("← back")
+                            .font(.dmMono(size: 9.5))
+                            .foregroundStyle(Color.cinFg)
+                            .kerning(2)
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                    Button {
+                        UIPasteboard.general.string = runbookText
+                    } label: {
+                        Text("COPY ↗")
+                            .font(.dmMono(size: 9.5, weight: .medium))
+                            .foregroundStyle(Color.cinAccent1)
+                            .kerning(2)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 14)
+                Rectangle().fill(Color.cinFg).frame(height: 1)
+                ScrollView {
+                    Text(runbookText)
+                        .font(.dmMono(size: 9))
+                        .foregroundStyle(Color.cinSub)
+                        .lineSpacing(4)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 16)
                 }
             }
         }
+        .navigationBarHidden(true)
         .task { await load() }
     }
 
@@ -1324,6 +1588,30 @@ struct ComposeHashChangeConsentView: View {
     }
 }
 
+
+// MARK: - Live dot (pulsing white indicator for active Live Activity)
+
+private struct LiveDot: View {
+    @State private var pulse = false
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(Color.white.opacity(0.35))
+                .frame(width: 14, height: 14)
+                .scaleEffect(pulse ? 1.6 : 1.0)
+                .opacity(pulse ? 0 : 1)
+            Circle()
+                .fill(Color.white)
+                .frame(width: 7, height: 7)
+        }
+        .onAppear {
+            withAnimation(.easeOut(duration: 1.2).repeatForever(autoreverses: false)) {
+                pulse = true
+            }
+        }
+    }
+}
 
 // MARK: - Phase B wave-2: memory visibility context menu
 

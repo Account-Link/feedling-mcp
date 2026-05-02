@@ -7,6 +7,9 @@ struct MemoryGardenView: View {
     @EnvironmentObject var chatVM: ChatViewModel
     @EnvironmentObject var router: AppRouter
 
+    private let isChinese: Bool =
+        Locale.preferredLanguages.first?.hasPrefix("zh") ?? false
+
     private var monthGroups: [(month: String, moments: [MemoryMoment])] {
         var result: [(month: String, moments: [MemoryMoment])] = []
         for m in vm.moments {
@@ -41,7 +44,6 @@ struct MemoryGardenView: View {
         ScrollView {
             VStack(spacing: 0) {
                 gardenHeader
-                Rectangle().fill(Color.cinFg).frame(height: 1).padding(.horizontal, 24)
                 ForEach(monthGroups, id: \.month) { group in
                     monthSection(group)
                 }
@@ -69,11 +71,10 @@ struct MemoryGardenView: View {
     private func monthSection(_ group: (month: String, moments: [MemoryMoment])) -> some View {
         VStack(spacing: 0) {
             // Month header
-            HStack(alignment: .lastTextBaseline, spacing: 10) {
+            HStack(alignment: .lastTextBaseline, spacing: 8) {
                 Text(group.month)
                     .font(.newsreader(size: 22))
                     .foregroundStyle(Color.cinFg)
-                Rectangle().fill(Color.cinFg.opacity(0.2)).frame(height: 1)
                 Text(String(format: "%02d", group.moments.count))
                     .font(.dmMono(size: 9))
                     .foregroundStyle(Color.cinSub)
@@ -112,13 +113,15 @@ struct MemoryGardenView: View {
 
     private var emptyState: some View {
         VStack(spacing: 20) {
-            Text("—")
-                .font(.newsreader(size: 64))
+            Image(systemName: "leaf")
+                .font(.system(size: 48, weight: .thin))
                 .foregroundStyle(Color.cinLine)
-            Text("The garden is empty")
+            Text(isChinese ? "花园还是空的" : "The garden is empty")
                 .font(.newsreader(size: 22, italic: true))
                 .foregroundStyle(Color.cinSub)
-            Text("Ask your agent to run bootstrap and plant the first memories.")
+            Text(isChinese
+                 ? "让你的 AI 运行 bootstrap，种下第一批记忆。"
+                 : "Ask your AI to run bootstrap and plant the first memories.")
                 .font(.interTight(size: 13))
                 .foregroundStyle(Color.cinSub)
                 .multilineTextAlignment(.center)
@@ -189,7 +192,7 @@ private struct GardenRow: View {
         .padding(.horizontal, 24)
         .padding(.vertical, 12)
         .overlay(alignment: .top) {
-            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.leading, 24)
+            Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.horizontal, 24)
         }
         .background(Color.cinBg)
     }
@@ -235,10 +238,12 @@ struct MemoryCardDetailView: View {
     }
 
     private var sourceLabel: String {
-        switch moment.source {
-        case "bootstrap": return "OLD MEMORY"
-        case "chat": return "FROM CHAT"
-        default: return moment.source.isEmpty ? "—" : moment.source.uppercased()
+        switch moment.source.lowercased() {
+        case "bootstrap":          return "初识时记录"
+        case "live_conversation":  return "聊天中记录"
+        case "user_initiated":     return "你提起的"
+        case "chat":               return "聊天中记录"
+        default:                   return moment.source.isEmpty ? "—" : moment.source
         }
     }
 
@@ -258,12 +263,55 @@ struct MemoryCardDetailView: View {
                     Spacer(minLength: 40)
                 }
             }
+
+            if showDeleteConfirm {
+                Color.cinFg.opacity(0.25)
+                    .ignoresSafeArea()
+                    .onTapGesture { showDeleteConfirm = false }
+
+                VStack(spacing: 0) {
+                    Spacer()
+                    VStack(spacing: 0) {
+                        Rectangle().fill(Color.cinLine).frame(height: 1)
+                        Text("删除这条记忆？")
+                            .font(.notoSerifSC(size: 13.5))
+                            .foregroundStyle(Color.cinFg)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 18)
+                        Rectangle().fill(Color.cinLine).frame(height: 0.5)
+                        Button {
+                            deleteAndDismiss()
+                        } label: {
+                            Text("删除")
+                                .font(.dmMono(size: 10, weight: .medium))
+                                .kerning(3)
+                                .foregroundStyle(Color.cinAccent1)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 52)
+                        }
+                        .buttonStyle(.plain)
+                        Rectangle().fill(Color.cinLine).frame(height: 0.5)
+                        Button {
+                            showDeleteConfirm = false
+                        } label: {
+                            Text("取消")
+                                .font(.dmMono(size: 10))
+                                .kerning(3)
+                                .foregroundStyle(Color.cinSub)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 52)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .background(Color.cinBg)
+                }
+                .ignoresSafeArea()
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
+        .animation(.easeInOut(duration: 0.22), value: showDeleteConfirm)
         .navigationBarHidden(true)
-        .confirmationDialog("删除这条记忆？", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
-            Button("删除", role: .destructive) { deleteAndDismiss() }
-            Button("取消", role: .cancel) { }
-        }
     }
 
     private var navHeader: some View {
@@ -276,32 +324,26 @@ struct MemoryCardDetailView: View {
             }
             .buttonStyle(.plain)
             Spacer()
-            Text("CARD \(moment.id.prefix(4).uppercased())")
+            Text(sourceLabel)
                 .font(.dmMono(size: 9))
                 .foregroundStyle(Color.cinSub)
-                .kerning(2)
+                .kerning(1.5)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 14)
     }
 
     private var typeRow: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Text(moment.type.uppercased())
-                .font(.dmMono(size: 9, weight: .medium))
-                .foregroundStyle(Color.cinBg)
-                .kerning(2.5)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color.cinAccent1)
-            Text(sourceLabel)
-                .font(.dmMono(size: 8.5))
-                .foregroundStyle(Color.cinSub)
-                .kerning(1.5)
-        }
-        .padding(.horizontal, 24)
-        .padding(.top, 22)
-        .padding(.bottom, 14)
+        Text(moment.type.uppercased())
+            .font(.dmMono(size: 9, weight: .medium))
+            .foregroundStyle(Color.cinBg)
+            .kerning(2.5)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.cinAccent1)
+            .padding(.horizontal, 24)
+            .padding(.top, 22)
+            .padding(.bottom, 14)
     }
 
     private var cardTitle: some View {
@@ -353,14 +395,9 @@ struct MemoryCardDetailView: View {
     private var timeBlock: some View {
         VStack(alignment: .leading, spacing: 0) {
             Rectangle().fill(Color.cinLine).frame(height: 1)
-            if isSameDay {
-                metaRow(label: "WHEN", value: occurredDateStr)
-            } else {
-                metaRow(label: "HAPPENED", value: occurredDateStr)
-                metaRow(label: "RECORDED", value: createdDateStr)
-            }
+            metaRow(label: "发生于", value: occurredDateStr)
             if !moment.source.isEmpty {
-                metaRow(label: "SOURCE", value: sourceLabel)
+                metaRow(label: "来源", value: sourceLabel)
             }
             if let ctx = moment.context, !ctx.isEmpty {
                 metaRow(label: "CONTEXT", value: ctx)

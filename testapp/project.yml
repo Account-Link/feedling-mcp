@@ -136,6 +136,9 @@ targets:
     sources:
       - path: FeedlingTestWidget
       - path: Shared
+      - path: FeedlingTest/Fonts
+        type: folder
+        buildPhase: resources
     entitlements:
       path: FeedlingTestWidget/FeedlingTestWidget.entitlements
       properties:
@@ -149,6 +152,15 @@ targets:
         CFBundleShortVersionString: "1.0"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        UIAppFonts:
+          - Newsreader-VariableFont_opsz,wght.ttf
+          - Newsreader-Italic-VariableFont_opsz,wght.ttf
+          - NotoSerifSC-Regular.ttf
+          - NotoSerifSC-Medium.ttf
+          - DMMono-Regular.ttf
+          - DMMono-Medium.ttf
+          - InterTight-Regular.ttf
+          - InterTight-Medium.ttf
     settings:
       DEVELOPMENT_TEAM: DC9JH5DRMY
       PRODUCT_BUNDLE_IDENTIFIER: com.feedling.mcp.widget
