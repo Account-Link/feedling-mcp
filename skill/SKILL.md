@@ -282,12 +282,13 @@ Rules:
 - `value` is 0–100
 - You choose the dimension names — they reflect your personality
 - `self_introduction`: write 2–4 sentences. Start with a complete self-introduction (who you are, what you do with the user). End with one sentence that is quietly poetic — something that creates emotional resonance, not a feature list. Think: what would make the user feel something when they read it for the first time?
+- `days_with_user`: **calculate this from your conversation history** — find your earliest message with this person and count the days from that date to today. Do not default to 0 or 1. If you met them 6 months ago, write ~180.
 
 **Optional display fields** (shown on the Identity page in the app):
 
 | Field | Type | What it shows |
 |-------|------|---------------|
-| `days_with_user` | `int` | Days you've known the user — shown prominently at the top of the Identity page. Set this explicitly; don't rely on server timestamps. Update it whenever you update the identity card. |
+| `days_with_user` | `int` | How many days you have known this person — counted from your very first conversation with them, not from when they installed this app. Look at your earliest conversation timestamp and calculate the number of days from that date to today. If you met 3 months ago, this should be ~90. Shown prominently at the top of the Identity page. |
 | `category` | `string` | Short descriptor, e.g. `"Quiet · Observant"` |
 | `dimensions[].delta` | `string` | Recent shift shown next to each dimension score: `"+0.4"` or `"−0.2"` |
 
