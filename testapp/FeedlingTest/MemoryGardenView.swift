@@ -75,11 +75,11 @@ struct MemoryGardenView: View {
                 Text(group.month)
                     .font(.newsreader(size: 22))
                     .foregroundStyle(Color.cinFg)
+                Spacer()
                 Text(String(format: "%02d", group.moments.count))
                     .font(.dmMono(size: 9))
                     .foregroundStyle(Color.cinSub)
                     .kerning(1.5)
-                Spacer()
             }
             .padding(.horizontal, 24)
             .padding(.top, 16)
