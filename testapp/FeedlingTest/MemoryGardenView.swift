@@ -69,7 +69,7 @@ struct MemoryGardenView: View {
     }
 
     private func monthSection(_ group: (month: String, moments: [MemoryMoment])) -> some View {
-        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
             // Month header
             HStack(alignment: .lastTextBaseline, spacing: 8) {
                 Text(group.month)
@@ -79,6 +79,7 @@ struct MemoryGardenView: View {
                     .font(.dmMono(size: 9))
                     .foregroundStyle(Color.cinSub)
                     .kerning(1.5)
+                Spacer()
             }
             .padding(.horizontal, 24)
             .padding(.top, 16)
@@ -90,8 +91,9 @@ struct MemoryGardenView: View {
                         .environmentObject(chatVM)
                         .environmentObject(router)
                         .environmentObject(vm)
+                        .onAppear { vm.markAsRead(moment.id) }
                 } label: {
-                    GardenRow(index: idx + 1, moment: moment, isNew: vm.newMomentIds.contains(moment.id))
+                    GardenRow(index: idx + 1, moment: moment, isUnread: vm.unreadIds.contains(moment.id))
                 }
                 .buttonStyle(.plain)
                 .feedlingMemoryVisibilityMenu(moment: moment) { toLocalOnly in
@@ -136,17 +138,17 @@ struct MemoryGardenView: View {
 private struct GardenRow: View {
     let index: Int
     let moment: MemoryMoment
-    let isNew: Bool
+    let isUnread: Bool
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            // Index + fresh dot
+            // Index + unread dot
             VStack(spacing: 6) {
                 Text(String(format: "%02d", index))
                     .font(.dmMono(size: 9))
                     .foregroundStyle(Color.cinSub)
                     .kerning(1)
-                if isNew || moment.isFresh {
+                if isUnread {
                     Circle()
                         .fill(Color.cinAccent1)
                         .frame(width: 5, height: 5)

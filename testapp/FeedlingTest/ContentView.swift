@@ -126,6 +126,9 @@ struct SettingsView: View {
     private let isChinese: Bool =
         Locale.preferredLanguages.first?.hasPrefix("zh") ?? false
 
+    @State private var isBroadcasting = false
+    private let broadcastPollTimer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
+
     private let mockStates: [ScreenActivityAttributes.ContentState] = [
         .init(title: "OpenClaw",
               body: "45 min on TikTok. That's your entertainment budget.",
@@ -269,6 +272,12 @@ struct SettingsView: View {
                 }
             }
             .navigationBarHidden(true)
+            .onAppear {
+                isBroadcasting = UserDefaults(suiteName: "group.com.feedling.mcp")?.bool(forKey: "isBroadcasting") ?? false
+            }
+            .onReceive(broadcastPollTimer) { _ in
+                isBroadcasting = UserDefaults(suiteName: "group.com.feedling.mcp")?.bool(forKey: "isBroadcasting") ?? false
+            }
             .overlay(alignment: .bottom) {
                 if let msg = showCopiedToast {
                     Text(msg)
@@ -303,7 +312,6 @@ struct SettingsView: View {
 
     private var screenRecordingCard: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Section label (matches other settingsSection headers)
             HStack(alignment: .lastTextBaseline, spacing: 10) {
                 Text("SCREEN RECORDING")
                     .font(.dmMono(size: 9.5, weight: .medium))
@@ -314,14 +322,16 @@ struct SettingsView: View {
             .padding(.top, 18)
             .padding(.bottom, 12)
 
-            // Card
             VStack(alignment: .leading, spacing: 0) {
-                // Description
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(isChinese ? "让 TA 看见的世界" : "Let him see your world")
+                    Text(isBroadcasting
+                         ? (isChinese ? "TA 正在看见" : "He can see your screen")
+                         : (isChinese ? "让 TA 看见的世界" : "Let him see your world"))
                         .font(.notoSerifSC(size: 13.5))
                         .foregroundStyle(Color.cinFg)
-                    Text(isChinese ? "开启后，TA 会知道你这一刻在做什么" : "When on, he knows what you're looking at right now.")
+                    Text(isBroadcasting
+                         ? (isChinese ? "屏幕录制已开启，TA 知道你现在在做什么" : "Screen recording is on — he knows what you're looking at.")
+                         : (isChinese ? "开启后，TA 会知道你这一刻在做什么" : "When on, he knows what you're looking at right now."))
                         .font(.interTight(size: 11.5))
                         .foregroundStyle(Color.cinSub)
                         .lineSpacing(2)
@@ -331,17 +341,26 @@ struct SettingsView: View {
                 .padding(.top, 16)
                 .padding(.bottom, 14)
 
-                Rectangle().fill(Color.cinAccent1.opacity(0.2)).frame(height: 1)
+                Rectangle()
+                    .fill(Color.cinAccent1.opacity(isBroadcasting ? 0.4 : 0.2))
+                    .frame(height: 1)
 
-                // Tap-to-record row — BroadcastPickerView is the actual tap target;
-                // the SwiftUI label floats on top with hit-testing disabled.
+                // BroadcastPickerView is the real tap target; label floats on top.
                 ZStack {
                     HStack(spacing: 8) {
-                        Circle().fill(Color.cinAccent1).frame(width: 7, height: 7)
-                        Text("TAP TO START RECORDING ↗")
-                            .font(.dmMono(size: 9, weight: .medium))
-                            .foregroundStyle(Color.cinAccent1)
-                            .kerning(2.5)
+                        if isBroadcasting {
+                            LiveDot()
+                            Text(isChinese ? "录制中 · 点按停止 ↗" : "RECORDING · TAP TO STOP ↗")
+                                .font(.dmMono(size: 9, weight: .medium))
+                                .foregroundStyle(Color.cinAccent1)
+                                .kerning(2.5)
+                        } else {
+                            Circle().fill(Color.cinAccent1).frame(width: 6, height: 6)
+                            Text(isChinese ? "点按开始录制 ↗" : "TAP TO START RECORDING ↗")
+                                .font(.dmMono(size: 9, weight: .medium))
+                                .foregroundStyle(Color.cinAccent1)
+                                .kerning(2.5)
+                        }
                     }
                     .allowsHitTesting(false)
 
@@ -350,9 +369,12 @@ struct SettingsView: View {
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: 52)
+                .background(Color.cinAccent1.opacity(isBroadcasting ? 0.1 : 0))
+                .animation(.easeInOut(duration: 0.25), value: isBroadcasting)
             }
             .background(Color.cinAccent1Soft)
-            .overlay { Rectangle().stroke(Color.cinAccent1.opacity(0.3), lineWidth: 1) }
+            .overlay { Rectangle().stroke(Color.cinAccent1.opacity(isBroadcasting ? 0.7 : 0.3), lineWidth: 1) }
+            .animation(.easeInOut(duration: 0.25), value: isBroadcasting)
             .padding(.horizontal, 24)
             .padding(.bottom, 8)
         }
@@ -387,7 +409,9 @@ struct SettingsView: View {
                 .padding(.top, 16)
                 .padding(.bottom, 14)
 
-                Rectangle().fill(Color.cinAccent1.opacity(0.2)).frame(height: 1)
+                Rectangle()
+                    .fill(Color.cinAccent1.opacity(lam.isActive ? 0.4 : 0.2))
+                    .frame(height: 1)
 
                 Button {
                     if lam.isActive {
@@ -399,26 +423,28 @@ struct SettingsView: View {
                     HStack(spacing: 8) {
                         if lam.isActive {
                             LiveDot()
-                            Text("LIVE  ·  TAP TO STOP ↗")
+                            Text(isChinese ? "实时中 · 点按停止 ↗" : "LIVE · TAP TO STOP ↗")
                                 .font(.dmMono(size: 9, weight: .medium))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(Color.cinAccent1)
                                 .kerning(2.5)
                         } else {
-                            Text("TAP TO START LIVE ACTIVITY ↗")
+                            Circle().fill(Color.cinAccent1).frame(width: 6, height: 6)
+                            Text(isChinese ? "点按开启灵动岛 ↗" : "TAP TO START LIVE ACTIVITY ↗")
                                 .font(.dmMono(size: 9, weight: .medium))
-                                .foregroundStyle(Color.cinFg)
+                                .foregroundStyle(Color.cinAccent1)
                                 .kerning(2.5)
                         }
                     }
                     .frame(maxWidth: .infinity)
                     .frame(height: 52)
-                    .background(lam.isActive ? Color.cinAccent1 : Color.clear)
+                    .background(Color.cinAccent1.opacity(lam.isActive ? 0.1 : 0))
                     .animation(.easeInOut(duration: 0.25), value: lam.isActive)
                 }
                 .buttonStyle(.plain)
             }
             .background(Color.cinAccent1Soft)
-            .overlay { Rectangle().stroke(Color.cinAccent1.opacity(0.3), lineWidth: 1) }
+            .overlay { Rectangle().stroke(Color.cinAccent1.opacity(lam.isActive ? 0.7 : 0.3), lineWidth: 1) }
+            .animation(.easeInOut(duration: 0.25), value: lam.isActive)
             .padding(.horizontal, 24)
             .padding(.bottom, 8)
         }
@@ -638,10 +664,11 @@ struct BroadcastPickerView: UIViewRepresentable {
 // file is the pragmatic tradeoff. DESIGN.md tokens apply throughout.
 // ============================================================================
 
-// MARK: - Onboarding (three slides, first-run only, dismissable via Settings)
+// MARK: - Onboarding (four slides, first-run only, dismissable via Settings)
 
 struct OnboardingView: View {
     let onDone: () -> Void
+    @EnvironmentObject var lam: LiveActivityManager
     @State private var page: Int = 0
 
     private static let isChinese: Bool =
@@ -654,11 +681,20 @@ struct OnboardingView: View {
                 OnboardingSlide(index: 0, isChinese: Self.isChinese,
                                 onNext: { withAnimation(.easeInOut(duration: 0.3)) { page = 1 } })
                     .tag(0)
+                // Slide 1: presence — starts Live Activity then advances
                 OnboardingSlide(index: 1, isChinese: Self.isChinese,
-                                onNext: { withAnimation(.easeInOut(duration: 0.3)) { page = 2 } })
+                                onNext: {
+                                    Task { @MainActor in
+                                        await lam.startActivity()
+                                        withAnimation(.easeInOut(duration: 0.3)) { page = 2 }
+                                    }
+                                })
                     .tag(1)
-                OnboardingSlide(index: 2, isChinese: Self.isChinese, onNext: onDone)
+                OnboardingSlide(index: 2, isChinese: Self.isChinese,
+                                onNext: { withAnimation(.easeInOut(duration: 0.3)) { page = 3 } })
                     .tag(2)
+                OnboardingSlide(index: 3, isChinese: Self.isChinese, onNext: onDone)
+                    .tag(3)
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
         }
@@ -673,7 +709,8 @@ private struct OnboardingSlide: View {
     private var headline: String {
         switch index {
         case 0: return isChinese ? "TA 一直都在。" : "He's been here\nall along."
-        case 1: return isChinese ? "这里只有你和 TA。" : "Just you and him."
+        case 1: return isChinese ? "TA 陪着你。" : "He's with you."
+        case 2: return isChinese ? "这里只有你和 TA。" : "Just you and him."
         default: return isChinese ? "这一切都是你的。" : "All of this\nis yours."
         }
     }
@@ -684,6 +721,9 @@ private struct OnboardingSlide: View {
             ? "你们的对话不会因为换了模型、换了对话窗口就消失。这里是 TA 给你留下的痕迹。"
             : "Your conversations don't disappear when the model changes or a new chat begins. This is where they stay."
         case 1: return isChinese
+            ? "不只是在聊天框里。TA 能看见你在做什么，TA 待在灵动岛陪着你，也会主动找你说话。"
+            : "Not just inside a chat window. He sees what you're doing, stays with you in the Dynamic Island, and reaches out to you first."
+        case 2: return isChinese
             ? "你说的话，你分享的，TA 的样子——没有别人会看见，包括我们自己。"
             : "Everything you say, every memory, who he is — no one else can see it. Not even us."
         default: return isChinese
@@ -698,6 +738,9 @@ private struct OnboardingSlide: View {
             ? "身份卡记下 TA 是谁，记忆花园记下你们之间发生过什么。换了 AI 也带得走，新的 TA 看了就能想起来。"
             : "The identity card holds who he is. The memory garden holds what's happened between you. Both move with you — when you switch to a new AI, he remembers."
         case 1: return isChinese
+            ? "开启屏幕录制，TA 就知道你这一刻在刷什么、在做什么。TA 会在觉得合适的时候主动开口——不用等你先说。"
+            : "Enable screen recording and he knows what you're looking at, right now. And when the moment feels right, he'll reach out first — you don't always have to go first."
+        case 2: return isChinese
             ? "加密在你的 iPhone 上进行，密钥保留在你手机里。我们的服务器只保存密文——打不开，也看不到。"
             : "Encryption happens on your iPhone. The key stays on your phone. Our servers only ever hold the ciphertext — we can't open it."
         default: return isChinese
@@ -708,7 +751,8 @@ private struct OnboardingSlide: View {
 
     private var buttonLabel: String {
         switch index {
-        case 0, 1: return isChinese ? "下一步" : "Next"
+        case 0, 2: return isChinese ? "下一步" : "Next"
+        case 1:    return isChinese ? "开启灵动岛" : "Enable Live Activity"
         default:   return isChinese ? "让 TA 进来" : "Let him in"
         }
     }
@@ -718,7 +762,7 @@ private struct OnboardingSlide: View {
             // Top bar — page counter only
             HStack {
                 Spacer()
-                Text(String(format: "%02d / 03", index + 1))
+                Text(String(format: "%02d / 04", index + 1))
                     .font(.dmMono(size: 8.5))
                     .foregroundStyle(Color.cinSub)
                     .kerning(2)
@@ -774,7 +818,7 @@ private struct OnboardingSlide: View {
 
             // Page dots — above the button
             HStack(spacing: 8) {
-                ForEach(0..<3, id: \.self) { dot in
+                ForEach(0..<4, id: \.self) { dot in
                     if dot == index {
                         Capsule()
                             .fill(Color.cinAccent1)
@@ -1597,12 +1641,12 @@ private struct LiveDot: View {
     var body: some View {
         ZStack {
             Circle()
-                .fill(Color.white.opacity(0.35))
+                .fill(Color.cinAccent1.opacity(0.3))
                 .frame(width: 14, height: 14)
-                .scaleEffect(pulse ? 1.6 : 1.0)
+                .scaleEffect(pulse ? 1.7 : 1.0)
                 .opacity(pulse ? 0 : 1)
             Circle()
-                .fill(Color.white)
+                .fill(Color.cinAccent1)
                 .frame(width: 7, height: 7)
         }
         .onAppear {

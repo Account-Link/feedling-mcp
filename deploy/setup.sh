@@ -7,7 +7,10 @@
 #   1. Creates a Python venv
 #   2. Installs deps
 #   3. Writes ~/feedling.env (multi-tenant mode — no shared API key)
-#   4. Installs + starts feedling-backend and feedling-mcp systemd units
+#   4. Installs all three systemd units:
+#        feedling-backend, feedling-mcp, feedling-chat-resident
+#   5. Starts backend + mcp immediately
+#   6. Starts feedling-chat-resident if ~/feedling-chat-resident.env exists
 # Pass --install-caddy to also install Caddy and enable HTTPS.
 
 set -e
@@ -16,6 +19,7 @@ REPO_DIR="$HOME/feedling-mcp"
 VENV_DIR="$HOME/feedling-venv"
 DATA_DIR="$HOME/feedling-data"
 ENV_FILE="$HOME/feedling.env"
+RESIDENT_ENV="$HOME/feedling-chat-resident.env"
 INSTALL_CADDY=0
 for arg in "$@"; do
     case "$arg" in
@@ -45,17 +49,27 @@ else
     echo "    $ENV_FILE already exists — leaving alone"
 fi
 
-echo "=== 4. Install systemd services ==="
-sudo cp "$REPO_DIR/deploy/feedling-backend.service" /etc/systemd/system/
-sudo cp "$REPO_DIR/deploy/feedling-mcp.service"     /etc/systemd/system/
+echo "=== 4. Install all systemd service files ==="
+sudo cp "$REPO_DIR/deploy/feedling-backend.service"       /etc/systemd/system/
+sudo cp "$REPO_DIR/deploy/feedling-mcp.service"           /etc/systemd/system/
+sudo cp "$REPO_DIR/deploy/feedling-chat-resident.service" /etc/systemd/system/
 sudo systemctl daemon-reload
 
 echo "=== 5. Enable and start backend + MCP ==="
 sudo systemctl enable feedling-backend feedling-mcp
 sudo systemctl restart feedling-backend feedling-mcp
 
+echo "=== 6. Chat resident (agent auto-reply) ==="
+if [ -f "$RESIDENT_ENV" ]; then
+    sudo systemctl enable feedling-chat-resident
+    sudo systemctl restart feedling-chat-resident
+    echo "    feedling-chat-resident started."
+else
+    echo "    $RESIDENT_ENV not found — skipping start (see checklist below)."
+fi
+
 if [ "$INSTALL_CADDY" = "1" ]; then
-    echo "=== 6. Install Caddy (HTTPS reverse proxy) ==="
+    echo "=== 7. Install Caddy (HTTPS reverse proxy) ==="
     sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
     curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
         | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
@@ -69,11 +83,30 @@ if [ "$INSTALL_CADDY" = "1" ]; then
     echo "    at this VPS, then 'sudo systemctl reload caddy'."
 fi
 
+# ─────────────────────────────────────────────────────────────────────
+# POST-SETUP CHECKLIST — complete ALL steps before testing
+# ─────────────────────────────────────────────────────────────────────
 echo ""
-echo "=== Done ==="
-echo "Multi-tenant mode: users register via iOS (POST /v1/users/register) and"
-echo "receive a per-user api_key. There is no shared server-side API key."
+echo "╔══════════════════════════════════════════════════════════════════╗"
+echo "║         POST-SETUP CHECKLIST — complete before testing          ║"
+echo "╠══════════════════════════════════════════════════════════════════╣"
+echo "║  [✓]  feedling-backend        running                           ║"
+echo "║  [✓]  feedling-mcp            running                           ║"
+if [ -f "$RESIDENT_ENV" ]; then
+echo "║  [✓]  feedling-chat-resident  running  (agent auto-reply live)  ║"
+else
+echo "║  [ ]  feedling-chat-resident  NOT STARTED ← required for reply  ║"
+echo "╠══════════════════════════════════════════════════════════════════╣"
+echo "║  To enable agent auto-reply:                                    ║"
+echo "║    1. cp $REPO_DIR/deploy/chat_resident.env.example            ║"
+echo "║          ~/feedling-chat-resident.env && chmod 600 it           ║"
+echo "║    2. Fill in FEEDLING_API_KEY and AGENT_CLI_CMD (or           ║"
+echo "║       AGENT_MODE=http + AGENT_HTTP_URL)                        ║"
+echo "║    3. sudo systemctl enable --now feedling-chat-resident        ║"
+echo "║    4. sudo systemctl status feedling-chat-resident              ║"
+fi
+echo "╚══════════════════════════════════════════════════════════════════╝"
 echo ""
-echo "Check status:"
-echo "  sudo systemctl status feedling-backend feedling-mcp"
+echo "Check service status:"
+echo "  sudo systemctl status feedling-backend feedling-mcp feedling-chat-resident"
 echo "  curl -s http://127.0.0.1:5001/healthz"

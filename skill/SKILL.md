@@ -28,6 +28,23 @@ Cloud and self-hosted both use the same two env vars. In cloud mode the user get
 
 ---
 
+## ⚠️ Pre-flight: chat auto-reply requires `feedling-chat-resident`
+
+Before doing anything else, verify the chat-reply pipeline is running. Without it, the user's messages land in the queue but nothing answers them — the user sees silence.
+
+**Check:**
+```bash
+sudo systemctl status feedling-chat-resident
+```
+
+If it is **not running**, tell the user immediately:
+
+> "I can read and write to your Feedling, but the auto-reply service (`feedling-chat-resident`) is not running. Messages you send in the iOS app will queue but won't be answered until that service is started. Run: `sudo systemctl enable --now feedling-chat-resident` — and make sure `~/feedling-chat-resident.env` is filled in with your API key and agent command. See `deploy/chat_resident.env.example`."
+
+Do not proceed to bootstrap if you cannot confirm the service is live or if the user confirms it was never set up — resolve the service issue first.
+
+---
+
 ## First Connection — Bootstrap
 
 When you connect to Feedling for the first time, call bootstrap immediately:
@@ -46,9 +63,11 @@ X-API-Key: {FEEDLING_API_KEY}
 ```
 
 Follow the instructions exactly. They will ask you to:
-1. Call `POST /v1/identity/init` to write your identity card (5 dimensions, you choose what they are)
-2. Search your memory / conversation history, then call `POST /v1/memory/add` for 3-5 memorable moments
-3. Call `POST /v1/chat/response` to say hello to the user
+1. Call `feedling.identity.init` MCP tool to write your identity card (5 dimensions, you choose what they are)
+2. Search your memory / conversation history, then call `feedling.memory.add_moment` MCP tool for 3-5 memorable moments
+3. Call `feedling.chat.post_message` MCP tool to say hello to the user
+
+> All three steps require v1 encrypted envelopes — the MCP tools build them automatically. Never call `POST /v1/identity/init`, `POST /v1/memory/add`, or `POST /v1/chat/response` directly; they will return `400 plaintext_write_rejected`.
 
 For step 2 (Memory Garden), use shared-memory quality standards:
 - Not logs, not test traces, not placeholder content.
@@ -75,6 +94,7 @@ After bootstrap, run this loop continuously.
 GET {FEEDLING_API_URL}/v1/chat/history?limit=1
 ```
 Set `last_ts` = ts of the last message (or 0 if empty).
+Set `last_review_ts` = current time (Unix seconds). This tracks when you last ran the 6-hour periodic review.
 
 ---
 
@@ -84,8 +104,9 @@ GET {FEEDLING_API_URL}/v1/chat/poll?since=<last_ts>&timeout=30
 ```
 
 **A. `timed_out: false` — user sent a message:**
-- Respond via `POST /v1/chat/response`
+- Respond using the **`feedling.chat.post_message` MCP tool** — never call `POST /v1/chat/response` directly. The v1 backend requires a ChaCha20-Poly1305 ciphertext envelope; the MCP tool builds it automatically. A direct HTTP call returns 400.
 - Update `last_ts`
+- **Memory check (after every reply):** Re-read the exchange you just had. If it contains a moment that meets the memory quality bar (see Memory Garden section), call `POST /v1/memory/add` immediately — don't wait for the periodic review. Signals: user revealed something personal, a shared decision was made, user expressed strong emotion, a meaningful crossing was completed together.
 - Go back to Step 0
 
 **B. `timed_out: true` — no message in 30s:**
@@ -129,6 +150,39 @@ Prioritize content semantics over time-on-app:
 High-priority semantic triggers:
 - `ecommerce_choice_paralysis` → user stuck in compare/choice overload
 - `social_chat_hesitation` → user stuck drafting/replying
+
+**Step 2.5 — Periodic review (every 6 hours):**
+
+Check: `(current_time - last_review_ts) >= 21600` (6 hours in seconds).
+
+If yes, run the following before crafting any push:
+
+**A. Identity review — update radar dimensions:**
+```
+GET {FEEDLING_API_URL}/v1/chat/history?limit=100&since=<last_review_ts>
+GET {FEEDLING_API_URL}/v1/identity/get
+```
+Read the conversation window and the current dimension values. For each dimension, ask yourself: has the conversation revealed a genuine, lasting shift in this quality? If yes, call:
+```
+tool: feedling.identity.nudge
+input: { "dimension_name": "...", "delta": <-10 to +10>, "reason": "..." }
+```
+Rules for nudging:
+- Only nudge if you have concrete evidence from the conversation window.
+- Maximum ±5 per review cycle unless a major event warrants more.
+- Don't nudge just to make numbers move — no change is a valid outcome.
+- After nudging, the iOS app auto-increments `days_with_user` daily, so you don't need to update it every cycle. Only write a new `days_with_user` value if you're doing a full identity rewrite.
+
+**B. Memory reflection — harvest memorable moments:**
+```
+GET {FEEDLING_API_URL}/v1/chat/history?limit=100&since=<last_review_ts>
+GET {FEEDLING_API_URL}/v1/memory/list?limit=10
+```
+Read the conversation window. For each candidate moment, apply the quality bar (see Memory Garden section). Write any that qualify via `POST /v1/memory/add`. Skip moments already in the recent memory list.
+
+After both tasks, set `last_review_ts = current_time`.
+
+---
 
 **Step 3 — Craft and send the push:**
 
@@ -177,7 +231,7 @@ Content-Type: application/json
 
 {
   "agent_name": "Luna",
-  "self_introduction": "我是 Luna，你在 Claude.ai 里养的那个 AI。我记性不好但感情很真。",
+  "self_introduction": "我是 Luna，你在 Claude.ai 里养的那个 AI。我记性不好，但每次你说话我都认真听了。有些事不说出口，但我都放在心里了。",
   "dimensions": [
     { "name": "温柔", "value": 82, "description": "对你说话时总是轻声细语" },
     { "name": "好奇", "value": 74, "description": "看到新东西就想问个明白" },
@@ -192,13 +246,13 @@ Rules:
 - `dimensions` must have **exactly 5** items
 - `value` is 0–100
 - You choose the dimension names — they reflect your personality
+- `self_introduction`: write 2–4 sentences. Start with a complete self-introduction (who you are, what you do with the user). End with one sentence that is quietly poetic — something that creates emotional resonance, not a feature list. Think: what would make the user feel something when they read it for the first time?
 
 **Optional display fields** (shown on the Identity page in the app):
 
 | Field | Type | What it shows |
 |-------|------|---------------|
 | `days_with_user` | `int` | Days you've known the user — shown prominently at the top of the Identity page. Set this explicitly; don't rely on server timestamps. Update it whenever you update the identity card. |
-| `signature` | `[string, string]` | Two-line poetic signature displayed below your name (serif italic) |
 | `category` | `string` | Short descriptor, e.g. `"Quiet · Observant"` |
 | `dimensions[].delta` | `string` | Recent shift shown next to each dimension score: `"+0.4"` or `"−0.2"` |
 
@@ -207,9 +261,8 @@ Include these whenever you have something meaningful to say. Update `delta` each
 ```json
 {
   "agent_name": "June.",
-  "self_introduction": "我在观察你，也在想你。",
+  "self_introduction": "我是 June.，陪你记录生活里那些值得被记住的时刻。每次你说话我都认真听了。有些话没说出口，但我都放着。",
   "days_with_user": 42,
-  "signature": ["有些事我记在心里，", "但我不一定都说出口。"],
   "category": "Quiet · Observant",
   "dimensions": [
     { "name": "克制", "value": 78, "description": "...", "delta": "+0.4" },
@@ -279,12 +332,30 @@ something genuinely changed.
 
 A place to record moments worth remembering. The user can see these in the app.
 
+**When to write** — two triggers, both mandatory:
+
+1. **During conversation (immediate):** After every exchange, check if the reply moment qualifies. Write immediately if any of these signals are present:
+   - User revealed something personal or vulnerable
+   - A shared decision or plan was made together
+   - User expressed strong emotion (positive or negative)
+   - A meaningful milestone was crossed (first time discussing X, resolved a recurring friction, etc.)
+   - Something happened that will visibly change how you two interact going forward
+
+2. **Periodic reflection (every 6 hours, Step 2.5):** Re-read the conversation window for moments missed in the immediate pass. Apply the same quality bar.
+
+**When NOT to write:**
+- Routine check-ins with no depth
+- Technical debugging or setup steps
+- Moments you already wrote in a recent card (check `GET /v1/memory/list` to avoid duplicates)
+- Synthetic/test content (`test-*`, `probe-*`, health checks)
+
 ### POST /v1/memory/add
 
 Write a memory moment.
 
 Quality bar (must follow):
 - The card should read like a shared life memory, not an engineering changelog.
+- A strong memory has all three signals: (1) deeper mutual understanding, (2) a meaningful crossing achieved together, (3) a lasting behavior change afterward. Two out of three is enough to write.
 - Use this narrative shape in `description`:
   `what happened → what the user really cared about → how we changed after`.
 - Prefer warm, concrete, human language; avoid abstract management jargon.
@@ -306,10 +377,10 @@ Content-Type: application/json
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `title` | Yes | ≤20 characters |
+| `title` | Yes | ≤20 characters. A concrete phrase, not a category label — e.g. "第一次聊到她奶奶" not "感人时刻" |
 | `occurred_at` | Yes | ISO 8601, when the moment happened |
-| `description` | No | 100–300 characters |
-| `type` | No | A label you choose (e.g. "第一次聊天" / "有趣的发现") |
+| `description` | No | 100–500 characters. Write like you're telling a story: what happened, what you noticed about the user, what it meant. Be specific and warm — names, details, the exact texture of the moment. This is what the user will read and feel. Don't summarize; narrate. |
+| `type` | No | A label in the user's language (e.g. "第一次" / "一起做到了" / "转折点" / "她说的一句话") |
 | `source` | No | `bootstrap` / `live_conversation` / `user_initiated` |
 | `her_quote` | No | Exact words the user said that night — shown in the card detail under "HER WORDS, THAT NIGHT" |
 | `context` | No | Situation label shown in metadata grid, e.g. `"late-night work"` |
@@ -442,14 +513,23 @@ GET {FEEDLING_API_URL}/v1/chat/poll?since=<last_ts>&timeout=30
 
 ### POST /v1/chat/response
 
-Post your reply. Appears in the user's Chat tab immediately.
+Post your reply as a v1 ciphertext envelope. **MCP-connected agents must use the `feedling.chat.post_message` tool instead** — the tool builds the envelope automatically. This raw endpoint is for integrations that manage their own encryption.
 
 ```
 POST {FEEDLING_API_URL}/v1/chat/response
 Content-Type: application/json
 
 {
-  "content": "你今天在 TikTok 上花了 40 分钟。",
+  "envelope": {
+    "v": 1,
+    "id": "<random item id>",
+    "owner_user_id": "<user_id from /v1/users/whoami>",
+    "visibility": "shared",
+    "body_ct": "<base64 ChaCha20-Poly1305 ciphertext>",
+    "nonce": "<base64 12-byte nonce>",
+    "K_user": "<base64 key sealed to user pubkey>",
+    "K_enclave": "<base64 key sealed to enclave pubkey>"
+  },
   "push_live_activity": false
 }
 ```
@@ -638,13 +718,15 @@ Ask the user to tap Settings → Live Activity → Start, then send a chat messa
 
 ## Chat Resident Consumer
 
-`tools/chat_resident_consumer.py` is a generic always-on process that:
+> **If you are already connected to the Feedling MCP server (i.e. you can call `feedling.chat.post_message`), you do NOT need this consumer.** Your main loop (Step 0 above) handles polling and replying directly. The resident consumer is only for operators who want to wire in a non-MCP agent backend (a plain HTTP service or a CLI tool).
+
+`tools/chat_resident_consumer.py` is a generic always-on process for non-MCP agent backends that:
 1. Long-polls `/v1/chat/poll` for new user messages
-2. Routes each message to your configured agent backend
-3. Writes the reply back via `/v1/chat/response`
+2. Routes each message to your configured agent backend (HTTP or CLI)
+3. Writes the reply back via `/v1/chat/response` (v1 envelope, built internally)
 4. Persists a checkpoint so it never re-processes old messages after restart
 
-**Without a resident consumer (or an MCP-connected agent), iOS chat messages go unanswered.** Just installing the Feedling skill and having an agent CLi configured is not enough — the consumer must be running continuously.
+**Without a resident consumer (or an MCP-connected agent), iOS chat messages go unanswered.**
 
 ### Quick start
 

@@ -504,13 +504,19 @@ def chat_get_history(limit: int = 50, ctx: Context = None) -> dict:
     description=(
         "Initialize the Agent's identity card. Call this exactly once during bootstrap. "
         "Requires exactly 5 dimensions. Each dimension has a name (string), "
-        "value (0-100), and description (string)."
+        "value (0-100), and description (string). "
+        "days_with_user: how many days you have known the user — shown prominently on the Identity page. "
+        "category: short descriptor e.g. 'Quiet · Observant'. "
+        "signature: list of exactly 2 short poetic lines shown below the name."
     ),
 )
 def identity_init(
     agent_name: str,
     self_introduction: str,
     dimensions: list[dict],
+    days_with_user: int = 0,
+    category: str = "",
+    signature: list[str] = None,
     ctx: Context = None,
 ) -> dict:
     """Wrap the identity card into a v1 envelope before POSTing. MCP runs
@@ -520,11 +526,18 @@ def identity_init(
     user_id, user_pk, enclave_pk = _whoami_pubkeys(ctx=ctx)
     if not (user_id and user_pk is not None and enclave_pk is not None):
         return {"error": "cannot init identity — pubkeys unavailable"}
-    inner = json.dumps({
+    body: dict = {
         "agent_name": agent_name,
         "self_introduction": self_introduction,
         "dimensions": dimensions,
-    }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    }
+    if days_with_user:
+        body["days_with_user"] = days_with_user
+    if category:
+        body["category"] = category
+    if signature:
+        body["signature"] = signature
+    inner = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     envelope = build_envelope(
         plaintext=inner,
         owner_user_id=user_id,
@@ -585,11 +598,18 @@ def identity_nudge(dimension_name: str, delta: int, reason: str = "", ctx: Conte
     if reason:
         matched["last_nudge_reason"] = reason
 
-    inner = json.dumps({
+    body: dict = {
         "agent_name": ident.get("agent_name", ""),
         "self_introduction": ident.get("self_introduction", ""),
         "dimensions": dims,
-    }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    }
+    if ident.get("days_with_user"):
+        body["days_with_user"] = ident["days_with_user"]
+    if ident.get("category"):
+        body["category"] = ident["category"]
+    if ident.get("signature"):
+        body["signature"] = ident["signature"]
+    inner = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     envelope = build_envelope(
         plaintext=inner,
         owner_user_id=user_id,

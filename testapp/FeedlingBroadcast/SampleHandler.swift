@@ -11,6 +11,7 @@ class SampleHandler: RPBroadcastSampleHandler {
     private var frameIndex: Int = 0
 
     override func broadcastStarted(withSetupInfo setupInfo: [String: NSObject]?) {
+        SharedConfig.sharedDefaults?.set(true, forKey: "isBroadcasting")
         frameInterval = SharedConfig.captureIntervalSeconds
         lastFrameTime = CACurrentMediaTime()
         frameIndex = 0
@@ -32,6 +33,7 @@ class SampleHandler: RPBroadcastSampleHandler {
     }
 
     override func broadcastFinished() {
+        SharedConfig.sharedDefaults?.set(false, forKey: "isBroadcasting")
         WebSocketManager.shared.disconnect()
         webSocketFrameQueue.clear()
         print("[broadcast] finished")

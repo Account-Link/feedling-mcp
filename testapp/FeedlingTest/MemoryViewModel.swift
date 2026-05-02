@@ -81,7 +81,9 @@ struct MemoryMoment: Codable, Identifiable, Hashable {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let d = formatter.date(from: occurredAt) { return d }
         formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: occurredAt)
+        if let d = formatter.date(from: occurredAt) { return d }
+        // No timezone suffix — treat as UTC
+        return formatter.date(from: occurredAt + "Z")
     }
 
     var relativeOccurredAt: String {
@@ -145,10 +147,16 @@ struct MemoryMoment: Codable, Identifiable, Hashable {
 @MainActor
 class MemoryViewModel: ObservableObject {
     @Published var moments: [MemoryMoment] = []
-    @Published var newMomentIds: Set<String> = []
+    /// IDs not yet opened by the user. Persisted across sessions via UserDefaults.
+    @Published var unreadIds: Set<String> = []
 
     private var timer: Timer?
-    private var knownIds: Set<String> = []
+    private let seenKey = "feedling.seenMomentIds"
+
+    private var seenIds: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: seenKey) ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: seenKey) }
+    }
 
     func startPolling() {
         Task { await loadMoments() }
@@ -160,6 +168,14 @@ class MemoryViewModel: ObservableObject {
     func stopPolling() {
         timer?.invalidate()
         timer = nil
+    }
+
+    /// Call when the user opens a memory card. Removes the unread dot immediately
+    /// and persists the seen state so it survives app relaunches.
+    func markAsRead(_ id: String) {
+        guard unreadIds.contains(id) else { return }
+        unreadIds.remove(id)
+        seenIds = seenIds.union([id])
     }
 
     private func contentSK() -> Curve25519.KeyAgreement.PrivateKey? {
@@ -184,16 +200,9 @@ class MemoryViewModel: ObservableObject {
             } else {
                 incoming = decoded.moments
             }
-            let incomingIds = Set(incoming.map { $0.id })
-            let fresh = incomingIds.subtracting(knownIds)
-            if !fresh.isEmpty {
-                newMomentIds = newMomentIds.union(fresh)
-                Task {
-                    try? await Task.sleep(nanoseconds: 3_000_000_000)
-                    newMomentIds = newMomentIds.subtracting(fresh)
-                }
-            }
-            knownIds = incomingIds
+            let allIds = Set(incoming.map { $0.id })
+            // Any ID not yet seen by the user is unread.
+            unreadIds = allIds.subtracting(seenIds)
             moments = incoming
         } catch {
             print("[MemoryVM] load error: \(error)")
