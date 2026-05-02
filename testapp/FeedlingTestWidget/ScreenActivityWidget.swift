@@ -48,55 +48,43 @@ struct ScreenActivityWidget: Widget {
             LockScreenView(state: context.state)
         } dynamicIsland: { context in
             DynamicIsland {
+                // Expanded — only show content when there's an active push
                 DynamicIslandExpandedRegion(.leading) {
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(Color.cinAccent1)
-                            .frame(width: 6, height: 6)
-                        Text(context.state.title)
-                            .font(.cinMono(12, weight: .medium))
-                            .foregroundStyle(Color.cinAccent1)
-                            .kerning(0.5)
-                    }
-                    .padding(.leading, 6)
-                    .padding(.top, 4)
+                    EmptyView()
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    if let sub = context.state.subtitle, !sub.isEmpty {
-                        Text(sub)
-                            .font(.cinMono(10))
-                            .foregroundStyle(.white.opacity(0.45))
-                            .padding(.trailing, 6)
-                            .padding(.top, 4)
-                    }
+                    EmptyView()
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    Text(context.state.body)
-                        .font(.cinSerif(14))
-                        .foregroundStyle(.white.opacity(0.9))
-                        .multilineTextAlignment(.leading)
-                        .lineLimit(5)
-                        .lineSpacing(3)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 8)
-                        .padding(.top, 6)
-                        .padding(.bottom, 10)
+                    if !context.state.body.isEmpty {
+                        Text(context.state.body)
+                            .font(.cinSerif(14))
+                            .foregroundStyle(.white.opacity(0.9))
+                            .multilineTextAlignment(.leading)
+                            .lineLimit(5)
+                            .lineSpacing(3)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 8)
+                            .padding(.top, 6)
+                            .padding(.bottom, 10)
+                    }
                 }
             } compactLeading: {
-                Circle()
-                    .fill(Color.cinAccent1)
-                    .frame(width: 7, height: 7)
-                    .padding(.leading, 2)
+                // Empty when idle; subtle dot when agent has sent a message
+                if !context.state.body.isEmpty {
+                    Circle()
+                        .fill(Color.cinAccent1)
+                        .frame(width: 6, height: 6)
+                        .padding(.leading, 2)
+                }
             } compactTrailing: {
-                Text(context.state.title)
-                    .font(.cinMono(10, weight: .medium))
-                    .foregroundStyle(Color.cinAccent1)
-                    .lineLimit(1)
+                EmptyView()
             } minimal: {
+                // Minimal presence — tiny dot so the island isn't jarring
                 Circle()
-                    .fill(Color.cinAccent1)
-                    .frame(width: 7, height: 7)
+                    .fill(Color.cinAccent1.opacity(0.5))
+                    .frame(width: 5, height: 5)
             }
             .widgetURL(URL(string: "feedlingtest://live-activity"))
             .keylineTint(Color.cinAccent1)
@@ -109,37 +97,57 @@ struct ScreenActivityWidget: Widget {
 private struct LockScreenView: View {
     let state: ScreenActivityAttributes.ContentState
 
+    private var days: Int {
+        Int(state.data["days"] ?? "0") ?? 0
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Header row
-            HStack(alignment: .center) {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(Color.cinAccent1)
-                        .frame(width: 6, height: 6)
-                    Text(state.title.uppercased())
-                        .font(.cinMono(9, weight: .medium))
-                        .foregroundStyle(Color.cinAccent1)
-                        .kerning(2)
-                }
-                Spacer()
-                if let sub = state.subtitle, !sub.isEmpty {
-                    Text(sub)
-                        .font(.cinMono(9))
-                        .foregroundStyle(Color.cinSub)
-                        .kerning(1)
-                }
+        Group {
+            if state.body.isEmpty {
+                idleView
+            } else {
+                activeView
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 14)
-            .padding(.bottom, 10)
+        }
+        .frame(maxWidth: .infinity)
+        .background(Color.cinBg)
+        .activityBackgroundTint(Color.cinBg)
+        .activitySystemActionForegroundColor(Color.cinFg)
+    }
 
-            Rectangle()
-                .fill(Color.cinLine)
-                .frame(height: 0.5)
-                .padding(.horizontal, 16)
+    // Idle: days-together display
+    private var idleView: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text("\(days)")
+                .font(.cinNewsreader(32))
+                .foregroundStyle(Color.cinAccent1)
+            Text(days == 1 ? "day together" : "days together")
+                .font(.cinNewsreader(14, italic: true))
+                .foregroundStyle(Color.cinSub)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 18)
+    }
 
-            // Body
+    // Active push: show agent's message
+    private var activeView: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let sub = state.subtitle, !sub.isEmpty {
+                Text(sub)
+                    .font(.cinMono(9))
+                    .foregroundStyle(Color.cinSub)
+                    .kerning(1.5)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 14)
+                    .padding(.bottom, 8)
+
+                Rectangle()
+                    .fill(Color.cinLine)
+                    .frame(height: 0.5)
+                    .padding(.horizontal, 20)
+            }
+
             Text(state.body)
                 .font(.cinSerif(13))
                 .foregroundStyle(Color.cinFg)
@@ -147,14 +155,10 @@ private struct LockScreenView: View {
                 .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .padding(.top, 10)
-                .padding(.bottom, 14)
+                .padding(.horizontal, 20)
+                .padding(.top, state.subtitle?.isEmpty == false ? 10 : 18)
+                .padding(.bottom, 18)
         }
-        .frame(maxWidth: .infinity)
-        .background(Color.cinBg)
-        .activityBackgroundTint(Color.cinBg)
-        .activitySystemActionForegroundColor(Color.cinFg)
     }
 }
 
@@ -167,11 +171,20 @@ extension ScreenActivityAttributes {
 }
 
 extension ScreenActivityAttributes.ContentState {
-    static var preview: ScreenActivityAttributes.ContentState {
+    static var previewIdle: ScreenActivityAttributes.ContentState {
         .init(
-            title: "OpenClaw",
+            title: "",
+            body: "",
+            data: ["days": "42"],
+            updatedAt: Date()
+        )
+    }
+    static var previewActive: ScreenActivityAttributes.ContentState {
+        .init(
+            title: "",
+            subtitle: "TikTok · 45m",
             body: "你今天刷了 45 分钟 TikTok，差不多该歇一歇了。",
-            data: ["top_app": "TikTok", "minutes": "45"],
+            data: ["days": "42"],
             updatedAt: Date()
         )
     }

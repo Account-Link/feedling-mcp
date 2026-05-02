@@ -918,7 +918,7 @@ struct PrivacyPageView: View {
                         NavigationLink {
                             StorageBackendView()
                         } label: {
-                            privacyLinkRow("Backend: \(api.storageMode == .cloud ? "Feedling Cloud" : "Self-hosted")")
+                            privacyLinkRow("Backend: \(api.storageMode == .cloud ? "Cloud" : "Self-hosted")")
                         }
                         .buttonStyle(.plain)
                         .padding(.horizontal, 24)
@@ -1116,7 +1116,7 @@ struct StorageBackendView: View {
                 Rectangle().fill(Color.cinFg).frame(height: 1)
                 ScrollView {
                     VStack(spacing: 0) {
-                        backendRow("Mode", value: api.storageMode == .cloud ? "Feedling Cloud" : "Self-hosted")
+                        backendRow("Mode", value: api.storageMode == .cloud ? "Cloud" : "Self-hosted")
                         backendRow("API URL", value: api.baseURL)
                         backendRow("User ID", value: api.userId.isEmpty ? "—" : String(api.userId.prefix(20)) + "…")
                     }
@@ -1588,10 +1588,10 @@ struct ComposeHashChangeConsentView: View {
                     .font(.system(size: 56))
                     .foregroundStyle(Color.feedlingSage)
                     .accessibilityHidden(true)
-                Text("Feedling has a new version.")
+                Text("A new version is available.")
                     .multilineTextAlignment(.center)
                     .feedlingDisplay(.medium)
-                Text("The app on your phone just saw a newer version of the Feedling server.")
+                Text("The app on your phone just saw a newer version of the server.")
                     .multilineTextAlignment(.center)
                     .feedlingBody()
                     .frame(maxWidth: 320)

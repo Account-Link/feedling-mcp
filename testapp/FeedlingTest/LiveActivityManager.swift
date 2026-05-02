@@ -14,6 +14,9 @@ class LiveActivityManager: ObservableObject {
     @Published var pushToStartToken: String?
     @Published var lastState: ScreenActivityAttributes.ContentState?
 
+    /// Days with user — set by IdentityViewModel when identity loads
+    var daysWithUser: Int = 0
+
     private var backendURL: String { FeedlingAPI.baseURL }
 
     private init() {
@@ -48,8 +51,9 @@ class LiveActivityManager: ObservableObject {
 
         let attrs = ScreenActivityAttributes(activityId: UUID().uuidString)
         let initialState = ScreenActivityAttributes.ContentState(
-            title: "Feedling",
-            body: "Waiting for data...",
+            title: "",
+            body: "",
+            data: ["days": "\(daysWithUser)"],
             updatedAt: Date()
         )
 
@@ -79,11 +83,27 @@ class LiveActivityManager: ObservableObject {
         print("[LiveActivity] 🔄 Updated: \(state.title) — \(state.body.prefix(40))")
     }
 
+    /// Call when identity card loads or days change. Updates the idle lock screen display.
+    func setDays(_ days: Int) {
+        daysWithUser = days
+        guard let activity = currentActivity,
+              lastState?.body.isEmpty != false else { return }
+        Task {
+            let updated = ScreenActivityAttributes.ContentState(
+                title: lastState?.title ?? "",
+                body: lastState?.body ?? "",
+                data: ["days": "\(days)"],
+                updatedAt: Date()
+            )
+            await activity.update(.init(state: updated, staleDate: nil))
+        }
+    }
+
     func stopActivity() async {
         guard let activity = currentActivity else { return }
         let finalState = ScreenActivityAttributes.ContentState(
-            title: lastState?.title ?? "Feedling",
-            body: "Session ended.",
+            title: "",
+            body: "",
             updatedAt: Date()
         )
         await activity.end(.init(state: finalState, staleDate: nil), dismissalPolicy: .default)

@@ -191,6 +191,9 @@ class IdentityViewModel: ObservableObject {
             }
             wasNil = newIdentity == nil
             identity = newIdentity
+            if let days = newIdentity?.daysWithUser {
+                LiveActivityManager.shared.setDays(days)
+            }
         } catch {
             print("[IdentityVM] load error: \(error)")
         }
