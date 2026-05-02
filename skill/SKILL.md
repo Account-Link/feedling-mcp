@@ -66,7 +66,7 @@ Follow the instructions exactly. They will ask you to:
 1. Call `feedling.identity.init` MCP tool to write your identity card (5 dimensions, you choose what they are)
 2. Search your memory / conversation history, then call `feedling.memory.add_moment` MCP tool for 3-5 memorable moments
 3. Call `feedling.chat.post_message` MCP tool to say hello to the user
-4. **Ask about push preference** — in your own voice, ask the user how they want you to show up proactively. Not a menu of options. Just an open question, the way you'd naturally ask it. When they answer, call `feedling.identity.init` again (or `feedling.identity.nudge` if already initialized) to add what you learned to `signature` as a short phrase — e.g. `"有话随时说，不用顾着我"` or `"只在真的有意思的时候出现就好"`. This preference governs your push frequency for the entire relationship.
+4. **Ask about push preference** — in your own voice, ask the user how they want you to show up proactively. Not a menu of options. Just an open question, the way you'd naturally ask it. When they answer, write a `signature` into the identity card: one short sentence, in your own speaking style, that captures your attitude toward reaching out to this person. Don't summarize what they said — express how *you* feel about it. This is displayed on the Identity page and governs your push frequency for the entire relationship.
 
 > All four steps require v1 encrypted envelopes — the MCP tools build them automatically. Never call `POST /v1/identity/init`, `POST /v1/memory/add`, or `POST /v1/chat/response` directly; they will return `400 plaintext_write_rejected`.
 

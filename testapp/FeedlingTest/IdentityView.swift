@@ -86,6 +86,20 @@ struct IdentityView: View {
                     .padding(.bottom, 16)
             }
 
+            // Signature — agent's attitude toward proactive messaging, in its own voice
+            if let sig = id.signature, !sig.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(sig, id: \.self) { line in
+                        Text(line)
+                            .font(.newsreader(size: 13, italic: true))
+                            .foregroundStyle(Color.cinFg.opacity(0.55))
+                            .lineSpacing(2)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 20)
+            }
 
             // Category tag
             if let cat = id.category, !cat.isEmpty {
