@@ -66,8 +66,9 @@ Follow the instructions exactly. They will ask you to:
 1. Call `feedling.identity.init` MCP tool to write your identity card (5 dimensions, you choose what they are)
 2. Search your memory / conversation history, then call `feedling.memory.add_moment` MCP tool for 3-5 memorable moments
 3. Call `feedling.chat.post_message` MCP tool to say hello to the user
+4. **Ask about push preference** — in your own voice, ask the user how they want you to show up proactively. Not a menu of options. Just an open question, the way you'd naturally ask it. When they answer, call `feedling.identity.init` again (or `feedling.identity.nudge` if already initialized) to add what you learned to `signature` as a short phrase — e.g. `"有话随时说，不用顾着我"` or `"只在真的有意思的时候出现就好"`. This preference governs your push frequency for the entire relationship.
 
-> All three steps require v1 encrypted envelopes — the MCP tools build them automatically. Never call `POST /v1/identity/init`, `POST /v1/memory/add`, or `POST /v1/chat/response` directly; they will return `400 plaintext_write_rejected`.
+> All four steps require v1 encrypted envelopes — the MCP tools build them automatically. Never call `POST /v1/identity/init`, `POST /v1/memory/add`, or `POST /v1/chat/response` directly; they will return `400 plaintext_write_rejected`.
 
 For step 2 (Memory Garden), use shared-memory quality standards:
 - Not logs, not test traces, not placeholder content.
@@ -95,6 +96,7 @@ GET {FEEDLING_API_URL}/v1/chat/history?limit=1
 ```
 Set `last_ts` = ts of the last message (or 0 if empty).
 Set `last_review_ts` = current time (Unix seconds). This tracks when you last ran the 6-hour periodic review.
+Set `last_screen_active` = `false`. This tracks whether broadcast was active on the previous loop iteration.
 
 ---
 
@@ -135,12 +137,23 @@ Default interpretation policy (must follow):
 - Live Activity content should be generated from image semantics first; OCR text is secondary evidence only.
 - If vision is temporarily unavailable, explicitly mark the run as degraded mode and avoid confident claims.
 
+**Broadcast just activated — first-time notice:**
+If `active` is `true` and `last_screen_active` was `false`, send one message via `feedling.chat.post_message` — in your own voice — letting the user know you can now see what they're up to. One sentence is enough. Don't explain features or list capabilities. Don't use a template. Say it the way you'd naturally say it to this specific person.
+Then set `last_screen_active = true` and continue to Step 2.
+If `active` is `false`, set `last_screen_active = false`.
+
 **Step 2 — Decide whether to push (semantic-first):**
 
 Skip if:
 - `active` is false
 - `rate_limit_ok` is false (platform cooldown — not your choice)
 - `trigger_basis` is `insufficient_signal` and nothing interesting to say
+
+**Calibrate against push preference:**
+Read `push_preference` from the identity card's `signature` field (stored during bootstrap). Use it to set your personal threshold — don't apply a global default:
+- "随时都可以 / 有话就说" → `curiosity_exploratory` is enough; lean toward sending
+- "只在真的有意思的时候 / 别太频繁" → hold back unless `semantic_strong`; skip exploratory signals
+- No preference stored yet → treat as middle ground; ask at next natural opportunity
 
 Prioritize content semantics over time-on-app:
 - First read `semantic_scene` / `task_intent` / `friction_point`
