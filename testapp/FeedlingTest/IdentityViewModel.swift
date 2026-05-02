@@ -40,7 +40,20 @@ struct IdentityCard: Codable {
     }
 
     var daysWithUser: Int {
-        if let d = daysWithUserWritten { return d }
+        if let snapshot = daysWithUserWritten {
+            // Treat the written value as a snapshot taken at updatedAt.
+            // Add days elapsed since then so the count self-updates daily.
+            let fmt = ISO8601DateFormatter()
+            fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let base = fmt.date(from: updatedAt) ?? {
+                fmt.formatOptions = [.withInternetDateTime]
+                return fmt.date(from: updatedAt)
+            }()
+            let elapsed = base.flatMap {
+                Calendar.current.dateComponents([.day], from: $0, to: Date()).day
+            } ?? 0
+            return snapshot + elapsed
+        }
         guard !createdAt.isEmpty else { return 0 }
         let fmt = ISO8601DateFormatter()
         fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

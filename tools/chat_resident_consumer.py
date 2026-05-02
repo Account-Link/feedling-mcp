@@ -39,6 +39,7 @@ Optional:
   LOG_LEVEL             DEBUG / INFO / WARNING (default: INFO)
 """
 
+import base64
 import json
 import logging
 import os
@@ -51,6 +52,20 @@ import time
 from pathlib import Path
 
 import httpx
+
+# ---------------------------------------------------------------------------
+# v1 Envelope encryption (same logic as mcp_server.py / _whoami_pubkeys)
+# ---------------------------------------------------------------------------
+# The backend's build_envelope lives in backend/content_encryption.py.
+# We add that directory to the path so the consumer can encrypt replies
+# without duplicating crypto code.
+
+sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
+try:
+    from content_encryption import build_envelope as _build_envelope
+    _ENCRYPTION_AVAILABLE = True
+except ImportError:
+    _ENCRYPTION_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -122,9 +137,17 @@ def _save_checkpoint(ts: float) -> None:
 # Agent backends
 # ---------------------------------------------------------------------------
 
-# Known system-line patterns emitted by some CLI agents (defensive strip).
-_SYSTEM_LINE_RE = re.compile(
-    r"^\s*(session_id\s*:.*|---+|={3,}|\[.*\]\s*$)",
+# Decoration / system lines that are never part of the actual reply.
+_NOISE_LINE_RE = re.compile(
+    r"^\s*("
+    r"session_id\s*:.*"      # hermes session footer
+    r"|---+|={3,}"           # separator lines
+    r"|\[.*\]\s*$"           # [bracket] meta lines
+    r"|💭.*"                 # hermes thinking-emoji prefix
+    r"|\*\*[^*]+\*\*\s*$"   # **standalone bold header**
+    r"|</?think>"            # <think> XML tags
+    r"|Reasoning:\s*$"       # bare "Reasoning:" label
+    r")",
     re.IGNORECASE,
 )
 
@@ -132,8 +155,11 @@ _SYSTEM_LINE_RE = re.compile(
 def _extract_text_from_cli_output(raw: str) -> str:
     """Best-effort extraction from raw CLI stdout.
 
-    Try JSON parse first (e.g. --output-mode json).
-    Fall back to line-by-line strip of known system lines.
+    1. Try JSON parse first (hermes --output-mode json gives a clean field).
+    2. Split into blank-line-separated paragraphs after stripping noise lines.
+    3. Return the last paragraph that contains CJK characters — reasoning
+       blocks are typically English and precede the Chinese reply.
+    4. Fall back to the last non-empty paragraph if no CJK found.
     """
     raw = raw.strip()
     if not raw:
@@ -148,9 +174,29 @@ def _extract_text_from_cli_output(raw: str) -> str:
     except (json.JSONDecodeError, TypeError):
         pass
 
-    # Text path — strip system lines
-    lines = [ln for ln in raw.splitlines() if not _SYSTEM_LINE_RE.match(ln)]
-    return "\n".join(lines).strip()
+    # Strip noise lines, then split into paragraphs
+    clean = [ln for ln in raw.splitlines() if not _NOISE_LINE_RE.match(ln)]
+    paragraphs: list[str] = []
+    current: list[str] = []
+    for ln in clean:
+        if ln.strip():
+            current.append(ln)
+        else:
+            if current:
+                paragraphs.append("\n".join(current).strip())
+                current = []
+    if current:
+        paragraphs.append("\n".join(current).strip())
+
+    if not paragraphs:
+        return ""
+
+    # Prefer the last paragraph that contains CJK characters
+    for para in reversed(paragraphs):
+        if any("一" <= c <= "鿿" for c in para):
+            return para
+
+    return paragraphs[-1]
 
 
 def call_agent_http(message: str) -> str:
@@ -204,6 +250,55 @@ def call_agent(message: str) -> str:
 # Feedling API helpers
 # ---------------------------------------------------------------------------
 
+# Cached from /v1/users/whoami at startup. Refreshed on 401/encryption error.
+_whoami_cache: dict = {"user_id": "", "user_pk": None, "enclave_pk": None}
+
+
+def _load_whoami() -> bool:
+    """Fetch encryption keys from /v1/users/whoami and cache them.
+
+    Returns True if both the user pubkey and enclave pubkey were obtained.
+    A missing enclave pubkey is still usable (visibility falls back to
+    local_only), but shared-visibility envelopes require it.
+    """
+    try:
+        resp = httpx.get(
+            f"{FEEDLING_API_URL}/v1/users/whoami", headers=_HEADERS, timeout=10
+        )
+        resp.raise_for_status()
+        info = resp.json()
+    except Exception as e:
+        log.warning("whoami fetch failed: %s", e)
+        return False
+
+    user_id = info.get("user_id", "") or ""
+    user_pk_b64 = (info.get("public_key") or "").strip()
+    enc_pk_hex = (info.get("enclave_content_public_key_hex") or "").strip()
+
+    try:
+        user_pk = base64.b64decode(user_pk_b64) if user_pk_b64 else None
+        if user_pk is not None and len(user_pk) != 32:
+            user_pk = None
+    except Exception:
+        user_pk = None
+
+    try:
+        enc_pk = bytes.fromhex(enc_pk_hex) if enc_pk_hex else None
+        if enc_pk is not None and len(enc_pk) != 32:
+            enc_pk = None
+    except Exception:
+        enc_pk = None
+
+    _whoami_cache.update(user_id=user_id, user_pk=user_pk, enclave_pk=enc_pk)
+    log.info(
+        "whoami loaded — user_id=%s user_pk=%s enclave_pk=%s",
+        user_id,
+        "ok" if user_pk else "MISSING",
+        "ok" if enc_pk else "missing (local_only fallback)",
+    )
+    return bool(user_id and user_pk)
+
+
 def poll_chat(since: float) -> dict:
     url = f"{FEEDLING_API_URL}/v1/chat/poll"
     params = {"since": since, "timeout": POLL_TIMEOUT}
@@ -213,9 +308,41 @@ def poll_chat(since: float) -> dict:
 
 
 def post_reply(content: str) -> None:
+    """Post agent reply as a v1 ciphertext envelope.
+
+    Falls back to plaintext only when encryption is unavailable — this will
+    return 400 on v1 backends and is logged as an error so it's visible.
+    """
     url = f"{FEEDLING_API_URL}/v1/chat/response"
-    payload = {"content": content, "push_live_activity": False}
-    resp = httpx.post(url, json=payload, headers=_HEADERS, timeout=15)
+
+    user_id = _whoami_cache["user_id"]
+    user_pk: bytes | None = _whoami_cache["user_pk"]
+    enc_pk: bytes | None = _whoami_cache["enclave_pk"]
+
+    if _ENCRYPTION_AVAILABLE and user_id and user_pk:
+        visibility = "shared" if enc_pk else "local_only"
+        envelope = _build_envelope(
+            plaintext=content.encode("utf-8"),
+            owner_user_id=user_id,
+            user_pk_bytes=user_pk,
+            enclave_pk_bytes=enc_pk,
+            visibility=visibility,
+        )
+        resp = httpx.post(
+            url, json={"envelope": envelope}, headers=_HEADERS, timeout=15
+        )
+        resp.raise_for_status()
+        return
+
+    # Encryption unavailable — plaintext path (will 400 on v1 backends).
+    log.error(
+        "ENCRYPTION UNAVAILABLE — posting plaintext will fail on v1 backends. "
+        "Ensure content_encryption.py is importable and whoami succeeded."
+    )
+    resp = httpx.post(
+        url, json={"content": content, "push_live_activity": False},
+        headers=_HEADERS, timeout=15,
+    )
     resp.raise_for_status()
 
 
@@ -281,6 +408,20 @@ def _process_messages(messages: list) -> float:
 
 
 def run() -> None:
+    # Load encryption keys before entering the poll loop. If unavailable,
+    # every reply will fail with 400; log loudly so the operator notices.
+    if _ENCRYPTION_AVAILABLE:
+        if not _load_whoami():
+            log.error(
+                "whoami failed at startup — replies will NOT encrypt correctly. "
+                "Check FEEDLING_API_URL and FEEDLING_API_KEY, then restart."
+            )
+    else:
+        log.error(
+            "content_encryption module not found — v1 envelope posting disabled. "
+            "Make sure the consumer runs from the feedling-mcp repo root."
+        )
+
     last_ts = _load_checkpoint()
 
     if last_ts == 0.0:

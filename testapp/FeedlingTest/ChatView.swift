@@ -7,8 +7,8 @@ struct ChatView: View {
     @EnvironmentObject var identityVM: IdentityViewModel
     @StateObject private var voice = VoiceInputManager()
 
-    @State private var voicePrefix: String = ""
     @State private var micPulse: Bool = false
+    @State private var keyboardHeight: CGFloat = 0
 
     var agentName: String { identityVM.identity?.agentName.isEmpty == false ? identityVM.identity!.agentName : "—" }
     var dayCount: Int { identityVM.identity?.daysWithUser ?? 0 }
@@ -23,11 +23,14 @@ struct ChatView: View {
             }
             inputBar
         }
+        // The root container ignores keyboard safe area, so we track keyboard
+        // height here and manually push the chat ZStack above the keyboard.
+        .padding(.bottom, keyboardHeight)
         .onAppear { vm.startPolling() }
         .onDisappear { voice.stop() }
         .onChange(of: voice.liveTranscript) { text in
             guard !text.isEmpty else { return }
-            vm.inputText = voicePrefix + text
+            vm.inputText = text
         }
         .onChange(of: voice.isRecording) { recording in
             if recording {
@@ -37,6 +40,13 @@ struct ChatView: View {
             } else {
                 withAnimation(.default) { micPulse = false }
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notif in
+            guard let frame = notif.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+            withAnimation(.easeInOut(duration: 0.25)) { keyboardHeight = frame.height }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            withAnimation(.easeInOut(duration: 0.25)) { keyboardHeight = 0 }
         }
     }
 
@@ -70,7 +80,6 @@ struct ChatView: View {
 
                 BroadcastPickerView()
                     .frame(width: 44, height: 36)
-                    .opacity(0.011)
             }
             .frame(width: 44, height: 36)
             .overlay { Rectangle().stroke(Color.cinLine, lineWidth: 1).allowsHitTesting(false) }
@@ -112,6 +121,9 @@ struct ChatView: View {
                 if vm.isWaitingForReply { scrollToBottom(proxy) }
             }
             .onAppear { scrollToBottom(proxy, animated: false) }
+            .onChange(of: keyboardHeight) { height in
+                if height > 0 { scrollToBottom(proxy) }
+            }
         }
     }
 
@@ -119,14 +131,33 @@ struct ChatView: View {
 
     private var inputBar: some View {
         VStack(spacing: 0) {
+            if voice.isRecording {
+                VStack(spacing: 6) {
+                    WaveformBars(level: voice.audioLevel)
+                        .frame(height: 38)
+                    if !vm.inputText.isEmpty {
+                        Text(vm.inputText)
+                            .font(.notoSerifSC(size: 11))
+                            .foregroundStyle(Color.cinSub)
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 20)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 14)
+                .padding(.bottom, 10)
+                .background(Color.cinBg)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             Rectangle().fill(Color.cinLine).frame(height: 1)
-            HStack(alignment: .bottom, spacing: 0) {
+            HStack(alignment: .center, spacing: 0) {
                 // Mic button
                 Button {
                     if voice.isRecording {
                         voice.stop()
                     } else {
-                        voicePrefix = vm.inputText.isEmpty ? "" : vm.inputText + " "
                         dismissKeyboard()
                         voice.start()
                     }
@@ -154,10 +185,11 @@ struct ChatView: View {
                             .foregroundStyle(Color.cinSub)
                     }
                     .submitLabel(.send)
-                    .onSubmit { Task { await vm.sendMessage() } }
+                    .onSubmit { voice.stop(); Task { await vm.sendMessage() } }
                     .frame(maxWidth: .infinity)
 
                 Button {
+                    voice.stop()
                     Task { await vm.sendMessage() }
                 } label: {
                     Text("SEND")
@@ -179,6 +211,7 @@ struct ChatView: View {
             .padding(.bottom, 28)
             .background(Color(hex: "#fbf7ec"))
         }
+        .animation(.easeInOut(duration: 0.25), value: voice.isRecording)
     }
 
     private func dismissKeyboard() {
@@ -335,11 +368,49 @@ extension View {
     }
 }
 
+// MARK: - Voice Waveform
+
+private struct WaveformBars: View {
+    let level: Float
+    private let count = 26
+    @State private var phase: Double = 0
+    @State private var ticker: Task<Void, Never>?
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(0..<count, id: \.self) { i in
+                Capsule()
+                    .fill(Color.cinAccent1.opacity(0.88))
+                    .frame(width: 2.5, height: barHeight(i))
+            }
+        }
+        .animation(.linear(duration: 0.05), value: phase)
+        .onAppear {
+            ticker = Task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                    phase += 0.14
+                }
+            }
+        }
+        .onDisappear { ticker?.cancel(); ticker = nil }
+    }
+
+    private func barHeight(_ i: Int) -> CGFloat {
+        let offset = Double(i) / Double(count) * .pi * 2.4
+        let wave = sin(phase * 2.0 + offset) * 0.5 + 0.5
+        let lv = CGFloat(min(max(Double(level) * 14.0, 0), 1.0))
+        let amp = 0.16 + lv * 0.84
+        return 3 + 30 * wave * amp
+    }
+}
+
 // MARK: - Voice Input Manager
 
 final class VoiceInputManager: ObservableObject {
     @Published var isRecording = false
     @Published var liveTranscript = ""
+    @Published var audioLevel: Float = 0.0
 
     private let recognizer: SFSpeechRecognizer? =
         SFSpeechRecognizer(locale: Locale(identifier: "zh-CN")) ?? SFSpeechRecognizer()
@@ -385,6 +456,12 @@ final class VoiceInputManager: ObservableObject {
         let node = engine.inputNode
         node.installTap(onBus: 0, bufferSize: 1024, format: node.outputFormat(forBus: 0)) { [weak self] buf, _ in
             self?.request?.append(buf)
+            guard let data = buf.floatChannelData?[0] else { return }
+            let n = Int(buf.frameLength)
+            var sum: Float = 0
+            for i in 0..<n { sum += data[i] * data[i] }
+            let rms = sqrtf(sum / Float(max(n, 1)))
+            DispatchQueue.main.async { self?.audioLevel = rms }
         }
 
         engine.prepare()
@@ -405,11 +482,12 @@ final class VoiceInputManager: ObservableObject {
         request = nil
         task?.cancel(); task = nil
         isRecording = false
+        audioLevel = 0
         liveTranscript = ""
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
     private func cleanUp() {
-        request = nil; task = nil; isRecording = false; liveTranscript = ""
+        request = nil; task = nil; isRecording = false; audioLevel = 0; liveTranscript = ""
     }
 }
