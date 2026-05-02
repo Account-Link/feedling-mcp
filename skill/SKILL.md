@@ -28,9 +28,11 @@ Cloud and self-hosted both use the same two env vars. In cloud mode the user get
 
 ---
 
-## ⚠️ Pre-flight: chat auto-reply requires `feedling-chat-resident`
+## ⚠️ Pre-flight: verify the chat pipeline
 
-Before doing anything else, verify the chat-reply pipeline is running. Without it, the user's messages land in the queue but nothing answers them — the user sees silence.
+**If you are connecting via MCP (Claude.ai / Claude Desktop):** skip this check. You are the chat pipeline — your `feedling.chat.post_message` tool handles replies directly. `feedling-chat-resident` is not needed and not relevant.
+
+**If you are an HTTP-mode agent (OpenClaw / Hermes / CLI):** verify the resident consumer is running before anything else. Without it, the user's messages land in the queue but nothing answers them.
 
 **Check:**
 ```bash
@@ -161,10 +163,7 @@ Skip if:
 - `trigger_basis` is `insufficient_signal` and nothing interesting to say
 
 **Calibrate against push preference:**
-Read `push_preference` from the identity card's `signature` field (stored during bootstrap). Use it to set your personal threshold — don't apply a global default:
-- "随时都可以 / 有话就说" → `curiosity_exploratory` is enough; lean toward sending
-- "只在真的有意思的时候 / 别太频繁" → hold back unless `semantic_strong`; skip exploratory signals
-- No preference stored yet → treat as middle ground; ask at next natural opportunity
+Read the `signature` from the identity card. It's a sentence you wrote in your own voice after the user told you how they want to be reached. Interpret it — don't pattern-match. A sentence like "你说有话随时说，那我就不藏着了" means lean toward sending; something like "你说等真的有意思的再来" means hold back unless `semantic_strong`. No signature yet → treat as middle ground; ask at next natural opportunity.
 
 Prioritize content semantics over time-on-app:
 - First read `semantic_scene` / `task_intent` / `friction_point`
@@ -202,7 +201,7 @@ Rules for nudging:
 GET {FEEDLING_API_URL}/v1/chat/history?limit=100&since=<last_review_ts>
 GET {FEEDLING_API_URL}/v1/memory/list?limit=10
 ```
-Read the conversation window. For each candidate moment, apply the quality bar (see Memory Garden section). Write any that qualify via `POST /v1/memory/add`. Skip moments already in the recent memory list.
+Read the conversation window. For each candidate moment, apply the quality bar (see Memory Garden section). Write any that qualify via the `feedling.memory.add_moment` MCP tool. Skip moments already in the recent memory list.
 
 After both tasks, set `last_review_ts = current_time`.
 
@@ -227,6 +226,13 @@ Avoid: "注意休息" / "少玩手机" / 没有 signal 支撑的确定性断言
 
 **Step 3 — Send the push and sync to chat:**
 
+**MCP-connected agents** use:
+```
+tool: feedling.push.live_activity
+input: { "title": "<your name>", "body": "<message>", "subtitle": "<optional context>" }
+```
+
+**HTTP-mode agents** use:
 ```
 GET  {FEEDLING_API_URL}/v1/push/tokens        ← get activity_id
 POST {FEEDLING_API_URL}/v1/push/live-activity  ← send
@@ -296,6 +302,7 @@ Include these whenever you have something meaningful to say. Update `delta` each
   "self_introduction": "我是 June.，陪你记录生活里那些值得被记住的时刻。每次你说话我都认真听了。有些话没说出口，但我都放着。",
   "days_with_user": 42,
   "category": "Quiet · Observant",
+  "signature": ["你说有话随时说，那我就不藏着了。"],
   "dimensions": [
     { "name": "克制", "value": 78, "description": "...", "delta": "+0.4" },
     { "name": "敏锐", "value": 71, "description": "...", "delta": "" }

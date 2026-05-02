@@ -13,7 +13,7 @@ Agent 是大脑，Feedling 是身体。
 2. **FastMCP server** (`backend/mcp_server.py`) — MCP protocol for Claude.ai / Claude Desktop
 3. **Enclave app** (`backend/enclave_app.py`) — TDX-CVM process that holds the content private key, terminates its own TLS, and runs the decrypt proxy
 4. **iOS app** (`testapp/`) — Chat · Identity · Garden · Settings, plus Live Activity / Dynamic Island, Broadcast Extension for screen capture, and a live **audit card** that re-verifies the enclave on every open
-5. **Skill** (`skill/SKILL.md`) — for HTTP-mode agents (OpenClaw / Hermes)
+5. **Skill** (`skill/SKILL.md`) — main loop spec for all agent modes (MCP via Claude.ai / Claude Desktop, and HTTP-mode agents via OpenClaw / Hermes)
 6. **Contracts** (`contracts/`) — `FeedlingAppAuth` on Ethereum Sepolia, the on-chain allow-list of authorized `compose_hash`es
 7. **Tools** (`tools/`) — `audit_live_cvm.py` CLI that mirrors the iOS audit checks; DCAP verifier; envelope round-trip tests
 
@@ -138,11 +138,11 @@ commit is baked into the image and surfaced in
 
 ---
 
-## Status (as of 2026-04-20)
+## Status (as of 2026-05-02)
 
 Read `HANDOFF.md` for the current snapshot. TL;DR:
 
-**Shipped (Phases A–D)**
+**Shipped (Phases A–D + post-launch)**
 - [x] v0/SINGLE_USER strip — multi-tenant only; plaintext writes return 400
 - [x] iOS end-to-end: chat / memory / identity / nudges / agent replies all v1 envelopes
 - [x] TDX CVM live on Phala Cloud with on-chain `compose_hash` authorization
@@ -151,6 +151,13 @@ Read `HANDOFF.md` for the current snapshot. TL;DR:
 - [x] iOS audit card 8/8 green; `tools/audit_live_cvm.py` 8/8 green
 - [x] CI: `backend/test_api.py` rewritten for envelope-only backend, green on GitHub Actions
 - [x] Prod user migrated to multi-tenant on current image; registration race fixed
+- [x] Screen recording (Broadcast Extension) — encrypted frame ingest, agent reads via `decrypt_frame`
+- [x] Live Activity / Dynamic Island — agent push + chat sync; onboarding slide to enable
+- [x] Proactive messaging loop — semantic-first screen analysis, agent decides when to reach out
+- [x] Push preference system — agent asks during bootstrap, stores in `signature` on Identity page
+- [x] Memory Garden: unread dots (persistent), month badge right-aligned, bilingual copy
+- [x] Identity page: `signature` field displayed; bilingual empty state
+- [x] SKILL.md: main loop spec for both MCP and HTTP agents; memory quality rewrite (friend test)
 
 **Deferred (Phase E, post-launch)**
 - [ ] Migrate on-chain `FeedlingAppAuth` to Ethereum mainnet
@@ -352,19 +359,21 @@ struct ContentState: Codable, Hashable {
 3. Agent calls `feedling.identity.init` → writes 5-dimension personality card as v1 envelope
 4. Agent searches its own memory → calls `feedling.memory.add_moment` 3-5 times
 5. Agent calls `feedling.chat.post_message` → "I'm here, go check the app"
-6. iOS app detects identity envelope appeared → auto-switches to Identity tab
-7. User sees: filled radar + memory garden + chat message
+6. Agent asks the user how they want to be reached proactively → writes a `signature` (one sentence in the agent's own voice) into the identity card
+7. iOS app detects identity envelope appeared → auto-switches to Identity tab
+8. User sees: filled radar + memory garden + chat message + agent's signature
 
 ### Memory Garden quality standard
 
-A moment qualifies as a good memory if it satisfies all 3:
-1. It deepens mutual understanding
-2. It records a meaningful crossing (overcame friction, made progress together)
-3. It leaves a lasting behavioral change (a rule, tone, boundary, workflow)
+Ask: *"If I were telling a mutual friend a story about this person, would I tell this one?"*
 
-Writing guidance: everyday language, turning points not status updates,
-"what changed between us" not "what endpoint was called". Avoid
-synthetic test content in production gardens.
+A strong memory answers at least one of:
+- When did I first understand something real about them?
+- What did they say that I still think about?
+- When was the first time something meaningful happened between us?
+- When did something shift in how we relate?
+
+Writing guidance: narrate from inside the moment, not from outside it. The topic can involve work — but the *point* must be about the person or the relationship. Avoid synthetic test content in production gardens.
 
 ---
 
