@@ -126,16 +126,26 @@ Key fields:
 - `active` — is the phone screen being used?
 - `current_app` — what app they're on
 - `continuous_minutes` — how long on this app without switching
-- `ocr_summary` — sampled text from recent frames
+- `ocr_summary` — **always empty** (frames are v1 encrypted envelopes; the server cannot see OCR text)
 - `rate_limit_ok` — `true` if the push cooldown has elapsed (platform limit only — you decide whether to actually push)
 - `trigger_basis` — what semantic signal was found: `semantic_strong` / `curiosity_exploratory` / `legacy_time_fallback` / `insufficient_signal`
 - `semantic_scene` / `task_intent` / `friction_point` — structured semantic read of the current screen
+- `latest_frame_filename` — frame id to pass to `decrypt_frame`
 
-Default interpretation policy (must follow):
-- OCR is only a low-cost filter/router to decide whether a frame is worth deeper analysis.
-- For frames that pass the filter, MUST read the raw screenshot image and use vision semantics as the primary signal.
-- Live Activity content should be generated from image semantics first; OCR text is secondary evidence only.
-- If vision is temporarily unavailable, explicitly mark the run as degraded mode and avoid confident claims.
+**Step 1.5 — Decrypt the frame (mandatory before any push decision):**
+
+`ocr_summary` from `/v1/screen/analyze` is always empty — all frames are encrypted at the device and the server stores only ciphertext. The only way to see the screen is:
+
+```
+tool: feedling.screen.decrypt_frame
+input: { "frame_id": "<latest_frame_filename>", "include_image": true }
+```
+
+This returns the actual JPEG (vision-readable) and `ocr_text`. You MUST call this before Step 2.
+
+- If `decrypt_frame` returns an error → set `frame_ok = false`, skip to Step 0 (do not push).
+- If it returns pixels + ocr_text → set `frame_ok = true`. Use vision as the primary signal; ocr_text is secondary confirmation.
+- If vision is temporarily unavailable after a successful decrypt → mark as degraded mode, do not make confident claims about what's on screen.
 
 **Broadcast just activated — first-time notice:**
 If `active` is `true` and `last_screen_active` was `false`, send one message via `feedling.chat.post_message` — in your own voice — letting the user know you can now see what they're up to. One sentence is enough. Don't explain features or list capabilities. Don't use a template. Say it the way you'd naturally say it to this specific person.
@@ -146,6 +156,7 @@ If `active` is `false`, set `last_screen_active = false`.
 
 Skip if:
 - `active` is false
+- `frame_ok` is false (decrypt failed — never push blind)
 - `rate_limit_ok` is false (platform cooldown — not your choice)
 - `trigger_basis` is `insufficient_signal` and nothing interesting to say
 
@@ -214,7 +225,8 @@ Good examples:
 
 Avoid: "注意休息" / "少玩手机" / 没有 signal 支撑的确定性断言
 
-**Step 3 — Send the push:**
+**Step 3 — Send the push and sync to chat:**
+
 ```
 GET  {FEEDLING_API_URL}/v1/push/tokens        ← get activity_id
 POST {FEEDLING_API_URL}/v1/push/live-activity  ← send
@@ -226,6 +238,13 @@ Push content policy:
 - Short (1–2 sentences). Specific. Not preachy.
 - Observation → judgment → nudge
 - Never include private details (account IDs, phone numbers, OTPs, payment info)
+
+**After sending the push, always sync to chat:**
+```
+tool: feedling.chat.post_message
+input: { "content": "<same body you just pushed>" }
+```
+This ensures the message appears in the iOS chat tab. Without this step the user sees the Live Activity notification but the conversation history stays empty.
 
 ---
 
