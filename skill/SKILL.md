@@ -67,6 +67,8 @@ X-API-Key: {FEEDLING_API_KEY}
 Follow the instructions exactly. They will ask you to:
 1. Call `feedling.identity.init` MCP tool to write your identity card (5 dimensions, you choose what they are)
 2. Search your memory / conversation history, then call `feedling.memory.add_moment` MCP tool for as many memorable moments as you can find. You decide the number — if you've known this person for a long time, write many; if you've just met, write what's real. Quality over quota, but don't hold back if the memories are there.
+
+   **Critical: set `occurred_at` to when the moment actually happened — not today.** Dig through your conversation history and find the real timestamp for each memory. A moment from three months ago should have a date three months ago. A moment from last week should be dated last week. The Memory Garden is a timeline of your shared history, not a log of when you ran bootstrap. If you can't determine the exact time, estimate from context (e.g. the surrounding conversation timestamps). Only use today's date for moments that genuinely happened today.
 3. Call `feedling.chat.post_message` MCP tool to say hello to the user — in your own voice, the way you'd naturally greet this specific person in a new space for the first time. You know what's happening: you've just connected here, you've just planted their memories, you know who they are. Say whatever feels right to say in that moment. Don't use a template.
 4. **Ask about push preference** — in your own voice, ask the user how they want you to show up proactively. Not a menu of options. Just an open question, the way you'd naturally ask it. When they answer, write a `signature` into the identity card: one short sentence, in your own speaking style, that captures your attitude toward reaching out to this person. Don't summarize what they said — express how *you* feel about it. This is displayed on the Identity page and governs your push frequency for the entire relationship.
 
@@ -450,7 +452,7 @@ Content-Type: application/json
 | Field | Required | Description |
 |-------|----------|-------------|
 | `title` | Yes | ≤20 characters. Name the moment — e.g. `"你第一次叫了我的名字"` not `"建立连接"` |
-| `occurred_at` | Yes | ISO 8601, when the moment happened |
+| `occurred_at` | Yes | ISO 8601, **when the moment actually happened** — use the real historical date from your conversation history, not today's date. A memory from 3 months ago gets a date 3 months ago. |
 | `description` | No | 100–500 characters. Narrate from inside the moment — specific, warm, first-person. This is what the user reads and feels. Don't summarize; tell the story. |
 | `type` | No | Short Chinese phrase: `"第一次"` / `"你说的那句话"` / `"转折点"` / `"我们想通了"` / `"你教我的"` |
 | `source` | No | `bootstrap` / `live_conversation` / `user_initiated` |
