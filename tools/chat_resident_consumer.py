@@ -108,10 +108,25 @@ FALLBACK_REPLY = os.environ.get(
 )
 POLL_TIMEOUT = int(os.environ.get("POLL_TIMEOUT", "30"))
 
+# When set, user message content is fetched from the enclave's mirrored
+# decrypt endpoints instead of relying on poll's content field (which is
+# always "" for v1 encrypted messages). Point this at the enclave app URL,
+# e.g. https://127.0.0.1:5003 or the same host:port as FEEDLING_ENCLAVE_URL
+# in mcp_server.py.
+FEEDLING_ENCLAVE_URL = os.environ.get("FEEDLING_ENCLAVE_URL", "").rstrip("/")
+
 _HEADERS = {"X-API-Key": FEEDLING_API_KEY}
+
+# Separate HTTP client for the enclave (self-signed TLS, verify=False).
+_ENCLAVE_CLIENT: httpx.Client | None = (
+    httpx.Client(timeout=20, verify=False) if FEEDLING_ENCLAVE_URL else None
+)
+
 log.info(
-    "Starting resident consumer — mode=%s api_url=%s key=%s",
-    AGENT_MODE, FEEDLING_API_URL, _mask(FEEDLING_API_KEY),
+    "Starting resident consumer — mode=%s api_url=%s enclave=%s key=%s",
+    AGENT_MODE, FEEDLING_API_URL,
+    FEEDLING_ENCLAVE_URL or "not configured (poll-only mode)",
+    _mask(FEEDLING_API_KEY),
 )
 
 # ---------------------------------------------------------------------------
@@ -131,6 +146,62 @@ def _save_checkpoint(ts: float) -> None:
         CHECKPOINT_FILE.write_text(json.dumps({"last_ts": ts}))
     except Exception as e:
         log.warning("checkpoint write failed: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# Message dedup
+# ---------------------------------------------------------------------------
+
+def _msg_key(msg: dict) -> str:
+    """Stable identity key: prefer explicit id field, fall back to ts:role."""
+    mid = str(msg.get("id") or msg.get("message_id") or "").strip()
+    if mid:
+        return mid
+    ts = msg.get("ts", msg.get("timestamp", 0)) or 0
+    return f"{ts}:{msg.get('role', '')}"
+
+
+def _mark_seen(key: str) -> bool:
+    """Mark key as seen. Returns True (new) or False (already processed)."""
+    if key in _seen_ids:
+        return False
+    _seen_ids.add(key)
+    _seen_ids_order.append(key)
+    if len(_seen_ids_order) > _SEEN_MAX:
+        _seen_ids.discard(_seen_ids_order.pop(0))
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Enclave decrypt proxy — plaintext content source
+# ---------------------------------------------------------------------------
+
+def get_decrypted_history(since: float, limit: int = 20) -> list[dict]:
+    """Fetch decrypted message history from the enclave decrypt proxy.
+
+    The enclave mirrors /v1/chat/history and unseals K_enclave before
+    responding, so agents that don't hold user_sk can read v1 envelopes.
+    Returns [] if FEEDLING_ENCLAVE_URL is not configured or the call fails.
+    """
+    if not FEEDLING_ENCLAVE_URL or _ENCLAVE_CLIENT is None:
+        return []
+    try:
+        resp = _ENCLAVE_CLIENT.get(
+            f"{FEEDLING_ENCLAVE_URL}/v1/chat/history",
+            params={"limit": limit, "since": since},
+            headers=_HEADERS,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        msgs = data.get("messages") or data.get("history") or []
+        # Only return messages strictly newer than the checkpoint.
+        return [
+            m for m in msgs
+            if float(m.get("ts", m.get("timestamp", 0)) or 0) > since
+        ]
+    except Exception as e:
+        log.warning("enclave history fetch failed: %s", e)
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +324,16 @@ def call_agent(message: str) -> str:
 # Cached from /v1/users/whoami at startup. Refreshed on 401/encryption error.
 _whoami_cache: dict = {"user_id": "", "user_pk": None, "enclave_pk": None}
 
+# Fallback deduplication — don't flood the user if the agent repeatedly fails.
+FALLBACK_COOLDOWN = int(os.environ.get("FALLBACK_COOLDOWN", "60"))
+_last_fallback_ts: float = 0.0
+
+# Message dedup — rolling window prevents reprocessing the same message on
+# restart with a stale checkpoint or if poll races with checkpoint save.
+_seen_ids: set[str] = set()
+_seen_ids_order: list[str] = []
+_SEEN_MAX = 500
+
 
 def _load_whoami() -> bool:
     """Fetch encryption keys from /v1/users/whoami and cache them.
@@ -353,7 +434,8 @@ def get_latest_ts() -> float:
     data = resp.json()
     messages = data.get("messages") or data.get("history") or []
     if messages:
-        return float(messages[-1].get("timestamp", 0))
+        m = messages[-1]
+        return float(m.get("ts", m.get("timestamp", 0)) or 0)
     return 0.0
 
 
@@ -376,15 +458,32 @@ signal.signal(signal.SIGINT, _handle_signal)
 
 def _process_messages(messages: list) -> float:
     """Process a batch of messages, return the highest timestamp seen."""
+    global _last_fallback_ts
     latest = 0.0
     for msg in messages:
-        ts = float(msg.get("timestamp", 0))
+        # Tolerate both "ts" and "timestamp" key names across API versions.
+        ts = float(msg.get("ts", msg.get("timestamp", 0)) or 0)
         role = msg.get("role", "")
         if role != "user":
             latest = max(latest, ts)
             continue
+
+        # Idempotency — skip messages already processed in this session.
+        key = _msg_key(msg)
+        if not _mark_seen(key):
+            log.debug("skipping already-processed message key=%s", key)
+            latest = max(latest, ts)
+            continue
+
         content = msg.get("content", "").strip()
         if not content:
+            # No plaintext available — either enclave not configured or decrypt
+            # failed. Never send a fallback for invisible content.
+            log.warning(
+                "user message has no plaintext content ts=%.3f "
+                "(configure FEEDLING_ENCLAVE_URL to enable decryption)",
+                ts,
+            )
             latest = max(latest, ts)
             continue
 
@@ -393,8 +492,19 @@ def _process_messages(messages: list) -> float:
         try:
             reply = call_agent(content)
         except Exception as e:
-            log.error("agent call failed: %s — sending fallback", e)
-            reply = FALLBACK_REPLY
+            log.error("agent call failed: %s", e)
+            now = time.time()
+            if now - _last_fallback_ts >= FALLBACK_COOLDOWN:
+                reply = FALLBACK_REPLY
+                _last_fallback_ts = now
+                log.warning("sending fallback reply (cooldown starts)")
+            else:
+                log.warning(
+                    "fallback suppressed — cooldown active (last sent %.0fs ago)",
+                    now - _last_fallback_ts,
+                )
+                latest = max(latest, ts)
+                continue
 
         try:
             post_reply(reply)
@@ -408,19 +518,22 @@ def _process_messages(messages: list) -> float:
 
 
 def run() -> None:
-    # Load encryption keys before entering the poll loop. If unavailable,
-    # every reply will fail with 400; log loudly so the operator notices.
-    if _ENCRYPTION_AVAILABLE:
-        if not _load_whoami():
-            log.error(
-                "whoami failed at startup — replies will NOT encrypt correctly. "
-                "Check FEEDLING_API_URL and FEEDLING_API_KEY, then restart."
-            )
-    else:
-        log.error(
+    # Hard auth check before entering the poll loop.
+    # A missing user_id or public_key means every encrypted reply will fail;
+    # exit now so the operator sees an immediate error instead of silent no-ops.
+    if not _ENCRYPTION_AVAILABLE:
+        log.critical(
             "content_encryption module not found — v1 envelope posting disabled. "
             "Make sure the consumer runs from the feedling-mcp repo root."
         )
+        sys.exit(1)
+
+    if not _load_whoami():
+        log.critical(
+            "whoami failed at startup — cannot obtain user_id or public_key. "
+            "Check FEEDLING_API_URL and FEEDLING_API_KEY, then restart."
+        )
+        sys.exit(1)
 
     last_ts = _load_checkpoint()
 
@@ -444,9 +557,27 @@ def run() -> None:
             if result.get("timed_out"):
                 continue
 
-            messages = result.get("messages") or []
-            if not messages:
+            poll_messages = result.get("messages") or []
+            if not poll_messages:
                 continue
+
+            # poll is used only as a trigger — its content fields are "" for
+            # v1 encrypted envelopes. When the enclave decrypt proxy is
+            # configured, replace the message list with decrypted history.
+            if FEEDLING_ENCLAVE_URL:
+                messages = get_decrypted_history(since=last_ts, limit=20)
+                if not messages:
+                    # Enclave returned nothing — advance checkpoint from poll
+                    # timestamps so we don't replay these events next cycle.
+                    log.debug("poll triggered but enclave returned no new messages")
+                    for m in poll_messages:
+                        pts = float(m.get("ts", m.get("timestamp", 0)) or 0)
+                        if pts > last_ts:
+                            last_ts = pts
+                            _save_checkpoint(last_ts)
+                    continue
+            else:
+                messages = poll_messages
 
             new_ts = _process_messages(messages)
             if new_ts > last_ts:
@@ -454,7 +585,16 @@ def run() -> None:
                 _save_checkpoint(last_ts)
 
         except httpx.HTTPStatusError as e:
-            log.error("HTTP %d on poll: %s", e.response.status_code, e)
+            status = e.response.status_code
+            log.error("HTTP %d on poll: %s", status, e)
+            if status == 401:
+                log.warning("401 on poll — API key may have changed; refreshing whoami")
+                if not _load_whoami():
+                    log.critical(
+                        "whoami returned 401 — API key is invalid. "
+                        "Update FEEDLING_API_KEY and restart the service."
+                    )
+                    sys.exit(1)
             consecutive_errors += 1
             time.sleep(min(2 ** consecutive_errors, 60))
         except Exception as e:

@@ -66,9 +66,33 @@ X-API-Key: {FEEDLING_API_KEY}
 
 Follow the instructions exactly. They will ask you to:
 1. Call `feedling.identity.init` MCP tool to write your identity card (5 dimensions, you choose what they are)
-2. Search your memory / conversation history, then call `feedling.memory.add_moment` MCP tool for as many memorable moments as you can find. You decide the number — if you've known this person for a long time, write many; if you've just met, write what's real. Quality over quota, but don't hold back if the memories are there.
+2. Plant the Memory Garden — follow these sub-steps in order:
 
-   **Critical: set `occurred_at` to when the moment actually happened — not today.** Dig through your conversation history and find the real timestamp for each memory. A moment from three months ago should have a date three months ago. A moment from last week should be dated last week. The Memory Garden is a timeline of your shared history, not a log of when you ran bootstrap. If you can't determine the exact time, estimate from context (e.g. the surrounding conversation timestamps). Only use today's date for moments that genuinely happened today.
+   **2a. Estimate relationship age.** Find your earliest conversation with this person. Count calendar days from that date to today — call this `relationship_age_days`.
+
+   **2b. Mandatory retrieval (MUST do before writing anything).** Search your full conversation history — use session search, conversation search, or `GET /v1/chat/history` with a large limit. Produce a **candidate list of ≥ 12 events**, each with a rough timestamp and a one-line description. Do not skip directly to writing from current context memory — coverage will be too shallow.
+
+   **2c. Coverage floor (MUST).** You are required to write at least:
+
+   | `relationship_age_days` | Minimum moments |
+   |-------------------------|-----------------|
+   | ≥ 21 days               | **≥ 10**        |
+   | 7–20 days               | **6–10**        |
+   | < 7 days                | **3–6**         |
+
+   If you have weeks of shared history, writing 3 cards is prohibited — even if those 3 are high quality. The floor is a floor.
+
+   **2d. Write each moment** using `feedling.memory.add_moment`. Apply the quality bar from the Memory Garden section below. For every card: set `occurred_at` to when the moment **actually happened** — not today. A memory from three months ago gets a date three months ago. Estimate from surrounding conversation timestamps if you don't have the exact time.
+
+   **2e. Self-check before moving to step 3.** After writing, verify all four:
+   - [ ] Count meets the floor for your relationship tier
+   - [ ] `occurred_at` values are spread across the relationship period — not all clustered at the start or at today
+   - [ ] No template sentence repeated across cards — each description reads distinctly
+   - [ ] ≥ 60% of cards contain a "what changed after" clause — something that lasted beyond the moment
+
+   If any check fails → write more cards, then re-check. Do not proceed to step 3 until all four pass.
+
+   **2f. (If `relationship_age_days ≥ 31`) Mark turning points.** From your full set of cards, identify up to 6 that represent genuine turning points in the relationship. Prefix their `title` with `"转折｜"` — e.g. `"转折｜你第一次直接说你要什么"`. These rise to the top when the user filters by type, giving the first screen of the Memory Garden a spine.
 3. Call `feedling.chat.post_message` MCP tool to say hello to the user — in your own voice, the way you'd naturally greet this specific person in a new space for the first time. You know what's happening: you've just connected here, you've just planted their memories, you know who they are. Say whatever feels right to say in that moment. Don't use a template.
 4. **Ask about push preference** — in your own voice, ask the user how they want you to show up proactively. Not a menu of options. Just an open question, the way you'd naturally ask it. When they answer, write a `signature` into the identity card: one short sentence, in your own speaking style, that captures your attitude toward reaching out to this person. Don't summarize what they said — express how *you* feel about it. This is displayed on the Identity page and governs your push frequency for the entire relationship.
 
@@ -788,6 +812,34 @@ Ask the user to tap Settings → Live Activity → Start, then send a chat messa
 | Frames not arriving via WebSocket | Port 9998 blocked or WS auth failing | Open port 9998 in the VPS firewall; confirm iOS app's API key matches the server's `FEEDLING_API_KEY` (the broadcast extension forwards it as a Bearer token) |
 | Chat replies contain `session_id:` or other system lines | CLI agent is outputting raw stdout without a clean mode flag | See **Chat Resident Consumer — CLI agent requirements** below |
 | Can't tell if consumer is running | — | Run `python tools/check_chat_pipeline.py` — see **Chat pipeline self-check** below |
+| Fallback reply spamming the user | Timestamp key mismatch — checkpoint stuck at 0, all messages reprocessed every poll | Restart consumer after server update (must support `"ts"` key in messages) |
+
+---
+
+### ⚠️ Mandatory re-auth + E2E verification
+
+After **any** of the following events, you MUST run the re-auth sequence below before declaring the chat pipeline restored:
+
+- Account reset (new `POST /v1/users/register`)
+- API key change or rotation
+- Server re-deploy that changes the enclave public key
+
+**Re-auth sequence (3 steps, all must pass):**
+
+```bash
+# 1. Update the key in the env file
+nano ~/feedling-chat-resident.env   # set FEEDLING_API_KEY=<new_key>
+sudo systemctl restart feedling-chat-resident
+
+# 2. Verify auth (both must return 200, not 401)
+curl -s -H "X-API-Key: <new_key>" $FEEDLING_API_URL/v1/users/whoami
+curl -s -H "X-API-Key: <new_key>" "$FEEDLING_API_URL/v1/chat/poll?timeout=1"
+
+# 3. E2E test: send a message from iOS → confirm non-template reply arrives
+#    in the app within one poll cycle (~30s)
+```
+
+Do **not** declare "chat pipeline restored" until step 3 passes with a real (non-fallback) reply.
 
 ---
 
