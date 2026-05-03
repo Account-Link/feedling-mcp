@@ -325,35 +325,50 @@ def test_sse_only_config(monkeypatch):
 
 
 def test_mcp_calltoolresult_content_shape(monkeypatch):
-    """Handle FastMCP CallToolResult(content=[TextContent(text=...)]) shape."""
+    """New MCP clients return CallToolResult objects, not lists. Ensure parser handles
+    .content entries with .text and dict-like text entries."""
 
-    class _TextContent:
+    class _TC:
         def __init__(self, text):
             self.text = text
 
-    class _CallToolResult:
-        def __init__(self, text):
-            self.content = [_TextContent(text)]
+    class _Result:
+        def __init__(self, payload):
+            self.content = [_TC(payload)]
 
     class _FakeClient:
         def __init__(self, url, headers=None):
             self.url = url
+            self.headers = headers
         async def __aenter__(self):
             return self
         async def __aexit__(self, *_):
             pass
         async def call_tool(self, name, args):
-            return _CallToolResult('{"messages":[{"role":"user","content":"hello","ts":7777.0}]}')
+            assert name in ("chat_history", "feedling.chat.get_history")
+            assert "limit" in args
+            return _Result('{"messages":[{"role":"user","content":"hi","ts":1.0}]}')
 
     monkeypatch.setattr(crc, "_fastmcp_cls", _FakeClient)
-    monkeypatch.setattr(crc, "FEEDLING_MCP_URL", "http://127.0.0.1:5002")
-    monkeypatch.setattr(crc, "FEEDLING_MCP_KEY", "testkey")
-    monkeypatch.setattr(
-        crc, "_mcp_transport_cache",
-        {"http://127.0.0.1:5002": "http://127.0.0.1:5002/sse?key=testkey"},
-    )
+    monkeypatch.setattr(crc, "FEEDLING_MCP_URL", "https://mcp.feedling.app")
+    monkeypatch.setattr(crc, "FEEDLING_MCP_KEY", "k")
+    monkeypatch.setattr(crc, "_mcp_transport_cache", {"https://mcp.feedling.app": "https://mcp.feedling.app/sse"})
 
-    result = crc._fetch_from_mcp(0.0, 5)
+    out = crc._fetch_from_mcp(0.0, 20)
+    assert isinstance(out, list)
+    assert out and out[0]["content"] == "hi"
 
-    assert isinstance(result, list)
-    assert result and result[0]["content"] == "hello"
+
+def test_sanitize_reply_text_strips_leaks_and_duplicates():
+    raw = """— ✵ Hermes
+
+------
+在，Seven。
+在，Seven。
+我在这儿，直接说你要我现在做什么。
+Reasoning:
+"""
+    cleaned = crc._sanitize_reply_text(raw)
+    assert "Hermes" not in cleaned
+    assert "Reasoning" not in cleaned
+    assert cleaned == "在，Seven。\n我在这儿，直接说你要我现在做什么。"

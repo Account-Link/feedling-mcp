@@ -469,15 +469,19 @@ def get_decrypted_history(since: float, limit: int = 20) -> list[dict] | None:
 _NOISE_LINE_RE = re.compile(
     r"^\s*("
     r"session_id\s*:.*"      # hermes session footer
-    r"|---+|={3,}"           # separator lines
+    r"|---+|={3,}|[-–—_]{3,}" # separator lines
     r"|\[.*\]\s*$"           # [bracket] meta lines
     r"|💭.*"                 # hermes thinking-emoji prefix
     r"|\*\*[^*]+\*\*\s*$"   # **standalone bold header**
     r"|</?think>"            # <think> XML tags
     r"|Reasoning:\s*$"       # bare "Reasoning:" label
+    r"|[✵✦✧★☆※].*"          # decorative symbol lines
     r")",
     re.IGNORECASE,
 )
+
+# Internal/system identity tokens that must never leak to end-user chat.
+_IDENTITY_LEAK_RE = re.compile(r"\b(hermes|reasoning|chain\s*of\s*thought)\b", re.IGNORECASE)
 
 
 def _extract_text_from_cli_output(raw: str) -> str:
@@ -565,13 +569,53 @@ def call_agent_cli(message: str) -> str:
     return text
 
 
+def _sanitize_reply_text(text: str) -> str:
+    """Strip formatting/system leakage and collapse accidental duplication."""
+    if not isinstance(text, str):
+        return ""
+
+    text = text.replace("\r\n", "\n").strip()
+    if not text:
+        return ""
+
+    kept: list[str] = []
+    for raw_ln in text.splitlines():
+        ln = raw_ln.strip()
+        if not ln:
+            continue
+        if _NOISE_LINE_RE.match(ln):
+            continue
+        if _IDENTITY_LEAK_RE.search(ln):
+            continue
+        # Remove markdown-ish wrappers/bullets and decorative prefixes.
+        ln = re.sub(r"^[`#>*\-\s]+", "", ln).strip()
+        ln = re.sub(r"^[—–-]+\s*", "", ln).strip()
+        if not ln:
+            continue
+        kept.append(ln)
+
+    if not kept:
+        return ""
+
+    # Dedup consecutive identical lines.
+    deduped: list[str] = []
+    for ln in kept:
+        if not deduped or deduped[-1] != ln:
+            deduped.append(ln)
+
+    return "\n".join(deduped).strip()
+
+
 def call_agent(message: str) -> str:
     if AGENT_MODE == "http":
-        return call_agent_http(message)
+        raw = call_agent_http(message)
     elif AGENT_MODE == "cli":
-        return call_agent_cli(message)
+        raw = call_agent_cli(message)
     else:
         raise ValueError(f"unknown AGENT_MODE: {AGENT_MODE!r}")
+
+    clean = _sanitize_reply_text(raw)
+    return clean or FALLBACK_REPLY
 
 
 # ---------------------------------------------------------------------------
