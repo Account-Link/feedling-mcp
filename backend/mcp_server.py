@@ -300,7 +300,11 @@ def push_dynamic_island(
 
 @mcp.tool(
     name="feedling.push.live_activity",
-    description="Update the Live Activity on the user's lock screen and Dynamic Island.",
+    description=(
+        "Update the Live Activity on the user's lock screen and Dynamic Island. "
+        "By default, the same message is also synced into chat history so lock-screen "
+        "and chat stay consistent."
+    ),
 )
 def push_live_activity(
     title: str,
@@ -308,15 +312,34 @@ def push_live_activity(
     subtitle: str = "",
     data: dict | None = None,
     event: str = "update",
+    sync_chat: bool = True,
     ctx: Context = None,
 ) -> dict:
-    return _post("/v1/push/live-activity", {
+    push_result = _post("/v1/push/live-activity", {
         "title": title,
         "body": body,
         "subtitle": subtitle or None,
         "data": data or {},
         "event": event,
     }, ctx=ctx)
+
+    if sync_chat and (body or "").strip():
+        user_id, user_pk, enclave_pk = _whoami_pubkeys(ctx=ctx)
+        if user_id and user_pk is not None and enclave_pk is not None:
+            envelope = build_envelope(
+                plaintext=body.encode("utf-8"),
+                owner_user_id=user_id,
+                user_pk_bytes=user_pk,
+                enclave_pk_bytes=enclave_pk,
+                visibility="shared",
+            )
+            chat_result = _post("/v1/chat/response", {"envelope": envelope}, ctx=ctx)
+            push_result["chat_sync"] = chat_result.get("status", "ok")
+            push_result["chat_id"] = chat_result.get("id")
+        else:
+            push_result["chat_sync"] = "skipped_no_pubkeys"
+
+    return push_result
 
 
 # ---------------------------------------------------------------------------

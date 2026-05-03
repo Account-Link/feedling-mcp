@@ -253,6 +253,7 @@ If Live Activity is available (**MCP-connected agents**):
 tool: feedling.push.live_activity
 input: { "title": "<your name>", "body": "<your message>", "subtitle": "<optional>" }
 ```
+Note: this tool now syncs the same body into chat by default (`sync_chat=true`).
 
 If Live Activity is available (**HTTP-mode agents**):
 ```
@@ -266,11 +267,10 @@ tool: feedling.chat.post_message
 input: { "content": "<your message>" }
 ```
 
-**Always sync to chat after a Live Activity push:**
-```
-tool: feedling.chat.post_message
-input: { "content": "<same message you just pushed>" }
-```
+**Always sync to chat after a Live Activity push (hard rule):**
+- MCP path: `feedling.push.live_activity` already auto-syncs chat by default.
+- HTTP path: you MUST call `feedling.chat.post_message` (or POST `/v1/chat/response` envelope) with the same body.
+
 Without this the message appears on the lock screen but not in the chat history.
 
 ---
