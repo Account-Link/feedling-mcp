@@ -394,3 +394,8 @@ def test_normalize_agent_replies_supports_messages_array_json():
     raw = '{"messages":["在。","我在听。","继续说。"]}'
     out = crc._normalize_agent_replies(raw)
     assert out == ["在。", "我在听。", "继续说。"]
+
+
+def test_extract_session_id_from_cli_output():
+    raw = "some line\nsession_id: 20260503_024038_b526cf\n"
+    assert crc._extract_session_id(raw) == "20260503_024038_b526cf"

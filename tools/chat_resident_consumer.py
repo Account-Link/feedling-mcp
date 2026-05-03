@@ -40,6 +40,7 @@ Optional:
 """
 
 import base64
+import hashlib
 import inspect
 import json
 import logging
@@ -103,6 +104,12 @@ AGENT_CLI_CMD = os.environ.get("AGENT_CLI_CMD", "")
 
 CHECKPOINT_FILE = Path(
     os.environ.get("CHECKPOINT_FILE", "/tmp/feedling_chat_checkpoint.json")
+)
+AGENT_SESSION_FILE = Path(
+    os.environ.get(
+        "AGENT_SESSION_FILE",
+        f"/tmp/feedling_agent_session_{hashlib.sha1(FEEDLING_API_KEY.encode()).hexdigest()[:10]}.txt",
+    )
 )
 FALLBACK_REPLY = os.environ.get(
     "FALLBACK_REPLY", "（Agent 暂时无法响应，请稍后再试）"
@@ -558,13 +565,64 @@ def call_agent_http(message: str) -> str:
     raise ValueError(f"unexpected response type: {type(body)}")
 
 
+def _load_agent_session_id() -> str:
+    global _agent_session_id
+    if _agent_session_id:
+        return _agent_session_id
+    try:
+        sid = AGENT_SESSION_FILE.read_text(encoding="utf-8").strip()
+        if sid:
+            _agent_session_id = sid
+            return sid
+    except Exception:
+        pass
+    return ""
+
+
+def _save_agent_session_id(sid: str) -> None:
+    global _agent_session_id
+    sid = (sid or "").strip()
+    if not sid:
+        return
+    _agent_session_id = sid
+    try:
+        AGENT_SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        AGENT_SESSION_FILE.write_text(sid + "\n", encoding="utf-8")
+    except Exception as e:
+        log.warning("failed to persist agent session id: %s", e)
+
+
+def _extract_session_id(raw: str) -> str:
+    if not raw:
+        return ""
+    m = re.search(r"session_id\s*:\s*([A-Za-z0-9_\-]+)", raw)
+    if m:
+        return m.group(1)
+    m = re.search(r"Resumed session\s+([A-Za-z0-9_\-]+)", raw)
+    if m:
+        return m.group(1)
+    return ""
+
+
 def call_agent_cli(message: str) -> str:
     if not AGENT_CLI_CMD:
         raise ValueError("AGENT_CLI_CMD is not set for cli mode")
+
     cmd_str = AGENT_CLI_CMD.replace("{message}", message)
+    sid = _load_agent_session_id()
+    if "{session_id}" in cmd_str:
+        cmd_str = cmd_str.replace("{session_id}", sid)
+    elif sid and "hermes chat" in cmd_str and "--resume" not in cmd_str and "--continue" not in cmd_str:
+        cmd_str = cmd_str.replace("hermes chat", f"hermes chat --resume {shlex.quote(sid)}", 1)
+
     cmd = shlex.split(cmd_str)
     log.debug("running cli agent: %s", cmd)
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+    observed_sid = _extract_session_id((result.stdout or "") + "\n" + (result.stderr or ""))
+    if observed_sid:
+        _save_agent_session_id(observed_sid)
+
     if result.returncode != 0:
         log.warning("cli agent exited %d: %s", result.returncode, result.stderr[:200])
     raw = result.stdout
@@ -690,6 +748,9 @@ _last_fallback_ts: float = 0.0
 _seen_ids: set[str] = set()
 _seen_ids_order: list[str] = []
 _SEEN_MAX = 500
+
+# Persisted agent conversation session id (for CLI agents like Hermes).
+_agent_session_id: str = ""
 
 
 def _load_whoami() -> bool:
