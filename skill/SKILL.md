@@ -813,6 +813,7 @@ Ask the user to tap Settings → Live Activity → Start, then send a chat messa
 | Chat replies contain `session_id:` or other system lines | CLI agent is outputting raw stdout without a clean mode flag | See **Chat Resident Consumer — CLI agent requirements** below |
 | Can't tell if consumer is running | — | Run `python tools/check_chat_pipeline.py` — see **Chat pipeline self-check** below |
 | Fallback reply spamming the user | Timestamp key mismatch — checkpoint stuck at 0, all messages reprocessed every poll | Restart consumer after server update (must support `"ts"` key in messages) |
+| Consumer logs "no plaintext content" for every user message | Neither `FEEDLING_ENCLAVE_URL` nor `FEEDLING_MCP_URL` is configured — `/v1/chat/poll` always returns `content=""` for v1 encrypted messages | Set `FEEDLING_ENCLAVE_URL` (direct enclave, recommended) **or** `FEEDLING_MCP_URL` (via MCP server, requires `FEEDLING_MCP_TRANSPORT=streamable-http`). Without one of these the consumer can never read what the user wrote. |
 
 ---
 
@@ -848,12 +849,20 @@ Do **not** declare "chat pipeline restored" until step 3 passes with a real (non
 > **If you are already connected to the Feedling MCP server (i.e. you can call `feedling.chat.post_message`), you do NOT need this consumer.** Your main loop (Step 0 above) handles polling and replying directly. The resident consumer is only for operators who want to wire in a non-MCP agent backend (a plain HTTP service or a CLI tool).
 
 `tools/chat_resident_consumer.py` is a generic always-on process for non-MCP agent backends that:
-1. Long-polls `/v1/chat/poll` for new user messages
-2. Routes each message to your configured agent backend (HTTP or CLI)
-3. Writes the reply back via `/v1/chat/response` (v1 envelope, built internally)
-4. Persists a checkpoint so it never re-processes old messages after restart
+1. Long-polls `/v1/chat/poll` for new user messages (**trigger only** — content is empty for v1 encrypted messages)
+2. Fetches plaintext content from a configured **decrypt source** (enclave or MCP server)
+3. Routes each message to your configured agent backend (HTTP or CLI)
+4. Writes the reply back via `/v1/chat/response` (v1 envelope, built internally)
+5. Persists a checkpoint so it never re-processes old messages after restart
 
 **Without a resident consumer (or an MCP-connected agent), iOS chat messages go unanswered.**
+
+> ⚠️ **Decrypt source required.** The Feedling backend stores all user messages as v1 encrypted envelopes. `/v1/chat/poll` returns these with `content=""`. The consumer must be pointed at a decrypt source to read what the user wrote:
+>
+> - **`FEEDLING_ENCLAVE_URL`** (recommended) — direct HTTP to the enclave decrypt proxy. Same value as in `mcp_server.py`.
+> - **`FEEDLING_MCP_URL`** (alternative) — calls `feedling.chat.get_history` on the MCP server, which decrypts internally. Requires `FEEDLING_MCP_TRANSPORT=streamable-http` on the MCP server.
+>
+> Without at least one of these, the consumer logs `"no plaintext content"` for every user message and **never replies**.
 
 ### Quick start
 

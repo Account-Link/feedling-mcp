@@ -154,6 +154,53 @@ def test_dedup_prevents_reprocessing_same_message():
     assert mock_agent.call_count == 1
 
 
+# ---------------------------------------------------------------------------
+# Phase 3: decrypt source unavailable cases
+# ---------------------------------------------------------------------------
+
+def test_empty_content_decrypt_source_available_replies(monkeypatch):
+    """poll returns content="" but decrypt source is available and returns
+    plaintext — consumer must reply using the decrypted content."""
+    # Simulate poll returning empty-content message
+    empty_msg = _make_msg(role="user", content="", ts=4000.0)
+    # Decrypt source returns the plaintext version
+    decrypted_msg = _make_msg(role="user", content="what's the weather?", ts=4000.0)
+
+    monkeypatch.setattr(crc, "FEEDLING_ENCLAVE_URL", "https://127.0.0.1:5003")
+    monkeypatch.setattr(crc, "FEEDLING_MCP_URL", "")
+    monkeypatch.setattr(
+        crc, "get_decrypted_history",
+        lambda since, limit=20: [decrypted_msg],
+    )
+
+    with patch.object(crc, "call_agent", return_value="sunny") as mock_agent, \
+         patch.object(crc, "post_reply") as mock_post:
+        # Consumer uses get_decrypted_history result, not the empty poll message
+        result_ts = crc._process_messages([decrypted_msg])
+
+    mock_agent.assert_called_once_with("what's the weather?")
+    mock_post.assert_called_once()
+    assert result_ts == pytest.approx(4000.0)
+
+
+def test_empty_content_no_decrypt_source_no_reply_no_fallback(monkeypatch):
+    """poll returns content="" and no decrypt source is configured —
+    consumer must skip the message silently (no reply, no fallback)."""
+    monkeypatch.setattr(crc, "FEEDLING_ENCLAVE_URL", "")
+    monkeypatch.setattr(crc, "FEEDLING_MCP_URL", "")
+    crc._last_fallback_ts = 0.0
+
+    msg = _make_msg(role="user", content="", ts=5000.0)
+
+    with patch.object(crc, "call_agent") as mock_agent, \
+         patch.object(crc, "post_reply") as mock_post:
+        result_ts = crc._process_messages([msg])
+
+    mock_agent.assert_not_called()
+    mock_post.assert_not_called()
+    assert result_ts == pytest.approx(5000.0)
+
+
 def test_fallback_cooldown_suppresses_repeat():
     """If the agent fails twice in rapid succession, only the first failure
     should trigger a fallback reply; the second should be suppressed."""

@@ -108,12 +108,23 @@ FALLBACK_REPLY = os.environ.get(
 )
 POLL_TIMEOUT = int(os.environ.get("POLL_TIMEOUT", "30"))
 
-# When set, user message content is fetched from the enclave's mirrored
-# decrypt endpoints instead of relying on poll's content field (which is
-# always "" for v1 encrypted messages). Point this at the enclave app URL,
-# e.g. https://127.0.0.1:5003 or the same host:port as FEEDLING_ENCLAVE_URL
-# in mcp_server.py.
+# ---------------------------------------------------------------------------
+# Decrypt sources — at least one must be set for v1 encrypted backends.
+#
+# FEEDLING_ENCLAVE_URL: direct HTTP to the enclave decrypt proxy (fastest,
+#   same value as FEEDLING_ENCLAVE_URL in mcp_server.py, e.g. https://127.0.0.1:5003).
+#
+# FEEDLING_MCP_URL: URL of the Feedling MCP server (e.g. https://mcp.feedling.app
+#   or https://127.0.0.1:5002).  The consumer calls feedling.chat.get_history
+#   via the MCP server, which runs inside the enclave and can decrypt.
+#   Requires FEEDLING_MCP_TRANSPORT=streamable-http on the MCP server.
+#
+# WARNING: if neither is set, /v1/chat/poll returns content="" for all v1
+# encrypted messages and the consumer will never be able to reply.
+# ---------------------------------------------------------------------------
 FEEDLING_ENCLAVE_URL = os.environ.get("FEEDLING_ENCLAVE_URL", "").rstrip("/")
+FEEDLING_MCP_URL = os.environ.get("FEEDLING_MCP_URL", "").rstrip("/")
+FEEDLING_MCP_KEY = os.environ.get("FEEDLING_MCP_KEY", FEEDLING_API_KEY)
 
 _HEADERS = {"X-API-Key": FEEDLING_API_KEY}
 
@@ -122,11 +133,23 @@ _ENCLAVE_CLIENT: httpx.Client | None = (
     httpx.Client(timeout=20, verify=False) if FEEDLING_ENCLAVE_URL else None
 )
 
+# Optional FastMCP async client for the MCP-sourced decryption path.
+_fastmcp_cls = None
+try:
+    import asyncio as _asyncio
+    from fastmcp import Client as _FastMCPCls
+    _fastmcp_cls = _FastMCPCls
+except ImportError:
+    pass
+
+_decrypt_sources = (
+    f"enclave={FEEDLING_ENCLAVE_URL}" if FEEDLING_ENCLAVE_URL else ""
+    + (f" mcp={FEEDLING_MCP_URL}" if FEEDLING_MCP_URL else "")
+).strip() or "NONE — replies will not work for v1 encrypted messages"
+
 log.info(
-    "Starting resident consumer — mode=%s api_url=%s enclave=%s key=%s",
-    AGENT_MODE, FEEDLING_API_URL,
-    FEEDLING_ENCLAVE_URL or "not configured (poll-only mode)",
-    _mask(FEEDLING_API_KEY),
+    "Starting resident consumer — mode=%s api_url=%s decrypt_sources=%s key=%s",
+    AGENT_MODE, FEEDLING_API_URL, _decrypt_sources, _mask(FEEDLING_API_KEY),
 )
 
 # ---------------------------------------------------------------------------
@@ -173,18 +196,20 @@ def _mark_seen(key: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Enclave decrypt proxy — plaintext content source
+# Decrypt sources — plaintext content for v1 encrypted messages
 # ---------------------------------------------------------------------------
 
-def get_decrypted_history(since: float, limit: int = 20) -> list[dict]:
-    """Fetch decrypted message history from the enclave decrypt proxy.
+def _filter_since(msgs: list, since: float) -> list:
+    return [m for m in msgs if float(m.get("ts", m.get("timestamp", 0)) or 0) > since]
 
-    The enclave mirrors /v1/chat/history and unseals K_enclave before
-    responding, so agents that don't hold user_sk can read v1 envelopes.
-    Returns [] if FEEDLING_ENCLAVE_URL is not configured or the call fails.
+
+def _fetch_from_enclave(since: float, limit: int) -> list[dict] | None:
+    """Direct HTTP to the enclave decrypt proxy.
+
+    Returns list (possibly empty) on success, None on error or not configured.
     """
     if not FEEDLING_ENCLAVE_URL or _ENCLAVE_CLIENT is None:
-        return []
+        return None
     try:
         resp = _ENCLAVE_CLIENT.get(
             f"{FEEDLING_ENCLAVE_URL}/v1/chat/history",
@@ -194,14 +219,71 @@ def get_decrypted_history(since: float, limit: int = 20) -> list[dict]:
         resp.raise_for_status()
         data = resp.json()
         msgs = data.get("messages") or data.get("history") or []
-        # Only return messages strictly newer than the checkpoint.
-        return [
-            m for m in msgs
-            if float(m.get("ts", m.get("timestamp", 0)) or 0) > since
-        ]
+        return _filter_since(msgs, since)
     except Exception as e:
         log.warning("enclave history fetch failed: %s", e)
-        return []
+        return None
+
+
+def _fetch_from_mcp(since: float, limit: int) -> list[dict] | None:
+    """Call feedling.chat.get_history via the MCP server (streamable-HTTP).
+
+    The MCP server runs inside the enclave and can decrypt v1 envelopes.
+    Requires FEEDLING_MCP_TRANSPORT=streamable-http on the MCP server side.
+
+    Returns list on success, None on error or not configured.
+    """
+    if not FEEDLING_MCP_URL or _fastmcp_cls is None:
+        return None
+
+    url = FEEDLING_MCP_URL.rstrip("/") + "/mcp"
+
+    async def _call():
+        async with _fastmcp_cls(
+            url,
+            headers={"Authorization": f"Bearer {FEEDLING_MCP_KEY}"},
+        ) as client:
+            result = await client.call_tool(
+                "feedling.chat.get_history", {"limit": limit}
+            )
+            if not result:
+                return []
+            # FastMCP returns a list of Content objects; text holds the JSON.
+            text = getattr(result[0], "text", None)
+            if not text:
+                text = str(result[0]) if result else ""
+            data = json.loads(text) if text else {}
+            msgs = data.get("messages") or data.get("history") or []
+            return _filter_since(msgs, since)
+
+    try:
+        return _asyncio.run(_call())
+    except Exception as e:
+        log.warning("MCP history fetch failed: %s", e)
+        return None
+
+
+def get_decrypted_history(since: float, limit: int = 20) -> list[dict] | None:
+    """Try all configured decrypt sources in priority order.
+
+    Returns:
+      list  — source was reachable; contains messages newer than `since`
+              (may be empty if no new messages).
+      None  — no source configured, or all configured sources failed.
+    """
+    if FEEDLING_ENCLAVE_URL:
+        result = _fetch_from_enclave(since, limit)
+        if result is not None:
+            return result
+        log.warning("enclave source failed; trying MCP source if configured")
+
+    if FEEDLING_MCP_URL:
+        result = _fetch_from_mcp(since, limit)
+        if result is not None:
+            return result
+        log.warning("MCP source failed")
+
+    return None  # no configured source succeeded
 
 
 # ---------------------------------------------------------------------------
@@ -477,11 +559,11 @@ def _process_messages(messages: list) -> float:
 
         content = msg.get("content", "").strip()
         if not content:
-            # No plaintext available — either enclave not configured or decrypt
-            # failed. Never send a fallback for invisible content.
+            # No plaintext — decrypt source missing or failed upstream.
+            # Never send a fallback for content we cannot read.
             log.warning(
-                "user message has no plaintext content ts=%.3f "
-                "(configure FEEDLING_ENCLAVE_URL to enable decryption)",
+                "user message has no plaintext content ts=%.3f — skipping "
+                "(set FEEDLING_ENCLAVE_URL or FEEDLING_MCP_URL to enable decryption)",
                 ts,
             )
             latest = max(latest, ts)
@@ -535,6 +617,16 @@ def run() -> None:
         )
         sys.exit(1)
 
+    if not FEEDLING_ENCLAVE_URL and not FEEDLING_MCP_URL:
+        log.warning(
+            "⚠️  No decryption source configured (FEEDLING_ENCLAVE_URL and "
+            "FEEDLING_MCP_URL are both unset). "
+            "User messages in v1 encrypted mode have content=\"\" and will be "
+            "silently skipped — the consumer will never send replies. "
+            "Set FEEDLING_ENCLAVE_URL (direct enclave) or FEEDLING_MCP_URL "
+            "(via MCP server) to fix this."
+        )
+
     last_ts = _load_checkpoint()
 
     if last_ts == 0.0:
@@ -562,21 +654,29 @@ def run() -> None:
                 continue
 
             # poll is used only as a trigger — its content fields are "" for
-            # v1 encrypted envelopes. When the enclave decrypt proxy is
-            # configured, replace the message list with decrypted history.
-            if FEEDLING_ENCLAVE_URL:
-                messages = get_decrypted_history(since=last_ts, limit=20)
-                if not messages:
-                    # Enclave returned nothing — advance checkpoint from poll
-                    # timestamps so we don't replay these events next cycle.
-                    log.debug("poll triggered but enclave returned no new messages")
+            # v1 encrypted envelopes. Fetch actual plaintext from a decrypt source.
+            if FEEDLING_ENCLAVE_URL or FEEDLING_MCP_URL:
+                decrypted = get_decrypted_history(since=last_ts, limit=20)
+                if decrypted is None:
+                    # All configured sources failed — skip this cycle, keep checkpoint.
+                    log.warning(
+                        "poll triggered but all decrypt sources failed; "
+                        "skipping cycle (messages not processed)"
+                    )
+                    continue
+                if not decrypted:
+                    # Sources OK but no new messages — advance from poll timestamps.
+                    log.debug("poll triggered but decrypt sources returned no new messages")
                     for m in poll_messages:
                         pts = float(m.get("ts", m.get("timestamp", 0)) or 0)
                         if pts > last_ts:
                             last_ts = pts
                             _save_checkpoint(last_ts)
                     continue
+                messages = decrypted
             else:
+                # No decrypt source — fall through with poll content (will be
+                # empty for v1 encrypted messages, skipped in _process_messages).
                 messages = poll_messages
 
             new_ts = _process_messages(messages)
