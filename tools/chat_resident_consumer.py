@@ -105,11 +105,9 @@ AGENT_CLI_CMD = os.environ.get("AGENT_CLI_CMD", "")
 CHECKPOINT_FILE = Path(
     os.environ.get("CHECKPOINT_FILE", "/tmp/feedling_chat_checkpoint.json")
 )
-AGENT_SESSION_FILE = Path(
-    os.environ.get(
-        "AGENT_SESSION_FILE",
-        f"/tmp/feedling_agent_session_{hashlib.sha1(FEEDLING_API_KEY.encode()).hexdigest()[:10]}.txt",
-    )
+AGENT_SESSION_FILE_TEMPLATE = os.environ.get(
+    "AGENT_SESSION_FILE",
+    f"/tmp/feedling_agent_session_{hashlib.sha1(FEEDLING_API_KEY.encode()).hexdigest()[:10]}_{{user_id}}.txt",
 )
 FALLBACK_REPLY = os.environ.get(
     "FALLBACK_REPLY", "（Agent 暂时无法响应，请稍后再试）"
@@ -565,14 +563,23 @@ def call_agent_http(message: str) -> str:
     raise ValueError(f"unexpected response type: {type(body)}")
 
 
+def _agent_session_file_for_user() -> Path:
+    user_id = (_whoami_cache.get("user_id") or "unknown").strip() or "unknown"
+    path = AGENT_SESSION_FILE_TEMPLATE.replace("{user_id}", user_id)
+    return Path(path)
+
+
 def _load_agent_session_id() -> str:
-    global _agent_session_id
-    if _agent_session_id:
-        return _agent_session_id
+    user_id = (_whoami_cache.get("user_id") or "unknown").strip() or "unknown"
+    cached = _agent_session_id_cache.get(user_id)
+    if cached:
+        return cached
+
+    f = _agent_session_file_for_user()
     try:
-        sid = AGENT_SESSION_FILE.read_text(encoding="utf-8").strip()
+        sid = f.read_text(encoding="utf-8").strip()
         if sid:
-            _agent_session_id = sid
+            _agent_session_id_cache[user_id] = sid
             return sid
     except Exception:
         pass
@@ -580,14 +587,17 @@ def _load_agent_session_id() -> str:
 
 
 def _save_agent_session_id(sid: str) -> None:
-    global _agent_session_id
     sid = (sid or "").strip()
     if not sid:
         return
-    _agent_session_id = sid
+
+    user_id = (_whoami_cache.get("user_id") or "unknown").strip() or "unknown"
+    _agent_session_id_cache[user_id] = sid
+
+    f = _agent_session_file_for_user()
     try:
-        AGENT_SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-        AGENT_SESSION_FILE.write_text(sid + "\n", encoding="utf-8")
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(sid + "\n", encoding="utf-8")
     except Exception as e:
         log.warning("failed to persist agent session id: %s", e)
 
@@ -749,8 +759,8 @@ _seen_ids: set[str] = set()
 _seen_ids_order: list[str] = []
 _SEEN_MAX = 500
 
-# Persisted agent conversation session id (for CLI agents like Hermes).
-_agent_session_id: str = ""
+# Persisted agent conversation session id (for CLI agents like Hermes), keyed by user_id.
+_agent_session_id_cache: dict[str, str] = {}
 
 
 def _load_whoami() -> bool:

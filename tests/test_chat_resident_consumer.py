@@ -399,3 +399,10 @@ def test_normalize_agent_replies_supports_messages_array_json():
 def test_extract_session_id_from_cli_output():
     raw = "some line\nsession_id: 20260503_024038_b526cf\n"
     assert crc._extract_session_id(raw) == "20260503_024038_b526cf"
+
+
+def test_agent_session_file_scoped_by_user_id(monkeypatch):
+    monkeypatch.setattr(crc, "AGENT_SESSION_FILE_TEMPLATE", "/tmp/feedling_{user_id}.txt")
+    monkeypatch.setattr(crc, "_whoami_cache", {"user_id": "usr_abc", "user_pk": None, "enclave_pk": None})
+    p = crc._agent_session_file_for_user()
+    assert str(p) == "/tmp/feedling_usr_abc.txt"
