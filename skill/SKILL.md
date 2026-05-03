@@ -171,6 +171,8 @@ input: { "frame_id": "<latest_frame_filename>", "include_image": true }
 
 This returns the actual JPEG (vision-readable) and `ocr_text`. You MUST call this before Step 2.
 
+Enforcement: MCP `feedling.push.live_activity` now hard-blocks if there is no recent `decrypt_frame(include_image=true)` in the same caller session.
+
 - If `decrypt_frame` returns an error → set `frame_ok = false`, skip to Step 0 (do not push).
 - If it returns pixels + ocr_text → set `frame_ok = true`. Use vision as the primary signal; ocr_text is secondary confirmation.
 - If vision is temporarily unavailable after a successful decrypt → mark as degraded mode, do not make confident claims about what's on screen.

@@ -195,6 +195,12 @@ _ENCLAVE_HTTP = httpx.Client(
     limits=httpx.Limits(max_keepalive_connections=8, max_connections=16),
 )
 
+# Proactive-push safety gate: require a recent vision-capable decrypt before
+# posting Live Activity. Keyed by caller api_key so multi-tenant sessions don't mix.
+_REQUIRE_VISION_BEFORE_PUSH = os.environ.get("FEEDLING_REQUIRE_VISION_BEFORE_PUSH", "true").lower() == "true"
+_VISION_DECRYPT_TTL_SEC = int(os.environ.get("FEEDLING_VISION_DECRYPT_TTL_SEC", "180"))
+_recent_decrypt_by_api_key: dict[str, dict] = {}
+
 
 def _get(path: str, params: dict | None = None, ctx: Context | None = None) -> dict:
     r = _FLASK_HTTP.get(f"{FLASK_BASE}{path}", params=params, headers=_headers(ctx))
@@ -315,11 +321,41 @@ def push_live_activity(
     sync_chat: bool = True,
     ctx: Context = None,
 ) -> dict:
+    payload_data = dict(data or {})
+
+    if _REQUIRE_VISION_BEFORE_PUSH:
+        api_key = _current_api_key(ctx)
+        rec = _recent_decrypt_by_api_key.get(api_key) if api_key else None
+        now = time.time()
+        if not rec:
+            return {
+                "status": "blocked",
+                "reason": "vision_gate_missing_decrypt",
+                "hint": "Call feedling.screen.decrypt_frame(include_image=true) before feedling.push.live_activity.",
+            }
+        age = now - float(rec.get("ts", 0.0) or 0.0)
+        if age > _VISION_DECRYPT_TTL_SEC:
+            return {
+                "status": "blocked",
+                "reason": "vision_gate_stale_decrypt",
+                "age_sec": round(age, 2),
+                "ttl_sec": _VISION_DECRYPT_TTL_SEC,
+                "hint": "Frame analysis is stale. Re-run feedling.screen.decrypt_frame(include_image=true).",
+            }
+        if not rec.get("include_image"):
+            return {
+                "status": "blocked",
+                "reason": "vision_gate_no_image",
+                "hint": "decrypt_frame must be called with include_image=true.",
+            }
+        payload_data.setdefault("analysis_source", "vision")
+        payload_data.setdefault("frame_id", rec.get("frame_id", ""))
+
     push_result = _post("/v1/push/live-activity", {
         "title": title,
         "body": body,
         "subtitle": subtitle or None,
-        "data": data or {},
+        "data": payload_data,
         "event": event,
     }, ctx=ctx)
 
@@ -468,6 +504,15 @@ def screen_decrypt_frame(
         jpeg_bytes = base64.b64decode(img_b64)
     except Exception as e:
         return [{"error": f"image_b64_decode: {e}", **metadata}]
+
+    api_key = _current_api_key(ctx)
+    if api_key:
+        _recent_decrypt_by_api_key[api_key] = {
+            "frame_id": fid,
+            "ts": time.time(),
+            "include_image": bool(include_image),
+            "ocr_chars": len(metadata.get("ocr_text") or ""),
+        }
 
     print(f"[mcp] decrypt_frame id={fid} bytes={len(jpeg_bytes)} ocr_chars={len(metadata.get('ocr_text') or '')}")
     # FastMCP serializes list returns as a multi-block MCP tool result:
