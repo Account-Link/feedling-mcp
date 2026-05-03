@@ -912,13 +912,13 @@ Hermes CLI prints a `session_id:` footer after every response. Use `--output-mod
 
 ```
 # JSON output (preferred — unambiguous field extraction)
-AGENT_CLI_CMD=hermes chat -Q --output-mode json -q {message}
+AGENT_CLI_CMD=hermes chat -Q --continue --max-turns 1 -q "{message}"
 
-# Plain text output (no footer)
-AGENT_CLI_CMD=hermes chat -Q --output-mode text -q {message}
+# Plain text output (sanitizer will strip known footers/noise)
+AGENT_CLI_CMD=hermes chat -Q --continue --max-turns 1 -q "{message}"
 ```
 
-Without `--output-mode`, the consumer's fallback extractor will attempt to strip the `session_id:` line, but this is fragile. **Always set `--output-mode` for Hermes.**
+Use `--continue` so Hermes keeps conversation memory across turns. The consumer also strips known footer/noise lines defensively.
 
 #### Other CLI agents
 
