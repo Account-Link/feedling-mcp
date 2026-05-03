@@ -597,6 +597,14 @@ def _sanitize_reply_text(text: str) -> str:
     if not kept:
         return ""
 
+    # If there are Chinese lines, prefer Chinese-only output to avoid leaking
+    # English internal reasoning blocks from upstream agent UIs.
+    has_cjk = any(any("一" <= c <= "鿿" for c in ln) for ln in kept)
+    if has_cjk:
+        kept = [ln for ln in kept if any("一" <= c <= "鿿" for c in ln)]
+        if not kept:
+            return ""
+
     # Dedup consecutive identical lines.
     deduped: list[str] = []
     for ln in kept:

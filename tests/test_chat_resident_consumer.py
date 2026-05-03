@@ -372,3 +372,12 @@ Reasoning:
     assert "Hermes" not in cleaned
     assert "Reasoning" not in cleaned
     assert cleaned == "在，Seven。\n我在这儿，直接说你要我现在做什么。"
+
+
+def test_sanitize_reply_text_prefers_cjk_and_drops_english_reasoning():
+    raw = """I need to interpret this as a greeting.
+I'm thinking a warm tone is best.
+在呢，Seven。
+你继续说，我在听。"""
+    cleaned = crc._sanitize_reply_text(raw)
+    assert cleaned == "在呢，Seven。\n你继续说，我在听。"
