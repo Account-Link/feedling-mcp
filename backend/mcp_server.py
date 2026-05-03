@@ -466,7 +466,7 @@ def screen_decrypt_frame(
     bandwidth cost of shipping JPEG base64.
     """
     if not ENCLAVE_BASE:
-        return [{"error": "enclave not configured — FEEDLING_ENCLAVE_URL missing"}]
+        return {"error": "enclave not configured — FEEDLING_ENCLAVE_URL missing"}
 
     # Resolve frame_id lazily — empty means "latest".
     fid = (frame_id or "").strip()
@@ -474,13 +474,13 @@ def screen_decrypt_frame(
         try:
             listing = _get("/v1/screen/frames", {"limit": 1}, ctx=ctx)
         except httpx.HTTPError as e:
-            return [{"error": f"frames_list_failed: {e}"}]
+            return {"error": f"frames_list_failed: {e}"}
         frames = listing.get("frames") or []
         if not frames:
-            return [{"error": "no frames on record yet"}]
+            return {"error": "no frames on record yet"}
         fid = frames[0].get("id") or ""
         if not fid:
-            return [{"error": "latest frame has no id"}]
+            return {"error": "latest frame has no id"}
 
     try:
         r = _ENCLAVE_HTTP.get(
@@ -491,23 +491,24 @@ def screen_decrypt_frame(
         r.raise_for_status()
         payload = r.json()
     except httpx.HTTPError as e:
-        return [{"error": f"enclave_decrypt_failed: {e}", "frame_id": fid}]
+        return {"error": f"enclave_decrypt_failed: {e}", "frame_id": fid}
 
     if payload.get("error"):
-        return [payload]
+        return payload
 
     metadata = {k: v for k, v in payload.items() if k not in ("image_b64",)}
     if not include_image:
-        return [metadata]
+        # Return a plain dict so callers don't need to special-case list payloads.
+        return metadata
 
     img_b64 = payload.get("image_b64") or ""
     if not img_b64:
-        return [{"warning": "decrypt ok but no image_b64 in plaintext", **metadata}]
+        return {"warning": "decrypt ok but no image_b64 in plaintext", **metadata}
 
     try:
         jpeg_bytes = base64.b64decode(img_b64)
     except Exception as e:
-        return [{"error": f"image_b64_decode: {e}", **metadata}]
+        return {"error": f"image_b64_decode: {e}", **metadata}
 
     api_key = _current_api_key(ctx)
     if api_key:
