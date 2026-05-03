@@ -40,6 +40,7 @@ Optional:
 """
 
 import base64
+import inspect
 import json
 import logging
 import os
@@ -142,6 +143,73 @@ try:
 except ImportError:
     pass
 
+# Transport probe cache: base_url → working endpoint URL (or None if unreachable).
+_mcp_transport_cache: dict[str, str | None] = {}
+
+
+def _mcp_supports_headers() -> bool:
+    """Return True if the installed fastmcp.Client.__init__ accepts headers=."""
+    if _fastmcp_cls is None:
+        return False
+    try:
+        return "headers" in inspect.signature(_fastmcp_cls.__init__).parameters
+    except (ValueError, TypeError):
+        return False
+
+
+def _probe_mcp_transport_sync(base_url: str) -> str | None:
+    """Probe MCP server for a working transport endpoint and cache the result.
+
+    Tries streamable-HTTP (/mcp POST) first, then SSE (/sse GET).
+    Returns the working endpoint URL, or None if neither responds.
+    """
+    if base_url in _mcp_transport_cache:
+        return _mcp_transport_cache[base_url]
+
+    url: str | None = None
+    auth_headers = {"Authorization": f"Bearer {FEEDLING_MCP_KEY}"}
+
+    # Probe streamable-HTTP
+    try:
+        resp = httpx.post(
+            f"{base_url}/mcp",
+            headers=auth_headers,
+            content=b"{}",
+            timeout=5,
+            verify=False,
+        )
+        if resp.status_code != 404:
+            url = f"{base_url}/mcp"
+            log.info("MCP transport: streamable-HTTP at %s/mcp", base_url)
+    except Exception as e:
+        log.debug("MCP /mcp probe failed: %s", e)
+
+    # Probe SSE if streamable-HTTP not found
+    if url is None:
+        sse_url = f"{base_url}/sse?key={FEEDLING_MCP_KEY}"
+        try:
+            with httpx.stream(
+                "GET",
+                sse_url,
+                timeout=httpx.Timeout(connect=5.0, read=1.0, write=5.0, pool=5.0),
+                verify=False,
+            ) as resp:
+                if resp.status_code == 200:
+                    url = sse_url
+                    log.info("MCP transport: SSE at %s/sse", base_url)
+        except httpx.ReadTimeout:
+            # ReadTimeout after connect = SSE stream started, endpoint is alive.
+            url = sse_url
+            log.info("MCP transport: SSE at %s/sse (streaming)", base_url)
+        except Exception as e:
+            log.debug("MCP /sse probe failed: %s", e)
+
+    if url is None:
+        log.warning("MCP probe: %s unreachable on /mcp and /sse", base_url)
+
+    _mcp_transport_cache[base_url] = url
+    return url
+
 _decrypt_sources = (
     f"enclave={FEEDLING_ENCLAVE_URL}" if FEEDLING_ENCLAVE_URL else ""
     + (f" mcp={FEEDLING_MCP_URL}" if FEEDLING_MCP_URL else "")
@@ -226,23 +294,40 @@ def _fetch_from_enclave(since: float, limit: int) -> list[dict] | None:
 
 
 def _fetch_from_mcp(since: float, limit: int) -> list[dict] | None:
-    """Call feedling.chat.get_history via the MCP server (streamable-HTTP).
+    """Call feedling.chat.get_history via the MCP server.
 
-    The MCP server runs inside the enclave and can decrypt v1 envelopes.
-    Requires FEEDLING_MCP_TRANSPORT=streamable-http on the MCP server side.
+    Supports both streamable-HTTP (/mcp) and SSE (/sse) transports, detected
+    via _probe_mcp_transport_sync.  Handles older fastmcp versions that lack
+    the headers= kwarg by embedding the key in the URL instead.
 
     Returns list on success, None on error or not configured.
     """
     if not FEEDLING_MCP_URL or _fastmcp_cls is None:
         return None
 
-    url = FEEDLING_MCP_URL.rstrip("/") + "/mcp"
+    transport_url = _probe_mcp_transport_sync(FEEDLING_MCP_URL)
+    if transport_url is None:
+        log.warning("MCP source unreachable — no working transport endpoint")
+        return None
+
+    supports_headers = _mcp_supports_headers()
 
     async def _call():
-        async with _fastmcp_cls(
-            url,
-            headers={"Authorization": f"Bearer {FEEDLING_MCP_KEY}"},
-        ) as client:
+        if supports_headers:
+            client_ctx = _fastmcp_cls(
+                transport_url,
+                headers={"Authorization": f"Bearer {FEEDLING_MCP_KEY}"},
+            )
+        else:
+            # Older fastmcp: embed auth in URL.  For SSE the key is already
+            # in the URL from probe; for /mcp add it as a query param.
+            if "?" not in transport_url:
+                keyed_url = f"{transport_url}?key={FEEDLING_MCP_KEY}"
+            else:
+                keyed_url = transport_url  # SSE: ?key=… already present
+            client_ctx = _fastmcp_cls(keyed_url)
+
+        async with client_ctx as client:
             result = await client.call_tool(
                 "feedling.chat.get_history", {"limit": limit}
             )
@@ -261,6 +346,47 @@ def _fetch_from_mcp(since: float, limit: int) -> list[dict] | None:
     except Exception as e:
         log.warning("MCP history fetch failed: %s", e)
         return None
+
+
+def _verify_decrypt_sources() -> bool:
+    """Probe all configured decrypt sources at startup.
+
+    Returns True if at least one configured source is reachable.
+    Each unreachable source is logged at ERROR level so the operator
+    can distinguish "configured but broken" from "not configured at all".
+    """
+    any_ok = False
+
+    if FEEDLING_ENCLAVE_URL:
+        try:
+            client = _ENCLAVE_CLIENT or httpx
+            resp = client.get(
+                f"{FEEDLING_ENCLAVE_URL}/v1/chat/history",
+                params={"limit": 1},
+                headers=_HEADERS,
+                timeout=10,
+            )
+            resp.raise_for_status()
+            log.info("decrypt source OK: enclave at %s", FEEDLING_ENCLAVE_URL)
+            any_ok = True
+        except Exception as e:
+            log.error(
+                "decrypt source UNREACHABLE: enclave at %s — %s",
+                FEEDLING_ENCLAVE_URL, e,
+            )
+
+    if FEEDLING_MCP_URL:
+        transport_url = _probe_mcp_transport_sync(FEEDLING_MCP_URL)
+        if transport_url:
+            log.info("decrypt source OK: MCP at %s", transport_url)
+            any_ok = True
+        else:
+            log.error(
+                "decrypt source UNREACHABLE: MCP at %s — no working transport",
+                FEEDLING_MCP_URL,
+            )
+
+    return any_ok
 
 
 def get_decrypted_history(since: float, limit: int = 20) -> list[dict] | None:
@@ -617,7 +743,16 @@ def run() -> None:
         )
         sys.exit(1)
 
-    if not FEEDLING_ENCLAVE_URL and not FEEDLING_MCP_URL:
+    if FEEDLING_ENCLAVE_URL or FEEDLING_MCP_URL:
+        if not _verify_decrypt_sources():
+            log.critical(
+                "All configured decrypt sources are unreachable "
+                "(enclave=%s mcp=%s). Cannot decrypt user messages — exiting.",
+                FEEDLING_ENCLAVE_URL or "unset",
+                FEEDLING_MCP_URL or "unset",
+            )
+            sys.exit(1)
+    else:
         log.warning(
             "⚠️  No decryption source configured (FEEDLING_ENCLAVE_URL and "
             "FEEDLING_MCP_URL are both unset). "

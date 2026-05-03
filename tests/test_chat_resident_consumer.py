@@ -226,3 +226,99 @@ def test_fallback_cooldown_suppresses_repeat():
         crc._process_messages([msgs[1]])
 
     mock_post2.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: MCP client compat + transport probing + startup hard check
+# ---------------------------------------------------------------------------
+
+def test_mcp_client_headers_not_supported(monkeypatch):
+    """Older fastmcp without headers= kwarg: consumer embeds key in URL instead."""
+    captured_urls = []
+
+    class _FakeClientNoHeaders:
+        """Simulates a fastmcp.Client that does NOT accept headers=."""
+        def __init__(self, url):  # no headers= param
+            captured_urls.append(url)
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *_):
+            pass
+        async def call_tool(self, name, args):
+            return []
+
+    monkeypatch.setattr(crc, "_fastmcp_cls", _FakeClientNoHeaders)
+    monkeypatch.setattr(crc, "FEEDLING_MCP_URL", "http://127.0.0.1:5002")
+    monkeypatch.setattr(crc, "FEEDLING_MCP_KEY", "testkey123")
+    # Pre-seed transport cache so probe is not attempted.
+    monkeypatch.setattr(
+        crc, "_mcp_transport_cache",
+        {"http://127.0.0.1:5002": "http://127.0.0.1:5002/mcp"},
+    )
+
+    result = crc._fetch_from_mcp(0.0, 5)
+
+    assert result == [], f"Expected empty list, got {result!r}"
+    assert captured_urls, "FastMCP client was never instantiated"
+    # Key must be in the URL, not passed as a headers= kwarg.
+    assert "testkey123" in captured_urls[0], (
+        f"Key not embedded in URL: {captured_urls[0]!r}"
+    )
+
+
+def test_mcp_probe_404_falls_back_to_sse(monkeypatch):
+    """/mcp returns 404: probe falls back and discovers SSE transport."""
+    import httpx as _httpx
+
+    class _Resp404:
+        status_code = 404
+
+    class _RespSSE:
+        status_code = 200
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+
+    def _mock_post(url, **kw):
+        return _Resp404()
+
+    def _mock_stream(method, url, **kw):
+        return _RespSSE()
+
+    monkeypatch.setattr(crc, "FEEDLING_MCP_KEY", "testkey")
+    monkeypatch.setattr(crc, "_mcp_transport_cache", {})
+
+    with patch("httpx.post", _mock_post), patch("httpx.stream", _mock_stream):
+        result = crc._probe_mcp_transport_sync("http://127.0.0.1:5002")
+
+    assert result is not None, "probe returned None — expected SSE URL"
+    assert "/sse" in result, f"Expected SSE URL, got {result!r}"
+    assert "testkey" in result, "API key not in SSE URL"
+
+
+def test_sse_only_config(monkeypatch):
+    """With transport cache pointing to SSE, consumer passes that URL to FastMCP."""
+    captured_urls = []
+
+    class _FakeClientWithHeaders:
+        def __init__(self, url, headers=None):
+            captured_urls.append(url)
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): pass
+        async def call_tool(self, name, args): return []
+
+    sse_url = "http://127.0.0.1:5002/sse?key=testkey"
+    monkeypatch.setattr(crc, "_fastmcp_cls", _FakeClientWithHeaders)
+    monkeypatch.setattr(crc, "FEEDLING_MCP_URL", "http://127.0.0.1:5002")
+    monkeypatch.setattr(crc, "FEEDLING_MCP_KEY", "testkey")
+    monkeypatch.setattr(
+        crc, "_mcp_transport_cache",
+        {"http://127.0.0.1:5002": sse_url},
+    )
+
+    result = crc._fetch_from_mcp(0.0, 5)
+
+    assert result == [], f"Expected empty list, got {result!r}"
+    assert captured_urls, "FastMCP client was never instantiated"
+    assert captured_urls[0] == sse_url, (
+        f"Expected SSE URL {sse_url!r}, FastMCP received {captured_urls[0]!r}"
+    )
