@@ -483,6 +483,13 @@ _NOISE_LINE_RE = re.compile(
 # Internal/system identity tokens that must never leak to end-user chat.
 _IDENTITY_LEAK_RE = re.compile(r"\b(hermes|reasoning|chain\s*of\s*thought)\b", re.IGNORECASE)
 
+# Typical leaked planning / chain-of-thought lead-ins from agent UIs.
+_REASONING_LINE_RE = re.compile(
+    r"^\s*(i\s+need\s+to|i\'?m\s+thinking|the\s+user\s+wrote|the\s+user\s+wants|"
+    r"this\s+(means|doesn\'?t)|i\s+should|i\'?ll|let\s+me\s+|my\s+plan\s+is)",
+    re.IGNORECASE,
+)
+
 
 def _extract_text_from_cli_output(raw: str) -> str:
     """Best-effort extraction from raw CLI stdout.
@@ -587,6 +594,8 @@ def _sanitize_reply_text(text: str) -> str:
             continue
         if _IDENTITY_LEAK_RE.search(ln):
             continue
+        if _REASONING_LINE_RE.match(ln):
+            continue
         # Remove markdown-ish wrappers/bullets and decorative prefixes.
         ln = re.sub(r"^[`#>*\-\s]+", "", ln).strip()
         ln = re.sub(r"^[—–-]+\s*", "", ln).strip()
@@ -604,6 +613,10 @@ def _sanitize_reply_text(text: str) -> str:
         kept = [ln for ln in kept if any("一" <= c <= "鿿" for c in ln)]
         if not kept:
             return ""
+    else:
+        # No Chinese line at all: likely an English planning block from upstream.
+        # Return empty so caller falls back to safe Chinese fallback message.
+        return ""
 
     # Dedup consecutive identical lines.
     deduped: list[str] = []
@@ -614,7 +627,42 @@ def _sanitize_reply_text(text: str) -> str:
     return "\n".join(deduped).strip()
 
 
-def call_agent(message: str) -> str:
+def _normalize_agent_replies(raw_reply: str) -> list[str]:
+    """Convert agent output into one or more chat bubbles.
+
+    Supported shapes:
+    - Plain text -> one bubble after sanitization.
+    - JSON string with {"messages": ["...", "..."]} -> multiple bubbles.
+
+    We keep policy minimal here: resident should not force one-to-one turn mapping;
+    agent-side logic decides whether to return one or many messages.
+    """
+    if not isinstance(raw_reply, str):
+        return []
+
+    raw_reply = raw_reply.strip()
+    if not raw_reply:
+        return []
+
+    # Optional structured multi-message output from agent.
+    try:
+        obj = json.loads(raw_reply)
+        if isinstance(obj, dict) and isinstance(obj.get("messages"), list):
+            out: list[str] = []
+            for item in obj["messages"]:
+                if isinstance(item, str):
+                    clean = _sanitize_reply_text(item)
+                    if clean:
+                        out.append(clean)
+            return out
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    clean = _sanitize_reply_text(raw_reply)
+    return [clean] if clean else []
+
+
+def call_agent(message: str) -> list[str]:
     if AGENT_MODE == "http":
         raw = call_agent_http(message)
     elif AGENT_MODE == "cli":
@@ -622,8 +670,8 @@ def call_agent(message: str) -> str:
     else:
         raise ValueError(f"unknown AGENT_MODE: {AGENT_MODE!r}")
 
-    clean = _sanitize_reply_text(raw)
-    return clean or FALLBACK_REPLY
+    replies = _normalize_agent_replies(raw)
+    return replies or [FALLBACK_REPLY]
 
 
 # ---------------------------------------------------------------------------
@@ -799,12 +847,12 @@ def _process_messages(messages: list) -> float:
         log.info("user message [ts=%.3f]: %s", ts, content[:80])
 
         try:
-            reply = call_agent(content)
+            replies = call_agent(content)
         except Exception as e:
             log.error("agent call failed: %s", e)
             now = time.time()
             if now - _last_fallback_ts >= FALLBACK_COOLDOWN:
-                reply = FALLBACK_REPLY
+                replies = [FALLBACK_REPLY]
                 _last_fallback_ts = now
                 log.warning("sending fallback reply (cooldown starts)")
             else:
@@ -815,11 +863,17 @@ def _process_messages(messages: list) -> float:
                 latest = max(latest, ts)
                 continue
 
-        try:
-            post_reply(reply)
-            log.info("reply sent: %s", reply[:80])
-        except Exception as e:
-            log.error("failed to post reply: %s", e)
+        if isinstance(replies, str):
+            replies = [replies]
+        elif not isinstance(replies, list):
+            replies = [str(replies)]
+
+        for reply in replies:
+            try:
+                post_reply(reply)
+                log.info("reply sent: %s", reply[:80])
+            except Exception as e:
+                log.error("failed to post reply: %s", e)
 
         latest = max(latest, ts)
 

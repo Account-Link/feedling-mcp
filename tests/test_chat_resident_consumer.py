@@ -381,3 +381,16 @@ I'm thinking a warm tone is best.
 你继续说，我在听。"""
     cleaned = crc._sanitize_reply_text(raw)
     assert cleaned == "在呢，Seven。\n你继续说，我在听。"
+
+
+def test_sanitize_reply_text_pure_english_reasoning_returns_empty():
+    raw = """The user wrote \"甜！\" which likely means they are giving a compliment.
+I think it's best to respond warmly and playfully."""
+    cleaned = crc._sanitize_reply_text(raw)
+    assert cleaned == ""
+
+
+def test_normalize_agent_replies_supports_messages_array_json():
+    raw = '{"messages":["在。","我在听。","继续说。"]}'
+    out = crc._normalize_agent_replies(raw)
+    assert out == ["在。", "我在听。", "继续说。"]
