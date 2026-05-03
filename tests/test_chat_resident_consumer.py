@@ -322,3 +322,38 @@ def test_sse_only_config(monkeypatch):
     assert captured_urls[0] == sse_url, (
         f"Expected SSE URL {sse_url!r}, FastMCP received {captured_urls[0]!r}"
     )
+
+
+def test_mcp_calltoolresult_content_shape(monkeypatch):
+    """Handle FastMCP CallToolResult(content=[TextContent(text=...)]) shape."""
+
+    class _TextContent:
+        def __init__(self, text):
+            self.text = text
+
+    class _CallToolResult:
+        def __init__(self, text):
+            self.content = [_TextContent(text)]
+
+    class _FakeClient:
+        def __init__(self, url, headers=None):
+            self.url = url
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *_):
+            pass
+        async def call_tool(self, name, args):
+            return _CallToolResult('{"messages":[{"role":"user","content":"hello","ts":7777.0}]}')
+
+    monkeypatch.setattr(crc, "_fastmcp_cls", _FakeClient)
+    monkeypatch.setattr(crc, "FEEDLING_MCP_URL", "http://127.0.0.1:5002")
+    monkeypatch.setattr(crc, "FEEDLING_MCP_KEY", "testkey")
+    monkeypatch.setattr(
+        crc, "_mcp_transport_cache",
+        {"http://127.0.0.1:5002": "http://127.0.0.1:5002/sse?key=testkey"},
+    )
+
+    result = crc._fetch_from_mcp(0.0, 5)
+
+    assert isinstance(result, list)
+    assert result and result[0]["content"] == "hello"

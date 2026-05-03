@@ -312,6 +312,62 @@ def _fetch_from_mcp(since: float, limit: int) -> list[dict] | None:
 
     supports_headers = _mcp_supports_headers()
 
+    def _extract_messages_from_mcp_result(result_obj) -> list[dict]:
+        """Parse FastMCP call_tool return shapes across client versions."""
+
+        def _maybe_parse_json_text(text: str):
+            if not text:
+                return None
+            try:
+                data = json.loads(text)
+            except Exception:
+                return None
+            if isinstance(data, dict):
+                msgs = data.get("messages") or data.get("history")
+                if isinstance(msgs, list):
+                    return msgs
+            return None
+
+        if result_obj is None:
+            return []
+
+        # Newer shape: CallToolResult(content=[...], structured_content=...)
+        content_list = getattr(result_obj, "content", None)
+        if isinstance(content_list, list):
+            for item in content_list:
+                text = getattr(item, "text", None)
+                if isinstance(text, str):
+                    parsed = _maybe_parse_json_text(text)
+                    if parsed is not None:
+                        return parsed
+
+        structured = getattr(result_obj, "structured_content", None)
+        if isinstance(structured, dict):
+            msgs = structured.get("messages") or structured.get("history")
+            if isinstance(msgs, list):
+                return msgs
+
+        text_attr = getattr(result_obj, "text", None)
+        if isinstance(text_attr, str):
+            parsed = _maybe_parse_json_text(text_attr)
+            if parsed is not None:
+                return parsed
+
+        # Older shape: list[ContentLike]
+        if isinstance(result_obj, list):
+            for item in result_obj:
+                text = getattr(item, "text", None)
+                if isinstance(text, str):
+                    parsed = _maybe_parse_json_text(text)
+                    if parsed is not None:
+                        return parsed
+                parsed = _maybe_parse_json_text(str(item))
+                if parsed is not None:
+                    return parsed
+
+        parsed = _maybe_parse_json_text(str(result_obj))
+        return parsed if parsed is not None else []
+
     async def _call():
         if supports_headers:
             client_ctx = _fastmcp_cls(
@@ -331,14 +387,7 @@ def _fetch_from_mcp(since: float, limit: int) -> list[dict] | None:
             result = await client.call_tool(
                 "feedling.chat.get_history", {"limit": limit}
             )
-            if not result:
-                return []
-            # FastMCP returns a list of Content objects; text holds the JSON.
-            text = getattr(result[0], "text", None)
-            if not text:
-                text = str(result[0]) if result else ""
-            data = json.loads(text) if text else {}
-            msgs = data.get("messages") or data.get("history") or []
+            msgs = _extract_messages_from_mcp_result(result)
             return _filter_since(msgs, since)
 
     try:
