@@ -811,6 +811,9 @@ def v1_identity_get():
             "agent_name": inner.get("agent_name"),
             "self_introduction": inner.get("self_introduction"),
             "dimensions": inner.get("dimensions", []),
+            "days_with_user": inner.get("days_with_user", 0),
+            "category": inner.get("category", ""),
+            "signature": inner.get("signature", []),
             "visibility": identity.get("visibility", "shared"),
             "decrypt_status": "ok",
         })

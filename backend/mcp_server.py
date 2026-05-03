@@ -582,7 +582,7 @@ def identity_init(
     agent_name: str,
     self_introduction: str,
     dimensions: list[dict],
-    days_with_user: int = 0,
+    days_with_user: int | None = None,
     category: str = "",
     signature: list[str] = None,
     ctx: Context = None,
@@ -599,8 +599,21 @@ def identity_init(
         "self_introduction": self_introduction,
         "dimensions": dimensions,
     }
-    if days_with_user:
-        body["days_with_user"] = days_with_user
+    if days_with_user is None:
+        # Best-effort infer from earliest chat message timestamp.
+        inferred_days = 0
+        try:
+            hist = _get_decrypted("/v1/chat/history", {"limit": 200}, ctx=ctx)
+            msgs = hist.get("messages") or []
+            if msgs:
+                first_ts = min(float(m.get("ts", m.get("timestamp", 0)) or 0) for m in msgs)
+                if first_ts > 0:
+                    inferred_days = max(0, int((time.time() - first_ts) // 86400))
+        except Exception:
+            inferred_days = 0
+        body["days_with_user"] = inferred_days
+    else:
+        body["days_with_user"] = int(max(0, days_with_user))
     if category:
         body["category"] = category
     if signature:
@@ -671,7 +684,7 @@ def identity_nudge(dimension_name: str, delta: int, reason: str = "", ctx: Conte
         "self_introduction": ident.get("self_introduction", ""),
         "dimensions": dims,
     }
-    if ident.get("days_with_user"):
+    if "days_with_user" in ident:
         body["days_with_user"] = ident["days_with_user"]
     if ident.get("category"):
         body["category"] = ident["category"]
