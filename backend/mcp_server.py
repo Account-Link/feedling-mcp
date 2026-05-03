@@ -201,6 +201,10 @@ _REQUIRE_VISION_BEFORE_PUSH = os.environ.get("FEEDLING_REQUIRE_VISION_BEFORE_PUS
 _VISION_DECRYPT_TTL_SEC = int(os.environ.get("FEEDLING_VISION_DECRYPT_TTL_SEC", "180"))
 _recent_decrypt_by_api_key: dict[str, dict] = {}
 
+# Optional relationship anchor for days_with_user (NOT app install day).
+# Prefer explicit days_with_user from caller; otherwise derive from this anchor.
+_REL_START_TS = float(os.environ.get("FEEDLING_RELATIONSHIP_START_TS", "0") or 0)
+
 
 def _get(path: str, params: dict | None = None, ctx: Context | None = None) -> dict:
     r = _FLASK_HTTP.get(f"{FLASK_BASE}{path}", params=params, headers=_headers(ctx))
@@ -600,18 +604,12 @@ def identity_init(
         "dimensions": dimensions,
     }
     if days_with_user is None:
-        # Best-effort infer from earliest chat message timestamp.
-        inferred_days = 0
-        try:
-            hist = _get_decrypted("/v1/chat/history", {"limit": 200}, ctx=ctx)
-            msgs = hist.get("messages") or []
-            if msgs:
-                first_ts = min(float(m.get("ts", m.get("timestamp", 0)) or 0) for m in msgs)
-                if first_ts > 0:
-                    inferred_days = max(0, int((time.time() - first_ts) // 86400))
-        except Exception:
-            inferred_days = 0
-        body["days_with_user"] = inferred_days
+        # Do NOT infer from app install/init. If a relationship anchor is provided,
+        # derive days from that; otherwise keep an explicit 0 until caller sets it.
+        if _REL_START_TS > 0:
+            body["days_with_user"] = max(0, int((time.time() - _REL_START_TS) // 86400))
+        else:
+            body["days_with_user"] = 0
     else:
         body["days_with_user"] = int(max(0, days_with_user))
     if category:

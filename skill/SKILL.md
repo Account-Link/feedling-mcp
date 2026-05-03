@@ -314,7 +314,7 @@ Rules:
 
 | Field | Type | What it shows |
 |-------|------|---------------|
-| `days_with_user` | `int` | How many days you have known this person — counted from your very first conversation with them, not from when they installed this app. Look at your earliest conversation timestamp and calculate the number of days from that date to today. If you met 3 months ago, this should be ~90. Shown prominently at the top of the Identity page. |
+| `days_with_user` | `int` | How many days you have known this person — counted from when your relationship with them began as an Agent, NOT from app install/init date. If you met 3 months ago, this should be ~90. Shown prominently at the top of the Identity page. |
 | `category` | `string` | Short descriptor, e.g. `"Quiet · Observant"` |
 | `dimensions[].delta` | `string` | Recent shift shown next to each dimension score: `"+0.4"` or `"−0.2"` |
 
