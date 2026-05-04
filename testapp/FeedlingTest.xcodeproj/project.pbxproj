@@ -142,7 +142,7 @@
 		E57B51CA74D4087154F203F1 /* BaseImageReference.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BaseImageReference.swift; sourceTree = "<group>"; };
 		E760771C17EAF8147D096B4E /* LiveActivityManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityManager.swift; sourceTree = "<group>"; };
 		E807384089044501BDD54BFA /* FeedlingTestWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedlingTestWidgetBundle.swift; sourceTree = "<group>"; };
-		E96943835F627DA60766D69C /* IntelSGXRootCA.der */ = {isa = PBXFileReference; path = IntelSGXRootCA.der; sourceTree = "<group>"; };
+		E96943835F627DA60766D69C /* IntelSGXRootCA.der */ = {isa = PBXFileReference; lastKnownFileType = file; path = IntelSGXRootCA.der; sourceTree = "<group>"; };
 		EAD923C73CFB230F5965E087 /* MemoryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryViewModel.swift; sourceTree = "<group>"; };
 		ED7965843E2AE2F74B88A5FC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		EE37094391F6BB9C2D424ED9 /* Fonts */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Fonts; path = FeedlingTest/Fonts; sourceTree = SOURCE_ROOT; };
@@ -388,10 +388,10 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				143528F74119840BD515D293 /* FeedlingBroadcast */,
-				B0C63F767F63B43C47A6CE60 /* FeedlingBroadcastSetupUI */,
 				282D06B399CCE088372449A9 /* FeedlingTest */,
 				40F0E8EF6FA85277D76C29E3 /* FeedlingTestWidget */,
+				B0C63F767F63B43C47A6CE60 /* FeedlingBroadcastSetupUI */,
+				143528F74119840BD515D293 /* FeedlingBroadcast */,
 			);
 		};
 /* End PBXProject section */
