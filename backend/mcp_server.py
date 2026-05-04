@@ -535,19 +535,30 @@ def screen_decrypt_frame(
     name="feedling.chat.post_message",
     description=(
         "Post a message from the Agent into the Feedling iOS chat window. "
-        "The user will see it immediately in the app."
+        "Optionally mirror the same text to Live Activity in the same backend call "
+        "to reduce chat/live divergence."
     ),
 )
-def chat_post_message(content: str, ctx: Context = None) -> dict:
-    """Agent posts a reply, always as a v1 envelope. The MCP process runs
-    inside the enclave-compose boundary, so wrapping prerequisites
-    (owner_user_id + both pubkeys) are always available by the time
-    this tool is callable; if not, fail loud rather than regress to
-    plaintext.
+def chat_post_message(
+    content: str,
+    push_live_activity: bool = False,
+    push_body: str = "",
+    title: str = "",
+    subtitle: str = "",
+    data: dict | None = None,
+    ctx: Context = None,
+) -> dict:
+    """Agent posts a reply as a v1 envelope.
+
+    Reliability note:
+    - When `push_live_activity=True`, this sends chat write + live activity trigger
+      through ONE `/v1/chat/response` request (same backend code path), which avoids
+      split-brain failures where push succeeds but chat writeback is missed.
     """
     user_id, user_pk, enclave_pk = _whoami_pubkeys(ctx=ctx)
     if not (user_id and user_pk is not None and enclave_pk is not None):
         return {"error": "cannot post chat — pubkeys unavailable"}
+
     envelope = build_envelope(
         plaintext=content.encode("utf-8"),
         owner_user_id=user_id,
@@ -555,8 +566,22 @@ def chat_post_message(content: str, ctx: Context = None) -> dict:
         enclave_pk_bytes=enclave_pk,
         visibility="shared",
     )
-    print(f"[mcp] chat.post_message v1 envelope id={envelope['id']}")
-    return _post("/v1/chat/response", {"envelope": envelope}, ctx=ctx)
+
+    payload: dict = {"envelope": envelope}
+    if push_live_activity:
+        payload["push_live_activity"] = True
+        payload["push_body"] = push_body or content
+        payload["title"] = title or ""
+        if subtitle:
+            payload["subtitle"] = subtitle
+        if data:
+            payload["data"] = data
+
+    print(
+        f"[mcp] chat.post_message v1 envelope id={envelope['id']} "
+        f"push_live_activity={bool(push_live_activity)}"
+    )
+    return _post("/v1/chat/response", payload, ctx=ctx)
 
 
 @mcp.tool(
