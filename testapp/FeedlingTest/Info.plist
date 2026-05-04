@@ -31,6 +31,10 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Used for voice message input</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Used to convert your voice to text</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

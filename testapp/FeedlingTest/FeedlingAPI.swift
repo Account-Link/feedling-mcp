@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Network
 import Security
 import SwiftUI
 import UIKit
@@ -131,6 +132,8 @@ final class FeedlingAPI: ObservableObject {
         UserDefaults.standard.set(true, forKey: Keys.hasRegistered)
         UserDefaults.standard.set(false, forKey: Keys.registrationFailed)
         persist()
+        // Re-upload any tokens that were skipped because apiKey was empty at the time.
+        Task { await LiveActivityManager.shared.retryPendingTokenUploads() }
     }
 
     // MARK: - Persistence
@@ -186,8 +189,12 @@ final class FeedlingAPI: ObservableObject {
     /// Concurrent callers await the same in-flight request.
     func ensureRegisteredIfCloud() async {
         guard storageMode == .cloud else { return }
-        guard apiKey.isEmpty else { return }                                  // already have creds
-        if UserDefaults.standard.bool(forKey: Keys.registrationFailed) { return }  // backoff: try again on next manual toggle
+        guard apiKey.isEmpty else { return }
+
+        await waitForNetwork()
+
+        // Clear any previous failure flag — network is now reachable.
+        UserDefaults.standard.set(false, forKey: Keys.registrationFailed)
 
         if let existing = registrationTask {
             await existing.value
@@ -200,6 +207,22 @@ final class FeedlingAPI: ObservableObject {
         registrationTask = task
         await task.value
         registrationTask = nil
+    }
+
+    // Suspends until NWPathMonitor reports a satisfied (reachable) path.
+    private func waitForNetwork() async {
+        let monitor = NWPathMonitor()
+        let queue = DispatchQueue(label: "feedling.network.monitor")
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let box = LockBox(false)
+            monitor.pathUpdateHandler = { path in
+                guard path.status == .satisfied else { return }
+                guard box.setIfFalse() else { return }
+                monitor.cancel()
+                continuation.resume()
+            }
+            monitor.start(queue: queue)
+        }
     }
 
     private func performRegistration() async {
@@ -1020,5 +1043,20 @@ extension View {
         case .medium: self.font(.newsreader(size: 28)).foregroundStyle(Color.cinFg)
         case .small:  self.font(.newsreader(size: 22)).foregroundStyle(Color.cinFg)
         }
+    }
+}
+
+// MARK: - Concurrency helpers
+
+private final class LockBox: @unchecked Sendable {
+    private var value: Bool
+    private let lock = NSLock()
+    init(_ value: Bool) { self.value = value }
+    /// Sets value to true if currently false. Returns true if this call won the race.
+    func setIfFalse() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !value else { return false }
+        value = true
+        return true
     }
 }

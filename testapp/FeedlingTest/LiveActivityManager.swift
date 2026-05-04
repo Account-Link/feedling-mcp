@@ -157,6 +157,20 @@ class LiveActivityManager: ObservableObject {
         }
     }
 
+    // Called after apiKey becomes available to upload any tokens that were skipped earlier.
+    func retryPendingTokenUploads() async {
+        if let token = deviceToken {
+            await upload(path: "/v1/push/register-token", body: ["type": "device", "token": token])
+        }
+        if let token = activityPushToken, let activity = currentActivity {
+            await upload(path: "/v1/push/register-token",
+                         body: ["type": "live_activity", "token": token, "activity_id": activity.id])
+        }
+        if let token = pushToStartToken {
+            await upload(path: "/v1/push/register-token", body: ["type": "push_to_start", "token": token])
+        }
+    }
+
     private func upload(path: String, body: [String: String]) async {
         let bodyData = try? JSONSerialization.data(withJSONObject: body)
         guard let req = FeedlingAPI.shared.authorizedRequest(path: path, method: "POST", body: bodyData) else { return }

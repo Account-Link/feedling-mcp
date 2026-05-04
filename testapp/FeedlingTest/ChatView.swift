@@ -412,8 +412,11 @@ final class VoiceInputManager: ObservableObject {
     @Published var liveTranscript = ""
     @Published var audioLevel: Float = 0.0
 
-    private let recognizer: SFSpeechRecognizer? =
+    // Lazily initialized so SFSpeechRecognizer doesn't trigger the system
+    // permission check (and pop a dialog) until the mic button is actually tapped.
+    private var recognizer: SFSpeechRecognizer? {
         SFSpeechRecognizer(locale: Locale(identifier: "zh-CN")) ?? SFSpeechRecognizer()
+    }
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private let engine = AVAudioEngine()
