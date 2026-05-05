@@ -31,6 +31,10 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Feedling uses the microphone to enable voice input for search and commands.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Feedling uses speech recognition to convert your voice into text for search and commands.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
