@@ -60,6 +60,11 @@ targets:
               - feedlingtest
         UILaunchScreen:
           UIColorName: ""
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         UIBackgroundModes:
           - remote-notification
         UIAppFonts:
@@ -101,6 +106,7 @@ targets:
         NSExtension:
           NSExtensionPointIdentifier: com.apple.broadcast-services-upload
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).SampleHandler
+          RPBroadcastProcessMode: RPBroadcastProcessModeSampleBuffer
     settings:
       DEVELOPMENT_TEAM: DC9JH5DRMY
       PRODUCT_BUNDLE_IDENTIFIER: com.feedling.mcp.broadcast
