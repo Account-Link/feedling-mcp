@@ -31,6 +31,8 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Feedling uses the microphone to enable voice input for search and commands.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

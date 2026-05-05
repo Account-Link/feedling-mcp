@@ -50,8 +50,11 @@ targets:
         CFBundleDisplayName: Feedling Test
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleShortVersionString: $(MARKETING_VERSION)
+        ITSAppUsesNonExemptEncryption: false
         NSSupportsLiveActivities: true
         NSSupportsLiveActivitiesFrequentUpdates: true
+        NSMicrophoneUsageDescription: Feedling uses the microphone to enable voice input for search and commands.
+        NSSpeechRecognitionUsageDescription: Feedling uses speech recognition to convert your voice into text for search and commands.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         CFBundleURLTypes:
