@@ -36,6 +36,7 @@
 		A1342E092AF06A379D8C9825 /* DCAPQVL.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A19FD1364EF06641F6EE2D8 /* DCAPQVL.swift */; };
 		A3AA0B796AD846E609C8715A /* ScreenActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8485AF4D5CF32FCD3BD19600 /* ScreenActivityWidget.swift */; };
 		A3CDDB2378A71F1A511E1A9D /* FeedlingTestApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14B773D2531DF1548E7C3C63 /* FeedlingTestApp.swift */; };
+		BC9B0CBC17AAC1255B45A190 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1B8A7BF4CCA8BF6B818B587E /* Assets.xcassets */; };
 		C83C124663797489C1BFE393 /* Fonts in Resources */ = {isa = PBXBuildFile; fileRef = EE37094391F6BB9C2D424ED9 /* Fonts */; };
 		CB2DF8DCA51CEF662CF65FAB /* ScreenActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 059AB22EE40CB3F08CADCAE2 /* ScreenActivityAttributes.swift */; };
 		D2D80C1733F407DB01A6FEEF /* InterTight-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 73F3D2316F4D793B8771AD70 /* InterTight-Medium.ttf */; };
@@ -100,6 +101,7 @@
 		14B773D2531DF1548E7C3C63 /* FeedlingTestApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedlingTestApp.swift; sourceTree = "<group>"; };
 		163932C9DCA1AD2D29756AA4 /* FeedlingBroadcastSetupUI.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FeedlingBroadcastSetupUI.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		17C8E8DFD069B7910BF6136C /* Verifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Verifier.swift; sourceTree = "<group>"; };
+		1B8A7BF4CCA8BF6B818B587E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		1EF848471B03E094CE9A32BF /* InterTight-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "InterTight-Regular.ttf"; sourceTree = "<group>"; };
 		2449E25E7E495E2125E1DE74 /* FrameEnvelope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FrameEnvelope.swift; sourceTree = "<group>"; };
 		256AD1FDDDD86B01E7B16036 /* EventLogReplay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventLogReplay.swift; sourceTree = "<group>"; };
@@ -142,7 +144,7 @@
 		E57B51CA74D4087154F203F1 /* BaseImageReference.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BaseImageReference.swift; sourceTree = "<group>"; };
 		E760771C17EAF8147D096B4E /* LiveActivityManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityManager.swift; sourceTree = "<group>"; };
 		E807384089044501BDD54BFA /* FeedlingTestWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedlingTestWidgetBundle.swift; sourceTree = "<group>"; };
-		E96943835F627DA60766D69C /* IntelSGXRootCA.der */ = {isa = PBXFileReference; lastKnownFileType = file; path = IntelSGXRootCA.der; sourceTree = "<group>"; };
+		E96943835F627DA60766D69C /* IntelSGXRootCA.der */ = {isa = PBXFileReference; path = IntelSGXRootCA.der; sourceTree = "<group>"; };
 		EAD923C73CFB230F5965E087 /* MemoryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryViewModel.swift; sourceTree = "<group>"; };
 		ED7965843E2AE2F74B88A5FC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		EE37094391F6BB9C2D424ED9 /* Fonts */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Fonts; path = FeedlingTest/Fonts; sourceTree = SOURCE_ROOT; };
@@ -165,6 +167,7 @@
 		0E9CF1DFFEF7EBFABD8DA3E0 /* FeedlingTest */ = {
 			isa = PBXGroup;
 			children = (
+				1B8A7BF4CCA8BF6B818B587E /* Assets.xcassets */,
 				BC81F4E14F5E038B4836EAA4 /* AuditCardView.swift */,
 				DEE35E8B1037B48E755426C1 /* ChatMessage.swift */,
 				D833B2E56FA8C84DA0950F72 /* ChatView.swift */,
@@ -388,10 +391,10 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				143528F74119840BD515D293 /* FeedlingBroadcast */,
+				B0C63F767F63B43C47A6CE60 /* FeedlingBroadcastSetupUI */,
 				282D06B399CCE088372449A9 /* FeedlingTest */,
 				40F0E8EF6FA85277D76C29E3 /* FeedlingTestWidget */,
-				B0C63F767F63B43C47A6CE60 /* FeedlingBroadcastSetupUI */,
-				143528F74119840BD515D293 /* FeedlingBroadcast */,
 			);
 		};
 /* End PBXProject section */
@@ -401,6 +404,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BC9B0CBC17AAC1255B45A190 /* Assets.xcassets in Resources */,
 				E0E195322F3EEC9E7D9FD010 /* DMMono-Medium.ttf in Resources */,
 				FE1F826183E4DC72882D36E4 /* DMMono-Regular.ttf in Resources */,
 				E436A16C2F9656846AA077E7 /* IntelSGXRootCA.der in Resources */,
@@ -557,6 +561,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = DC9JH5DRMY;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -570,6 +575,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
+				MARKETING_VERSION = 1.0.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -614,6 +620,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = DC9JH5DRMY;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -633,6 +640,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
+				MARKETING_VERSION = 1.0.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
