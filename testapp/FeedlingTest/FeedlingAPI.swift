@@ -57,6 +57,9 @@ final class FeedlingAPI: ObservableObject {
         if let env = ProcessInfo.processInfo.environment["FEEDLING_API_KEY"], !env.isEmpty {
             return env
         }
+        if let stored = ApiKeyStore.shared.load(), !stored.isEmpty {
+            return stored
+        }
         return UserDefaults.standard.string(forKey: Keys.apiKey) ?? ""
     }
 
@@ -71,11 +74,28 @@ final class FeedlingAPI: ObservableObject {
         self.baseURL = ProcessInfo.processInfo.environment["FEEDLING_API_URL"]
             ?? defaults.string(forKey: Keys.baseURL)
             ?? Self.defaultCloudURL
-        self.apiKey = ProcessInfo.processInfo.environment["FEEDLING_API_KEY"]
-            ?? defaults.string(forKey: Keys.apiKey)
-            ?? ""
+
+        // apiKey resolution order:
+        //   1. FEEDLING_API_KEY env var (test/dev override)
+        //   2. Keychain (durable across reinstalls and UserDefaults wipes)
+        //   3. UserDefaults legacy value — migrated into Keychain on first read
+        if let env = ProcessInfo.processInfo.environment["FEEDLING_API_KEY"], !env.isEmpty {
+            self.apiKey = env
+        } else if let stored = ApiKeyStore.shared.load(), !stored.isEmpty {
+            self.apiKey = stored
+        } else if let legacy = defaults.string(forKey: Keys.apiKey), !legacy.isEmpty {
+            // One-time migration: pull existing UserDefaults key into Keychain.
+            self.apiKey = legacy
+            ApiKeyStore.shared.save(legacy)
+        } else {
+            self.apiKey = ""
+        }
+
         self.userId = defaults.string(forKey: Keys.userId) ?? ""
         self.storageMode = StorageMode(rawValue: defaults.string(forKey: Keys.storageMode) ?? "") ?? .cloud
+        // Mirror the resolved apiKey back to UserDefaults so the App Group +
+        // broadcast extension see the migrated value immediately.
+        defaults.set(apiKey, forKey: Keys.apiKey)
         syncToAppGroup()
     }
 
@@ -144,6 +164,9 @@ final class FeedlingAPI: ObservableObject {
         d.set(apiKey, forKey: Keys.apiKey)
         d.set(userId, forKey: Keys.userId)
         d.set(storageMode.rawValue, forKey: Keys.storageMode)
+        // Mirror to Keychain so apiKey survives UserDefaults wipes; an empty
+        // value here intentionally clears the Keychain entry too.
+        ApiKeyStore.shared.save(apiKey)
         syncToAppGroup()
     }
 
@@ -501,12 +524,15 @@ final class FeedlingAPI: ObservableObject {
         UserDefaults.standard.removeObject(forKey: PhaseBKeys.signedOutForComposeChange)
         UserDefaults.standard.removeObject(forKey: Keys.hasRegistered)
 
-        // Wipe Keychain content + identity key so a fresh register starts clean.
+        // Wipe Keychain content + identity key + apiKey so a fresh register starts clean.
         _ = ContentKeyStore.shared.wipeKeypair()
         _ = KeyStore.shared.wipeKeypair()
+        _ = ApiKeyStore.shared.wipe()
     }
 
     /// Discard current credentials and regenerate. Asks server to register fresh.
+    /// Wipes the Keychain entry too so `init()` on next launch can't resurrect
+    /// the old key — otherwise regenerate becomes a no-op.
     func regenerateCredentials() async {
         UserDefaults.standard.removeObject(forKey: Keys.cloudApiKey)
         UserDefaults.standard.removeObject(forKey: Keys.cloudUserId)
@@ -514,6 +540,7 @@ final class FeedlingAPI: ObservableObject {
         self.userId = ""
         UserDefaults.standard.set(false, forKey: Keys.hasRegistered)
         UserDefaults.standard.set(false, forKey: Keys.registrationFailed)
+        _ = ApiKeyStore.shared.wipe()
         persist()
         await ensureRegisteredIfCloud()
     }
@@ -770,6 +797,90 @@ final class ContentKeyStore {
         guard status == errSecSuccess else {
             throw NSError(domain: "ContentKeyStore", code: Int(status),
                           userInfo: [NSLocalizedDescriptionKey: "Keychain write failed"])
+        }
+    }
+}
+
+// MARK: - API key storage (Keychain)
+
+/// Stores the cloud `api_key` in Keychain so it survives UserDefaults wipes
+/// (app reinstall, iOS storage pressure, etc.). Without this, an emptied
+/// UserDefaults triggers `ensureRegisteredIfCloud()` to register a fresh key,
+/// silently rotating the user's identity and breaking any external clients
+/// (Agent, MCP) configured with the old key.
+final class ApiKeyStore {
+    static let shared = ApiKeyStore()
+
+    private static let service = "com.feedling.mcp"
+    private static let account = "api_key"
+
+    private init() {}
+
+    func wipe() -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service,
+            kSecAttrAccount as String: Self.account,
+            kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
+    }
+
+    func load() -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service,
+            kSecAttrAccount as String: Self.account,
+            kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess,
+              let data = result as? Data,
+              let key = String(data: data, encoding: .utf8) else { return nil }
+        return key
+    }
+
+    /// Saves `key` to Keychain. Empty key is treated as a wipe so callers
+    /// that go through `persist()` clear the stored key when they zero `apiKey`.
+    func save(_ key: String) {
+        if key.isEmpty {
+            _ = wipe()
+            return
+        }
+        let data = Data(key.utf8)
+
+        // Wipe any prior entry so we don't leave a stale shadow.
+        let wipeQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service,
+            kSecAttrAccount as String: Self.account,
+            kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
+        ]
+        SecItemDelete(wipeQuery as CFDictionary)
+
+        // Prefer iCloud-synced; fall back to device-local.
+        let syncedQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service,
+            kSecAttrAccount as String: Self.account,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            kSecAttrSynchronizable as String: true,
+            kSecValueData as String: data,
+        ]
+        var status = SecItemAdd(syncedQuery as CFDictionary, nil)
+        if status != errSecSuccess {
+            let localQuery: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: Self.service,
+                kSecAttrAccount as String: Self.account,
+                kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+                kSecValueData as String: data,
+            ]
+            _ = SecItemAdd(localQuery as CFDictionary, nil)
         }
     }
 }
