@@ -52,15 +52,22 @@ class ChatViewModel: ObservableObject {
 
     // Walk a sorted message list and stamp isProactive on agent messages
     // that arrived without a preceding user turn (pure unsolicited messages).
+    // Only the FIRST agent message in a consecutive run is marked proactive;
+    // subsequent bubbles in the same run are not, so they don't each get
+    // a "SHE REACHED OUT" divider.
     private func stampProactive(_ msgs: [ChatMessage]) -> [ChatMessage] {
         var result = msgs
-        var lastWasAgent = true  // treat thread start as "no user yet"
+        var prevWasAgent = false
+        var prevWasUser  = false
         for i in result.indices {
             if result[i].isFromAgent {
-                result[i].isProactive = lastWasAgent
-                lastWasAgent = true
+                result[i].isProactive = !prevWasAgent && !prevWasUser
+                prevWasAgent = true
+                prevWasUser  = false
             } else {
-                lastWasAgent = false
+                result[i].isProactive = false
+                prevWasAgent = false
+                prevWasUser  = true
             }
         }
         return result
