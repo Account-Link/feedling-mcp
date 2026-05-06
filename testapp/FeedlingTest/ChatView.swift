@@ -185,11 +185,11 @@ struct ChatView: View {
                             .foregroundStyle(Color.cinSub)
                     }
                     .submitLabel(.send)
-                    .onSubmit { voice.stop(); Task { await vm.sendMessage() } }
+                    .onSubmit { if voice.isRecording { voice.stop() }; Task { await vm.sendMessage() } }
                     .frame(maxWidth: .infinity)
 
                 Button {
-                    voice.stop()
+                    if voice.isRecording { voice.stop() }
                     Task { await vm.sendMessage() }
                 } label: {
                     Text("SEND")
