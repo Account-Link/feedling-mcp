@@ -201,6 +201,36 @@ _REQUIRE_VISION_BEFORE_PUSH = os.environ.get("FEEDLING_REQUIRE_VISION_BEFORE_PUS
 _VISION_DECRYPT_TTL_SEC = int(os.environ.get("FEEDLING_VISION_DECRYPT_TTL_SEC", "180"))
 _recent_decrypt_by_api_key: dict[str, dict] = {}
 
+
+def _check_vision_gate(api_key: str | None) -> dict | None:
+    """Return a block-reason dict if the vision gate is active and not satisfied,
+    or None if the caller may proceed with a Live Activity push."""
+    if not _REQUIRE_VISION_BEFORE_PUSH:
+        return None
+    rec = _recent_decrypt_by_api_key.get(api_key) if api_key else None
+    if not rec:
+        return {
+            "status": "blocked",
+            "reason": "vision_gate_missing_decrypt",
+            "hint": "Call feedling.screen.decrypt_frame(include_image=true) before pushing to Live Activity.",
+        }
+    age = time.time() - float(rec.get("ts", 0.0) or 0.0)
+    if age > _VISION_DECRYPT_TTL_SEC:
+        return {
+            "status": "blocked",
+            "reason": "vision_gate_stale_decrypt",
+            "age_sec": round(age, 2),
+            "ttl_sec": _VISION_DECRYPT_TTL_SEC,
+            "hint": "Frame analysis is stale. Re-run feedling.screen.decrypt_frame(include_image=true).",
+        }
+    if not rec.get("include_image"):
+        return {
+            "status": "blocked",
+            "reason": "vision_gate_no_image",
+            "hint": "decrypt_frame must be called with include_image=true.",
+        }
+    return None
+
 # Optional relationship anchor for days_with_user (NOT app install day).
 # Prefer explicit days_with_user from caller; otherwise derive from this anchor.
 _REL_START_TS = float(os.environ.get("FEEDLING_RELATIONSHIP_START_TS", "0") or 0)
@@ -327,31 +357,13 @@ def push_live_activity(
 ) -> dict:
     payload_data = dict(data or {})
 
-    if _REQUIRE_VISION_BEFORE_PUSH:
-        api_key = _current_api_key(ctx)
-        rec = _recent_decrypt_by_api_key.get(api_key) if api_key else None
-        now = time.time()
-        if not rec:
-            return {
-                "status": "blocked",
-                "reason": "vision_gate_missing_decrypt",
-                "hint": "Call feedling.screen.decrypt_frame(include_image=true) before feedling.push.live_activity.",
-            }
-        age = now - float(rec.get("ts", 0.0) or 0.0)
-        if age > _VISION_DECRYPT_TTL_SEC:
-            return {
-                "status": "blocked",
-                "reason": "vision_gate_stale_decrypt",
-                "age_sec": round(age, 2),
-                "ttl_sec": _VISION_DECRYPT_TTL_SEC,
-                "hint": "Frame analysis is stale. Re-run feedling.screen.decrypt_frame(include_image=true).",
-            }
-        if not rec.get("include_image"):
-            return {
-                "status": "blocked",
-                "reason": "vision_gate_no_image",
-                "hint": "decrypt_frame must be called with include_image=true.",
-            }
+    api_key = _current_api_key(ctx)
+    blocked = _check_vision_gate(api_key)
+    if blocked:
+        return blocked
+
+    rec = _recent_decrypt_by_api_key.get(api_key) if api_key else None
+    if rec:
         payload_data.setdefault("analysis_source", "vision")
         payload_data.setdefault("frame_id", rec.get("frame_id", ""))
 
@@ -555,6 +567,11 @@ def chat_post_message(
       through ONE `/v1/chat/response` request (same backend code path), which avoids
       split-brain failures where push succeeds but chat writeback is missed.
     """
+    if push_live_activity:
+        blocked = _check_vision_gate(_current_api_key(ctx))
+        if blocked:
+            return blocked
+
     user_id, user_pk, enclave_pk = _whoami_pubkeys(ctx=ctx)
     if not (user_id and user_pk is not None and enclave_pk is not None):
         return {"error": "cannot post chat — pubkeys unavailable"}
