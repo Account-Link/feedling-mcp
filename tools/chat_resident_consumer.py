@@ -121,7 +121,7 @@ POLL_TIMEOUT = int(os.environ.get("POLL_TIMEOUT", "30"))
 #   same value as FEEDLING_ENCLAVE_URL in mcp_server.py, e.g. https://127.0.0.1:5003).
 #
 # FEEDLING_MCP_URL: URL of the Feedling MCP server (e.g. https://mcp.feedling.app
-#   or https://127.0.0.1:5002).  The consumer calls feedling.chat.get_history
+#   or https://127.0.0.1:5002).  The consumer calls feedling_chat_get_history
 #   via the MCP server, which runs inside the enclave and can decrypt.
 #   Requires FEEDLING_MCP_TRANSPORT=streamable-http on the MCP server.
 #
@@ -299,7 +299,7 @@ def _fetch_from_enclave(since: float, limit: int) -> list[dict] | None:
 
 
 def _fetch_from_mcp(since: float, limit: int) -> list[dict] | None:
-    """Call feedling.chat.get_history via the MCP server.
+    """Call feedling_chat_get_history via the MCP server.
 
     Supports both streamable-HTTP (/mcp) and SSE (/sse) transports, detected
     via _probe_mcp_transport_sync.  Handles older fastmcp versions that lack
@@ -390,7 +390,7 @@ def _fetch_from_mcp(since: float, limit: int) -> list[dict] | None:
 
         async with client_ctx as client:
             result = await client.call_tool(
-                "feedling.chat.get_history", {"limit": limit}
+                "feedling_chat_get_history", {"limit": limit}
             )
             msgs = _extract_messages_from_mcp_result(result)
             return _filter_since(msgs, since)

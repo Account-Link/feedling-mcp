@@ -137,7 +137,7 @@ mcp = FastMCP(
         "Feedling gives your Agent a body on iOS. "
         "Use these tools to push to Dynamic Island, read the user's screen, "
         "chat with the user, manage the identity card, and tend the memory garden. "
-        "Start with feedling.bootstrap on first connection."
+        "Start with feedling_bootstrap on first connection."
     ),
 )
 
@@ -212,7 +212,7 @@ def _check_vision_gate(api_key: str | None) -> dict | None:
         return {
             "status": "blocked",
             "reason": "vision_gate_missing_decrypt",
-            "hint": "Call feedling.screen.decrypt_frame(include_image=true) before pushing to Live Activity.",
+            "hint": "Call feedling_screen_decrypt_frame(include_image=true) before pushing to Live Activity.",
         }
     age = time.time() - float(rec.get("ts", 0.0) or 0.0)
     if age > _VISION_DECRYPT_TTL_SEC:
@@ -221,7 +221,7 @@ def _check_vision_gate(api_key: str | None) -> dict | None:
             "reason": "vision_gate_stale_decrypt",
             "age_sec": round(age, 2),
             "ttl_sec": _VISION_DECRYPT_TTL_SEC,
-            "hint": "Frame analysis is stale. Re-run feedling.screen.decrypt_frame(include_image=true).",
+            "hint": "Frame analysis is stale. Re-run feedling_screen_decrypt_frame(include_image=true).",
         }
     if not rec.get("include_image"):
         return {
@@ -311,14 +311,14 @@ def _whoami_pubkeys(ctx: Context | None = None) -> tuple[str, bytes | None, byte
 
 
 @mcp.tool(
-    name="feedling.push.dynamic_island",
+    name="feedling_push_dynamic_island",
     description=(
         "Push to the user's iPhone Dynamic Island / Live Activity. "
         "title appears as the heading (e.g. your Agent name). "
         "body is the main message. "
         "subtitle is optional one-line context. "
         "data is a free-form key-value bag. "
-        "The platform enforces a cooldown — check feedling.screen.analyze rate_limit_ok before pushing."
+        "The platform enforces a cooldown — check feedling_screen_analyze rate_limit_ok before pushing."
     ),
 )
 def push_dynamic_island(
@@ -339,7 +339,7 @@ def push_dynamic_island(
 
 
 @mcp.tool(
-    name="feedling.push.live_activity",
+    name="feedling_push_live_activity",
     description=(
         "Update the Live Activity on the user's lock screen and Dynamic Island. "
         "By default, the same message is also synced into chat history so lock-screen "
@@ -400,12 +400,12 @@ def push_live_activity(
 
 
 @mcp.tool(
-    name="feedling.screen.latest_frame",
+    name="feedling_screen_latest_frame",
     description=(
         "Metadata ONLY for the most recent screen frame (timestamp, frame id, "
         "filename, envelope url). Every frame is a v1 envelope, so app/ocr_text "
         "come back empty and there is no plaintext image here. To actually SEE "
-        "the screen — pixels + real OCR text — call feedling.screen.decrypt_frame "
+        "the screen — pixels + real OCR text — call feedling_screen_decrypt_frame "
         "(it defaults to the latest frame)."
     ),
 )
@@ -414,11 +414,11 @@ def screen_latest_frame(ctx: Context = None) -> dict:
 
 
 @mcp.tool(
-    name="feedling.screen.frames_list",
+    name="feedling_screen_frames_list",
     description=(
         "List recent screen frame metadata (timestamp, frame id, filename) from "
         "the user's iOS device. Frames are v1 envelopes so app and ocr_text in "
-        "this listing are always empty — use feedling.screen.decrypt_frame with a "
+        "this listing are always empty — use feedling_screen_decrypt_frame with a "
         "specific frame_id to get real OCR + app + pixels for any frame. limit "
         "defaults to 20, max 100."
     ),
@@ -428,7 +428,7 @@ def screen_frames_list(limit: int = 20, ctx: Context = None) -> dict:
 
 
 @mcp.tool(
-    name="feedling.screen.analyze",
+    name="feedling_screen_analyze",
     description=(
         "Get a structured analysis of the user's current screen activity: "
         "foreground app, OCR summary, and whether the push cooldown has elapsed."
@@ -439,7 +439,7 @@ def screen_analyze(ctx: Context = None) -> dict:
 
 
 @mcp.tool(
-    name="feedling.screen.summary",
+    name="feedling_screen_summary",
     description=(
         "Get today's screen-time rollup for the user (iOS + Mac): total minutes, "
         "top app, top category, pickups. Aggregated server-side from the last 24h "
@@ -451,7 +451,7 @@ def screen_summary(ctx: Context = None) -> dict:
 
 
 @mcp.tool(
-    name="feedling.screen.decrypt_frame",
+    name="feedling_screen_decrypt_frame",
     description=(
         "Decrypt a screen-frame envelope and return the actual pixels + OCR "
         "text so the Agent can SEE the frame. Runs inside the enclave — the "
@@ -544,7 +544,7 @@ def screen_decrypt_frame(
 
 
 @mcp.tool(
-    name="feedling.chat.post_message",
+    name="feedling_chat_post_message",
     description=(
         "Post a message from the Agent into the Feedling iOS chat window. "
         "Optionally mirror the same text to Live Activity in the same backend call "
@@ -602,7 +602,7 @@ def chat_post_message(
 
 
 @mcp.tool(
-    name="feedling.chat.get_history",
+    name="feedling_chat_get_history",
     description="Retrieve recent chat history between the user and the Agent.",
 )
 def chat_get_history(limit: int = 50, ctx: Context = None) -> dict:
@@ -615,7 +615,7 @@ def chat_get_history(limit: int = 50, ctx: Context = None) -> dict:
 
 
 @mcp.tool(
-    name="feedling.identity.init",
+    name="feedling_identity_init",
     description=(
         "Initialize the Agent's identity card. Call this exactly once during bootstrap. "
         "Requires exactly 5 dimensions. Each dimension has a name (string), "
@@ -672,7 +672,7 @@ def identity_init(
 
 
 @mcp.tool(
-    name="feedling.identity.get",
+    name="feedling_identity_get",
     description="Retrieve the current identity card.",
 )
 def identity_get(ctx: Context = None) -> dict:
@@ -680,7 +680,7 @@ def identity_get(ctx: Context = None) -> dict:
 
 
 @mcp.tool(
-    name="feedling.identity.nudge",
+    name="feedling_identity_nudge",
     description=(
         "Micro-adjust a single dimension on the identity card. "
         "delta can be positive or negative (e.g. +5 or -3). "
@@ -749,7 +749,7 @@ def identity_nudge(dimension_name: str, delta: int, reason: str = "", ctx: Conte
 
 
 @mcp.tool(
-    name="feedling.memory.add_moment",
+    name="feedling_memory_add_moment",
     description=(
         "Add a moment to the memory garden. "
         "occurred_at is ISO 8601 (e.g. 2025-11-03T14:00:00). "
@@ -793,7 +793,7 @@ def memory_add_moment(
 
 
 @mcp.tool(
-    name="feedling.memory.list",
+    name="feedling_memory_list",
     description="List moments in the memory garden, ordered by occurred_at descending.",
 )
 def memory_list(limit: int = 20, ctx: Context = None) -> dict:
@@ -801,7 +801,7 @@ def memory_list(limit: int = 20, ctx: Context = None) -> dict:
 
 
 @mcp.tool(
-    name="feedling.memory.get",
+    name="feedling_memory_get",
     description="Get a single moment by its id.",
 )
 def memory_get(id: str, ctx: Context = None) -> dict:
@@ -809,7 +809,7 @@ def memory_get(id: str, ctx: Context = None) -> dict:
 
 
 @mcp.tool(
-    name="feedling.memory.delete",
+    name="feedling_memory_delete",
     description="Delete a moment from the memory garden by its id.",
 )
 def memory_delete(id: str, ctx: Context = None) -> dict:
@@ -822,7 +822,7 @@ def memory_delete(id: str, ctx: Context = None) -> dict:
 
 
 @mcp.tool(
-    name="feedling.bootstrap",
+    name="feedling_bootstrap",
     description=(
         "Call this on first connection to Feedling. "
         "Returns instructions for the Agent to complete the aha moment: "

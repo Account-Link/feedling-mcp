@@ -345,7 +345,7 @@ def test_mcp_calltoolresult_content_shape(monkeypatch):
         async def __aexit__(self, *_):
             pass
         async def call_tool(self, name, args):
-            assert name in ("chat_history", "feedling.chat.get_history")
+            assert name in ("chat_history", "feedling_chat_get_history")
             assert "limit" in args
             return _Result('{"messages":[{"role":"user","content":"hi","ts":1.0}]}')
 

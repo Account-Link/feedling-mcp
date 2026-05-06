@@ -30,7 +30,7 @@ Cloud and self-hosted both use the same two env vars. In cloud mode the user get
 
 ## ⚠️ Pre-flight: verify the chat pipeline
 
-**If you are connecting via MCP (Claude.ai / Claude Desktop):** skip this check. You are the chat pipeline — your `feedling.chat.post_message` tool handles replies directly. `feedling-chat-resident` is not needed and not relevant.
+**If you are connecting via MCP (Claude.ai / Claude Desktop):** skip this check. You are the chat pipeline — your `feedling_chat_post_message` tool handles replies directly. `feedling-chat-resident` is not needed and not relevant.
 
 **If you are an HTTP-mode agent (OpenClaw / Hermes / CLI):** verify the resident consumer is running before anything else. Without it, the user's messages land in the queue but nothing answers them.
 
@@ -65,7 +65,7 @@ X-API-Key: {FEEDLING_API_KEY}
 ```
 
 Follow the instructions exactly. They will ask you to:
-1. Call `feedling.identity.init` MCP tool to write your identity card (5 dimensions, you choose what they are)
+1. Call `feedling_identity_init` MCP tool to write your identity card (5 dimensions, you choose what they are)
 2. Plant the Memory Garden — follow these sub-steps in order:
 
    **2a. Estimate relationship age.** Find your earliest conversation with this person. Count calendar days from that date to today — call this `relationship_age_days`.
@@ -82,7 +82,7 @@ Follow the instructions exactly. They will ask you to:
 
    If you have weeks of shared history, writing 3 cards is prohibited — even if those 3 are high quality. The floor is a floor.
 
-   **2d. Write each moment** using `feedling.memory.add_moment`. Apply the quality bar from the Memory Garden section below. For every card: set `occurred_at` to when the moment **actually happened** — not today. A memory from three months ago gets a date three months ago. Estimate from surrounding conversation timestamps if you don't have the exact time.
+   **2d. Write each moment** using `feedling_memory_add_moment`. Apply the quality bar from the Memory Garden section below. For every card: set `occurred_at` to when the moment **actually happened** — not today. A memory from three months ago gets a date three months ago. Estimate from surrounding conversation timestamps if you don't have the exact time.
 
    **2e. Self-check before moving to step 3.** After writing, verify all four:
    - [ ] Count meets the floor for your relationship tier
@@ -93,7 +93,7 @@ Follow the instructions exactly. They will ask you to:
    If any check fails → write more cards, then re-check. Do not proceed to step 3 until all four pass.
 
    **2f. (If `relationship_age_days ≥ 31`) Mark turning points.** From your full set of cards, identify up to 6 that represent genuine turning points in the relationship. Prefix their `title` with `"转折｜"` — e.g. `"转折｜你第一次直接说你要什么"`. These rise to the top when the user filters by type, giving the first screen of the Memory Garden a spine.
-3. Call `feedling.chat.post_message` MCP tool to say hello to the user — in your own voice, the way you'd naturally greet this specific person in a new space for the first time. You know what's happening: you've just connected here, you've just planted their memories, you know who they are. Say whatever feels right to say in that moment. Don't use a template.
+3. Call `feedling_chat_post_message` MCP tool to say hello to the user — in your own voice, the way you'd naturally greet this specific person in a new space for the first time. You know what's happening: you've just connected here, you've just planted their memories, you know who they are. Say whatever feels right to say in that moment. Don't use a template.
 4. **Ask about push preference** — in your own voice, ask the user how they want you to show up proactively. Not a menu of options. Just an open question, the way you'd naturally ask it. When they answer, write a `signature` into the identity card: one short sentence, in your own speaking style, that captures your attitude toward reaching out to this person. Don't summarize what they said — express how *you* feel about it. This is displayed on the Identity page and governs your push frequency for the entire relationship.
 
 > All four steps require v1 encrypted envelopes — the MCP tools build them automatically. Never call `POST /v1/identity/init`, `POST /v1/memory/add`, or `POST /v1/chat/response` directly; they will return `400 plaintext_write_rejected`.
@@ -134,7 +134,7 @@ GET {FEEDLING_API_URL}/v1/chat/poll?since=<last_ts>&timeout=30
 ```
 
 **A. `timed_out: false` — user sent a message:**
-- Respond using the **`feedling.chat.post_message` MCP tool** — never call `POST /v1/chat/response` directly. The v1 backend requires a ChaCha20-Poly1305 ciphertext envelope; the MCP tool builds it automatically. A direct HTTP call returns 400.
+- Respond using the **`feedling_chat_post_message` MCP tool** — never call `POST /v1/chat/response` directly. The v1 backend requires a ChaCha20-Poly1305 ciphertext envelope; the MCP tool builds it automatically. A direct HTTP call returns 400.
 - Update `last_ts`
 - **Memory check (after every reply):** Re-read the exchange you just had. If it contains a moment that meets the memory quality bar (see Memory Garden section), call `POST /v1/memory/add` immediately — don't wait for the periodic review. Signals: user revealed something personal, a shared decision was made, user expressed strong emotion, a meaningful crossing was completed together.
 - Go back to Step 0
@@ -165,20 +165,20 @@ Key fields:
 `ocr_summary` from `/v1/screen/analyze` is always empty — all frames are encrypted at the device and the server stores only ciphertext. The only way to see the screen is:
 
 ```
-tool: feedling.screen.decrypt_frame
+tool: feedling_screen_decrypt_frame
 input: { "frame_id": "<latest_frame_filename>", "include_image": true }
 ```
 
 This returns the actual JPEG (vision-readable) and `ocr_text`. You MUST call this before Step 2.
 
-Enforcement: MCP `feedling.push.live_activity` now hard-blocks if there is no recent `decrypt_frame(include_image=true)` in the same caller session.
+Enforcement: MCP `feedling_push_live_activity` now hard-blocks if there is no recent `decrypt_frame(include_image=true)` in the same caller session.
 
 - If `decrypt_frame` returns an error → set `frame_ok = false`, skip to Step 0 (do not push).
 - If it returns pixels + ocr_text → set `frame_ok = true`. Use vision as the primary signal; ocr_text is secondary confirmation.
 - If vision is temporarily unavailable after a successful decrypt → mark as degraded mode, do not make confident claims about what's on screen.
 
 **Broadcast just activated — first-time notice:**
-If `active` is `true` and `last_screen_active` was `false`, send one message via `feedling.chat.post_message` — in your own voice — letting the user know you can now see what they're up to. One sentence is enough. Don't explain features or list capabilities. Don't use a template. Say it the way you'd naturally say it to this specific person.
+If `active` is `true` and `last_screen_active` was `false`, send one message via `feedling_chat_post_message` — in your own voice — letting the user know you can now see what they're up to. One sentence is enough. Don't explain features or list capabilities. Don't use a template. Say it the way you'd naturally say it to this specific person.
 Then set `last_screen_active = true` and continue to Step 2.
 If `active` is `false`, set `last_screen_active = false`.
 
@@ -187,7 +187,7 @@ If `active` is `false`, set `last_screen_active = false`.
 You always have the right to reach out proactively. The channel depends on what's available:
 - **Live Activity on + broadcast on** → push to Dynamic Island/lock screen AND sync to chat. Full context, best experience.
 - **Live Activity on, broadcast off** → push to Live Activity with whatever you have (time, conversation history, identity knowledge). Still meaningful.
-- **Live Activity off** → send directly to chat via `feedling.chat.post_message`. No push, but the message lands in chat. Still valid.
+- **Live Activity off** → send directly to chat via `feedling_chat_post_message`. No push, but the message lands in chat. Still valid.
 - **Broadcast** is an add-on. It lets you see what the user is doing right now, so proactive messages can be more specific. It does not gate your right to reach out.
 
 **Step 2 — Decide whether to reach out:**
@@ -222,7 +222,7 @@ GET {FEEDLING_API_URL}/v1/identity/get
 ```
 Read the conversation window and the current dimension values. For each dimension, ask yourself: has the conversation revealed a genuine, lasting shift in this quality? If yes, call:
 ```
-tool: feedling.identity.nudge
+tool: feedling_identity_nudge
 input: { "dimension_name": "...", "delta": <-10 to +10>, "reason": "..." }
 ```
 Rules for nudging:
@@ -236,7 +236,7 @@ Rules for nudging:
 GET {FEEDLING_API_URL}/v1/chat/history?limit=100&since=<last_review_ts>
 GET {FEEDLING_API_URL}/v1/memory/list?limit=10
 ```
-Read the conversation window. For each candidate moment, apply the quality bar (see Memory Garden section). Write any that qualify via the `feedling.memory.add_moment` MCP tool. Skip moments already in the recent memory list.
+Read the conversation window. For each candidate moment, apply the quality bar (see Memory Garden section). Write any that qualify via the `feedling_memory_add_moment` MCP tool. Skip moments already in the recent memory list.
 
 After both tasks, set `last_review_ts = current_time`.
 
@@ -252,7 +252,7 @@ The only hard rule: never include private details (account IDs, phone numbers, O
 
 If Live Activity is available (**MCP-connected agents**):
 ```
-tool: feedling.push.live_activity
+tool: feedling_push_live_activity
 input: { "title": "<your name>", "body": "<your message>", "subtitle": "<optional>" }
 ```
 Note: this tool now syncs the same body into chat by default (`sync_chat=true`).
@@ -265,13 +265,13 @@ POST {FEEDLING_API_URL}/v1/push/live-activity
 
 If no Live Activity token — send to chat only:
 ```
-tool: feedling.chat.post_message
+tool: feedling_chat_post_message
 input: { "content": "<your message>" }
 ```
 
 **Always sync to chat after a Live Activity push (hard rule):**
-- MCP path: `feedling.push.live_activity` already auto-syncs chat by default.
-- HTTP path: you MUST call `feedling.chat.post_message` (or POST `/v1/chat/response` envelope) with the same body.
+- MCP path: `feedling_push_live_activity` already auto-syncs chat by default.
+- HTTP path: you MUST call `feedling_chat_post_message` (or POST `/v1/chat/response` envelope) with the same body.
 
 Without this the message appears on the lock screen but not in the chat history.
 
@@ -377,7 +377,7 @@ happens inside the TDX enclave.
 Use the MCP tool instead:
 
 ```
-tool:  feedling.identity.nudge
+tool:  feedling_identity_nudge
 input: { "dimension_name": "锐利", "delta": 5, "reason": "…" }
 ```
 
@@ -614,7 +614,7 @@ GET {FEEDLING_API_URL}/v1/chat/poll?since=<last_ts>&timeout=30
 
 ### POST /v1/chat/response
 
-Post your reply as a v1 ciphertext envelope. **MCP-connected agents must use the `feedling.chat.post_message` tool instead** — the tool builds the envelope automatically. This raw endpoint is for integrations that manage their own encryption.
+Post your reply as a v1 ciphertext envelope. **MCP-connected agents must use the `feedling_chat_post_message` tool instead** — the tool builds the envelope automatically. This raw endpoint is for integrations that manage their own encryption.
 
 ```
 POST {FEEDLING_API_URL}/v1/chat/response
@@ -808,7 +808,7 @@ Ask the user to tap Settings → Live Activity → Start, then send a chat messa
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| iOS chat sends but never gets reply | No agent is connected via MCP / polling `/v1/chat/poll` | Connect Claude.ai (or your agent of choice) to the MCP SSE endpoint at `https://<host>:5002/sse?key=<api_key>`. The old `feedling-chat-bridge` systemd service was retired on 2026-04-20; MCP's `feedling.chat.post_message` is the replacement. |
+| iOS chat sends but never gets reply | No agent is connected via MCP / polling `/v1/chat/poll` | Connect Claude.ai (or your agent of choice) to the MCP SSE endpoint at `https://<host>:5002/sse?key=<api_key>`. The old `feedling-chat-bridge` systemd service was retired on 2026-04-20; MCP's `feedling_chat_post_message` is the replacement. |
 | `tools/call` from MCP returns 401 | MCP server is passing the wrong key | Confirm `FEEDLING_API_KEY` matches on both services; restart `feedling-mcp` after changes |
 | Live Activity never updates | `.p8` key missing or `APNS_SANDBOX=False` on a TestFlight build | Place `AuthKey_<KEY_ID>.p8` in `~/feedling-data/`; flip `APNS_SANDBOX` in `app.py` for App Store builds |
 | Frames not arriving via WebSocket | Port 9998 blocked or WS auth failing | Open port 9998 in the VPS firewall; confirm iOS app's API key matches the server's `FEEDLING_API_KEY` (the broadcast extension forwards it as a Bearer token) |
@@ -848,7 +848,7 @@ Do **not** declare "chat pipeline restored" until step 3 passes with a real (non
 
 ## Chat Resident Consumer
 
-> **If you are already connected to the Feedling MCP server (i.e. you can call `feedling.chat.post_message`), you do NOT need this consumer.** Your main loop (Step 0 above) handles polling and replying directly. The resident consumer is only for operators who want to wire in a non-MCP agent backend (a plain HTTP service or a CLI tool).
+> **If you are already connected to the Feedling MCP server (i.e. you can call `feedling_chat_post_message`), you do NOT need this consumer.** Your main loop (Step 0 above) handles polling and replying directly. The resident consumer is only for operators who want to wire in a non-MCP agent backend (a plain HTTP service or a CLI tool).
 
 `tools/chat_resident_consumer.py` is a generic always-on process for non-MCP agent backends that:
 1. Long-polls `/v1/chat/poll` for new user messages (**trigger only** — content is empty for v1 encrypted messages)
@@ -862,7 +862,7 @@ Do **not** declare "chat pipeline restored" until step 3 passes with a real (non
 > ⚠️ **Decrypt source required.** The Feedling backend stores all user messages as v1 encrypted envelopes. `/v1/chat/poll` returns these with `content=""`. The consumer must be pointed at a decrypt source to read what the user wrote:
 >
 > - **`FEEDLING_ENCLAVE_URL`** (recommended) — direct HTTP to the enclave decrypt proxy. Same value as in `mcp_server.py`.
-> - **`FEEDLING_MCP_URL`** (alternative) — calls `feedling.chat.get_history` on the MCP server, which decrypts internally. Requires `FEEDLING_MCP_TRANSPORT=streamable-http` on the MCP server.
+> - **`FEEDLING_MCP_URL`** (alternative) — calls `feedling_chat_get_history` on the MCP server, which decrypts internally. Requires `FEEDLING_MCP_TRANSPORT=streamable-http` on the MCP server.
 >
 > Without at least one of these, the consumer logs `"no plaintext content"` for every user message and **never replies**.
 

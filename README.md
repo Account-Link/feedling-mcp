@@ -220,7 +220,7 @@ CVM using `deploy/docker-compose.phala.yaml` — that file's
 `compose_hash` is what the on-chain contract authorizes.
 
 There is **no** `chat_bridge.py` anymore. Retired 2026-04-20 when
-MCP's `feedling.chat.post_message` landed and agent replies started
+MCP's `feedling_chat_post_message` landed and agent replies started
 wrapping to v1 envelopes directly inside the CVM.
 
 ### Run (quick start)
@@ -295,23 +295,23 @@ reject plaintext with `400 plaintext_write_rejected`.
 
 | Tool | Maps to |
 |------|---------|
-| `feedling.bootstrap` | POST /v1/bootstrap |
-| `feedling.identity.init` | POST /v1/identity/init |
-| `feedling.identity.get` | GET /v1/identity/get (decrypted via enclave proxy) |
-| `feedling.identity.nudge` | in-CVM decrypt-mutate-rewrap → POST /v1/identity/replace |
-| `feedling.memory.add_moment` | POST /v1/memory/add (wraps to v1 inside CVM) |
-| `feedling.memory.list` | GET /v1/memory/list |
-| `feedling.memory.get` | GET /v1/memory/get |
-| `feedling.memory.delete` | DELETE /v1/memory/delete |
-| `feedling.push.dynamic_island` | POST /v1/push/dynamic-island |
-| `feedling.push.live_activity` | POST /v1/push/live-activity |
-| `feedling.screen.latest_frame` | GET /v1/screen/frames/latest (metadata only) |
-| `feedling.screen.frames_list` | GET /v1/screen/frames (metadata only; encrypted) |
-| `feedling.screen.analyze` | GET /v1/screen/analyze |
-| `feedling.screen.summary` | GET /v1/screen/summary |
-| `feedling.screen.decrypt_frame` | GET /v1/screen/frames/<id>/decrypt — Image block + OCR for agent vision |
-| `feedling.chat.post_message` | wraps to v1 envelope → POST /v1/chat/response |
-| `feedling.chat.get_history` | GET /v1/chat/history |
+| `feedling_bootstrap` | POST /v1/bootstrap |
+| `feedling_identity_init` | POST /v1/identity/init |
+| `feedling_identity_get` | GET /v1/identity/get (decrypted via enclave proxy) |
+| `feedling_identity_nudge` | in-CVM decrypt-mutate-rewrap → POST /v1/identity/replace |
+| `feedling_memory_add_moment` | POST /v1/memory/add (wraps to v1 inside CVM) |
+| `feedling_memory_list` | GET /v1/memory/list |
+| `feedling_memory_get` | GET /v1/memory/get |
+| `feedling_memory_delete` | DELETE /v1/memory/delete |
+| `feedling_push_dynamic_island` | POST /v1/push/dynamic-island |
+| `feedling_push_live_activity` | POST /v1/push/live-activity |
+| `feedling_screen_latest_frame` | GET /v1/screen/frames/latest (metadata only) |
+| `feedling_screen_frames_list` | GET /v1/screen/frames (metadata only; encrypted) |
+| `feedling_screen_analyze` | GET /v1/screen/analyze |
+| `feedling_screen_summary` | GET /v1/screen/summary |
+| `feedling_screen_decrypt_frame` | GET /v1/screen/frames/<id>/decrypt — Image block + OCR for agent vision |
+| `feedling_chat_post_message` | wraps to v1 envelope → POST /v1/chat/response |
+| `feedling_chat_get_history` | GET /v1/chat/history |
 
 The `?key=<api_key>` on the SSE URL is captured by an ASGI
 middleware on the first GET and pinned to the MCP session — every
@@ -356,9 +356,9 @@ struct ContentState: Codable, Hashable {
 
 1. Agent calls `POST /v1/bootstrap`
 2. Backend returns `first_time` + instructions
-3. Agent calls `feedling.identity.init` → writes 5-dimension personality card as v1 envelope
-4. Agent searches its own memory → calls `feedling.memory.add_moment` 3-5 times
-5. Agent calls `feedling.chat.post_message` → "I'm here, go check the app"
+3. Agent calls `feedling_identity_init` → writes 5-dimension personality card as v1 envelope
+4. Agent searches its own memory → calls `feedling_memory_add_moment` 3-5 times
+5. Agent calls `feedling_chat_post_message` → "I'm here, go check the app"
 6. Agent asks the user how they want to be reached proactively → writes a `signature` (one sentence in the agent's own voice) into the identity card
 7. iOS app detects identity envelope appeared → auto-switches to Identity tab
 8. User sees: filled radar + memory garden + chat message + agent's signature
