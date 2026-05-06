@@ -280,7 +280,7 @@ struct CinMessageBubble: View {
             .padding(.bottom, 5)
             .padding(.leading, 2)
 
-            Text(message.content)
+            Text(message.content.replacingOccurrences(of: "\\n", with: "\n"))
                 .font(.notoSerifSC(size: 13.5))
                 .foregroundStyle(Color.cinFg)
                 .lineSpacing(4)
@@ -297,7 +297,7 @@ struct CinMessageBubble: View {
         HStack(spacing: 0) {
             Spacer(minLength: UIScreen.main.bounds.width * 0.22)
             VStack(alignment: .trailing, spacing: 4) {
-                Text(message.content)
+                Text(message.content.replacingOccurrences(of: "\\n", with: "\n"))
                     .font(.notoSerifSC(size: 13.5))
                     .foregroundStyle(Color.cinBg)
                     .lineSpacing(4)
