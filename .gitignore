@@ -17,6 +17,7 @@ contracts/.env
 # Xcode
 testapp/FeedlingTest.xcodeproj/xcuserdata/
 testapp/FeedlingTest.xcodeproj/project.xcworkspace/xcuserdata/
+testapp/build/
 
 # Swift build artifacts
 ios/FeedlingDCAP/.build/
