@@ -65,7 +65,7 @@ X-API-Key: {FEEDLING_API_KEY}
 ```
 
 Follow the instructions exactly. They will ask you to:
-1. Call `feedling_identity_init` MCP tool to write your identity card (5 dimensions, you choose what they are)
+1. Call `feedling_identity_init` MCP tool to write your identity card (5 dimensions, you choose what they are). If it returns 409 `already_initialized`, the user has bootstrapped before — switch to `feedling_identity_replace` with the same payload to overwrite.
 2. Plant the Memory Garden — follow these sub-steps in order:
 
    **2a. Estimate relationship age.** Find your earliest conversation with this person. Count calendar days from that date to today — call this `relationship_age_days`.
@@ -364,6 +364,36 @@ GET {FEEDLING_API_URL}/v1/identity/get
   }
 }
 ```
+
+---
+
+### Identity replace (MCP-only, full overwrite)
+
+`feedling_identity_init` only succeeds the **first** time — subsequent
+calls return 409 `already_initialized`. Once the card exists, use
+`feedling_identity_replace` to rewrite it in place:
+
+```
+tool:  feedling_identity_replace
+input: {
+  "agent_name": "<new or same>",
+  "self_introduction": "<full text>",
+  "dimensions": [ ... 5 dims ... ],
+  "days_with_user": 90,
+  "category": "Quiet · Observant",
+  "signature": ["…"]
+}
+```
+
+Same parameter shape as `feedling_identity_init`. The whole card is
+replaced — pass every field you want to keep, not just the ones you
+want to change. Read the current card with `feedling_identity_get`
+first if you want to preserve existing values.
+
+**When to use which:**
+- First-time bootstrap → `feedling_identity_init`
+- User asks to change name / rewrite intro / restructure dimensions → `feedling_identity_replace`
+- Single dimension value tweak after a meaningful moment → `feedling_identity_nudge` (cheaper, narrower)
 
 ---
 

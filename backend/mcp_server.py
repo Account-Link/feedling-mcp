@@ -625,22 +625,26 @@ def chat_get_history(limit: int = 50, ctx: Context = None) -> dict:
         "signature: list of exactly 2 short poetic lines shown below the name."
     ),
 )
-def identity_init(
+def _build_and_post_identity(
+    endpoint: str,
+    op_label: str,
     agent_name: str,
     self_introduction: str,
     dimensions: list[dict],
-    days_with_user: int | None = None,
-    category: str = "",
-    signature: list[str] = None,
-    ctx: Context = None,
+    days_with_user: int | None,
+    category: str,
+    signature: list[str] | None,
+    ctx: Context | None,
 ) -> dict:
-    """Wrap the identity card into a v1 envelope before POSTing. MCP runs
-    inside the enclave so wrapping prerequisites are always available;
-    if they're not, fail loud rather than regress to plaintext.
+    """Shared encrypt-and-POST path used by both identity_init and identity_replace.
+
+    Wraps the identity card into a v1 envelope. MCP runs inside the enclave so
+    wrapping prerequisites are always available; if they're not, fail loud
+    rather than regress to plaintext.
     """
     user_id, user_pk, enclave_pk = _whoami_pubkeys(ctx=ctx)
     if not (user_id and user_pk is not None and enclave_pk is not None):
-        return {"error": "cannot init identity — pubkeys unavailable"}
+        return {"error": f"cannot {op_label} identity — pubkeys unavailable"}
     body: dict = {
         "agent_name": agent_name,
         "self_introduction": self_introduction,
@@ -667,8 +671,56 @@ def identity_init(
         enclave_pk_bytes=enclave_pk,
         visibility="shared",
     )
-    print(f"[mcp] identity.init v1 envelope id={envelope['id']}")
-    return _post("/v1/identity/init", {"envelope": envelope}, ctx=ctx)
+    print(f"[mcp] identity.{op_label} v1 envelope id={envelope['id']}")
+    return _post(endpoint, {"envelope": envelope}, ctx=ctx)
+
+
+def identity_init(
+    agent_name: str,
+    self_introduction: str,
+    dimensions: list[dict],
+    days_with_user: int | None = None,
+    category: str = "",
+    signature: list[str] = None,
+    ctx: Context = None,
+) -> dict:
+    """First-time identity write. Returns 409 from the backend if the card
+    already exists — use feedling_identity_replace to overwrite."""
+    return _build_and_post_identity(
+        "/v1/identity/init", "init",
+        agent_name, self_introduction, dimensions,
+        days_with_user, category, signature, ctx,
+    )
+
+
+@mcp.tool(
+    name="feedling_identity_replace",
+    description=(
+        "Fully rewrite the Agent's identity card in place. Unlike "
+        "feedling_identity_init (which 409s once initialized), this overwrites "
+        "the existing card. Use when the user wants to change agent_name, "
+        "rewrite self_introduction, or restructure the dimension list. "
+        "For tweaking a single dimension's value, prefer feedling_identity_nudge. "
+        "Same parameter shape as feedling_identity_init: exactly 5 dimensions, "
+        "each with name (string), value (0-100), description (string)."
+    ),
+)
+def identity_replace(
+    agent_name: str,
+    self_introduction: str,
+    dimensions: list[dict],
+    days_with_user: int | None = None,
+    category: str = "",
+    signature: list[str] = None,
+    ctx: Context = None,
+) -> dict:
+    """In-place identity overwrite. Server endpoint /v1/identity/replace
+    requires an envelope (no plaintext path). Same wrapping logic as init."""
+    return _build_and_post_identity(
+        "/v1/identity/replace", "replace",
+        agent_name, self_introduction, dimensions,
+        days_with_user, category, signature, ctx,
+    )
 
 
 @mcp.tool(
