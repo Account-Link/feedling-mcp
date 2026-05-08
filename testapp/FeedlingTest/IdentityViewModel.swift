@@ -11,7 +11,7 @@ struct IdentityCard: Codable {
     // Optional display fields — written by the agent into the encrypted body
     var signature: [String]?        // two-line poetic signature shown on Identity page
     var category: String?           // e.g. "Quiet · Observant"
-    var daysWithUserWritten: Int?   // explicit days count set by agent; overrides computed value
+    var daysWithUserWritten: Int?   // server-computed live count from the relationship anchor
 
     // v1 envelope fields (present when server stored ciphertext)
     let v: Int?
@@ -39,30 +39,13 @@ struct IdentityCard: Codable {
         }
     }
 
+    /// Trust the server-computed value. The enclave derives this live from
+    /// the relationship anchor every read, so the count auto-increments
+    /// daily without any client-side math. The previous "snapshot + elapsed"
+    /// hack was unstable — every envelope rewrite (init/replace/nudge/swap)
+    /// would reset updatedAt and zero the elapsed counter.
     var daysWithUser: Int {
-        if let snapshot = daysWithUserWritten {
-            // Treat the written value as a snapshot taken at updatedAt.
-            // Add days elapsed since then so the count self-updates daily.
-            let fmt = ISO8601DateFormatter()
-            fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            let base = fmt.date(from: updatedAt) ?? {
-                fmt.formatOptions = [.withInternetDateTime]
-                return fmt.date(from: updatedAt)
-            }()
-            let elapsed = base.flatMap {
-                Calendar.current.dateComponents([.day], from: $0, to: Date()).day
-            } ?? 0
-            return snapshot + elapsed
-        }
-        guard !createdAt.isEmpty else { return 0 }
-        let fmt = ISO8601DateFormatter()
-        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let date = fmt.date(from: createdAt) ?? {
-            fmt.formatOptions = [.withInternetDateTime]
-            return fmt.date(from: createdAt)
-        }()
-        guard let date else { return 0 }
-        return Calendar.current.dateComponents([.day], from: date, to: Date()).day ?? 0
+        daysWithUserWritten ?? 0
     }
 
     enum CodingKeys: String, CodingKey {

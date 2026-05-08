@@ -1,0 +1,39 @@
+{
+  "" : {
+    "diagnostics" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/FeedlingTestWidget-primary.dia",
+    "emit-module-dependencies" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/FeedlingTestWidget-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/FeedlingTestWidget-primary-emit-module.dia",
+    "pch" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/FeedlingTestWidget-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/FeedlingTestWidget-primary.swiftdeps"
+  },
+  "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/FeedlingTestWidget/FeedlingTestWidgetBundle.swift" : {
+    "const-values" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/FeedlingTestWidgetBundle.swiftconstvalues",
+    "dependencies" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/FeedlingTestWidgetBundle.d",
+    "diagnostics" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/FeedlingTestWidgetBundle.dia",
+    "index-unit-output-path" : "/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/FeedlingTestWidgetBundle.o",
+    "llvm-bc" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/FeedlingTestWidgetBundle.bc",
+    "object" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/FeedlingTestWidgetBundle.o",
+    "swift-dependencies" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/FeedlingTestWidgetBundle.swiftdeps",
+    "swiftmodule" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/FeedlingTestWidgetBundle~partial.swiftmodule"
+  },
+  "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/FeedlingTestWidget/ScreenActivityWidget.swift" : {
+    "const-values" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/ScreenActivityWidget.swiftconstvalues",
+    "dependencies" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/ScreenActivityWidget.d",
+    "diagnostics" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/ScreenActivityWidget.dia",
+    "index-unit-output-path" : "/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/ScreenActivityWidget.o",
+    "llvm-bc" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/ScreenActivityWidget.bc",
+    "object" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/ScreenActivityWidget.o",
+    "swift-dependencies" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/ScreenActivityWidget.swiftdeps",
+    "swiftmodule" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/ScreenActivityWidget~partial.swiftmodule"
+  },
+  "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/Shared/ScreenActivityAttributes.swift" : {
+    "const-values" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/ScreenActivityAttributes.swiftconstvalues",
+    "dependencies" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/ScreenActivityAttributes.d",
+    "diagnostics" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/ScreenActivityAttributes.dia",
+    "index-unit-output-path" : "/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/ScreenActivityAttributes.o",
+    "llvm-bc" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/ScreenActivityAttributes.bc",
+    "object" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/ScreenActivityAttributes.o",
+    "swift-dependencies" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/ScreenActivityAttributes.swiftdeps",
+    "swiftmodule" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTestWidget.build/Objects-normal/arm64/ScreenActivityAttributes~partial.swiftmodule"
+  }
+}

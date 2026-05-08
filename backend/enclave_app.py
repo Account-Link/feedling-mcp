@@ -807,11 +807,27 @@ def v1_identity_get():
     try:
         plaintext = _decrypt_envelope(identity, authorized_user_id, content_sk)
         inner = json.loads(plaintext.decode("utf-8"))
+
+        # days_with_user is computed live from the server-side anchor.
+        # This makes the count auto-increment daily without the agent ever
+        # writing it again (the old envelope-embedded value is ignored).
+        # Legacy fallback: if no anchor on file, use the embedded value
+        # so users that bootstrapped before this migration still see something.
+        anchor = identity.get("relationship_started_at")
+        if anchor:
+            try:
+                started = _dt.datetime.fromisoformat(anchor)
+                live_days = max(0, (_dt.datetime.now() - started).days)
+            except Exception:
+                live_days = inner.get("days_with_user", 0)
+        else:
+            live_days = inner.get("days_with_user", 0)
+
         base.update({
             "agent_name": inner.get("agent_name"),
             "self_introduction": inner.get("self_introduction"),
             "dimensions": inner.get("dimensions", []),
-            "days_with_user": inner.get("days_with_user", 0),
+            "days_with_user": live_days,
             "category": inner.get("category", ""),
             "signature": inner.get("signature", []),
             "visibility": identity.get("visibility", "shared"),

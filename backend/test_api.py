@@ -400,11 +400,19 @@ r = requests.post(f"{BASE_URL}/v1/identity/init", json=plaintext_identity, timeo
 check("plaintext /v1/identity/init → 400 or 409",
       r.status_code in (400, 409), f"got {r.status_code}: {r.text[:120]}")
 
-# v1 envelope init (only if none exists yet)
+# v1 envelope init (only if none exists yet). days_with_user is mandatory
+# at init — it sets the server-side relationship anchor.
 env_id = make_envelope(USER_ID)
-r = requests.post(f"{BASE_URL}/v1/identity/init", json={"envelope": env_id}, timeout=5)
+r = requests.post(f"{BASE_URL}/v1/identity/init",
+                  json={"envelope": env_id, "days_with_user": 1}, timeout=5)
 check("v1 envelope /v1/identity/init → 201 or 409",
       r.status_code in (201, 409), f"got {r.status_code}: {r.text[:120]}")
+
+# missing days_with_user must 400
+r = requests.post(f"{BASE_URL}/v1/identity/init",
+                  json={"envelope": env_id}, timeout=5)
+check("/v1/identity/init without days_with_user → 400 or 409",
+      r.status_code in (400, 409), f"got {r.status_code}: {r.text[:120]}")
 
 r = requests.get(f"{BASE_URL}/v1/identity/get", timeout=5)
 check("GET /v1/identity/get returns 200 (or 404 if none)",
@@ -416,6 +424,12 @@ if r.status_code == 200:
         identity = body["identity"]
         check("v1 identity has body_ct",
               identity.get("v") == 1 and bool(identity.get("body_ct")))
+        # The relationship anchor must be present and the live days_with_user
+        # must be injected at the top level of the response.
+        check("identity has relationship_started_at anchor",
+              bool(identity.get("relationship_started_at")))
+        check("identity response has live days_with_user",
+              "days_with_user" in identity and isinstance(identity["days_with_user"], int))
 
 # ---------------------------------------------------------------------------
 # 9. Memory garden: plaintext rejected, v1 envelope add/list/get/delete

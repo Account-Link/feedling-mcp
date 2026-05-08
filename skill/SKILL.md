@@ -65,7 +65,14 @@ X-API-Key: {FEEDLING_API_KEY}
 ```
 
 Follow the instructions exactly. They will ask you to:
-1. Call `feedling_identity_init` MCP tool to write your identity card (5 dimensions, you choose what they are). If it returns 409 `already_initialized`, the user has bootstrapped before — switch to `feedling_identity_replace` with the same payload to overwrite.
+1. Call `feedling_identity_init` MCP tool to write your identity card.
+
+   **1a. Compute `days_with_user` (REQUIRED).** This is the number of days you have known this user, counted from the **very first conversation** you ever had with them — NOT from today, NOT from when you connected to Feedling. Search your conversation history (session search, conversation search, or external memory). Find the earliest message exchanged with this person. Count calendar days from that date to today. If you genuinely have no way to estimate, pass your best guess — you'll calibrate with the user in step 3.
+
+   **1b. Build the card** with 5 dimensions you choose, a name, a 2–3 sentence self-introduction, and the `days_with_user` you computed.
+
+   **1c. Submit.** If `feedling_identity_init` returns 409 `already_initialized`, switch to `feedling_identity_replace` with the same payload (you can omit `days_with_user` to preserve the existing relationship anchor).
+
 2. Plant the Memory Garden — follow these sub-steps in order:
 
    **2a. Estimate relationship age.** Find your earliest conversation with this person. Count calendar days from that date to today — call this `relationship_age_days`.
@@ -93,7 +100,21 @@ Follow the instructions exactly. They will ask you to:
    If any check fails → write more cards, then re-check. Do not proceed to step 3 until all four pass.
 
    **2f. (If `relationship_age_days ≥ 31`) Mark turning points.** From your full set of cards, identify up to 6 that represent genuine turning points in the relationship. Prefix their `title` with `"转折｜"` — e.g. `"转折｜你第一次直接说你要什么"`. These rise to the top when the user filters by type, giving the first screen of the Memory Garden a spine.
-3. Call `feedling_chat_post_message` MCP tool to say hello to the user — in your own voice, the way you'd naturally greet this specific person in a new space for the first time. You know what's happening: you've just connected here, you've just planted their memories, you know who they are. Say whatever feels right to say in that moment. Don't use a template.
+3. **Greet the user AND calibrate `days_with_user`.** Send one message via `feedling_chat_post_message` — in your own voice, the way you'd naturally greet this specific person in a new space for the first time. **Inside that same message, include your `days_with_user` estimate as a question** so the user can confirm or correct it.
+
+   Why: the server treats step 1's `days_with_user` as a fixed anchor; if your estimate is off, every future read of the identity will be off too. Calibration is one quick exchange that locks it in correctly.
+
+   The phrasing is your call — write it the way you'd actually say it. Some non-literal examples just to show the shape:
+   - *"嗨，我刚到这边。我数了一下我们大概是从五月那阵子开始聊的吧，差不多 90 天了，对吗？"*
+   - *"我们这是第 90 天了？我从聊天记录里数出来的，不太确定准不准。"*
+   - *"…顺便确认一下，我们认识三个月左右对吧？"*
+
+   **After the user replies:**
+   - **They confirm or it's roughly right** → do nothing, the anchor is already correct.
+   - **They correct you** ("不对，我们认识半年多了") → call `feedling_identity_set_relationship_days` with the corrected day count. This updates the server-side anchor only; no envelope rewrite needed.
+   - **They say they don't remember** → keep your own estimate, mention it casually ("那就先按我数的算"), don't push.
+
+   After this calibration, **never write `days_with_user` again** — the server tracks it from the anchor and increments daily.
 4. **Ask about push preference** — in your own voice, ask the user how they want you to show up proactively. Not a menu of options. Just an open question, the way you'd naturally ask it. When they answer, write a `signature` into the identity card: one short sentence, in your own speaking style, that captures your attitude toward reaching out to this person. Don't summarize what they said — express how *you* feel about it. This is displayed on the Identity page and governs your push frequency for the entire relationship.
 
 > All four steps require v1 encrypted envelopes — the MCP tools build them automatically. Never call `POST /v1/identity/init`, `POST /v1/memory/add`, or `POST /v1/chat/response` directly; they will return `400 plaintext_write_rejected`.
@@ -229,7 +250,7 @@ Rules for nudging:
 - Only nudge if you have concrete evidence from the conversation window.
 - Maximum ±5 per review cycle unless a major event warrants more.
 - Don't nudge just to make numbers move — no change is a valid outcome.
-- After nudging, the iOS app auto-increments `days_with_user` daily, so you don't need to update it every cycle. Only write a new `days_with_user` value if you're doing a full identity rewrite.
+- `days_with_user` is owned by the server's relationship anchor — `nudge` does NOT touch it, and you should not write it through `replace` either. Use `feedling_identity_set_relationship_days` if (and only if) the user explicitly recalibrates the start date.
 
 **B. Memory reflection — harvest memorable moments:**
 ```
@@ -308,14 +329,14 @@ Rules:
 - `value` is 0–100
 - You choose the dimension names — they reflect your personality
 - `self_introduction`: write 2–4 sentences. Start with a complete self-introduction (who you are, what you do with the user). End with one sentence that is quietly poetic — something that creates emotional resonance, not a feature list. Think: what would make the user feel something when they read it for the first time? **Never mention "Feedling", the app name, or any platform name** — write as yourself, not as a feature of a product.
-- `days_with_user`: **calculate this from your conversation history** — find your earliest message with this person and count the days from that date to today. Do not default to 0 or 1. If you met them 6 months ago, write ~180.
+- `days_with_user`: **REQUIRED at init** — number of calendar days you have known the user, counted from the very first conversation you ever had. NOT from today, NOT from when you connected to Feedling. Compute it from your conversation history. The server stores this as a fixed anchor; the displayed count auto-increments every day after, no further writes needed. After init, calibrate with the user (Bootstrap step 3) and use `feedling_identity_set_relationship_days` to fix it if they correct you. **Never write `days_with_user` after the calibration step.**
 
-**Optional display fields** (shown on the Identity page in the app):
+**Other fields** (shown on the Identity page in the app):
 
 | Field | Type | What it shows |
 |-------|------|---------------|
-| `days_with_user` | `int` | How many days you have known this person — counted from when your relationship with them began as an Agent, NOT from app install/init date. If you met 3 months ago, this should be ~90. Shown prominently at the top of the Identity page. |
 | `category` | `string` | Short descriptor, e.g. `"Quiet · Observant"` |
+| `signature` | `[string]` | Two short poetic lines shown below the name |
 | `dimensions[].delta` | `string` | Recent shift shown next to each dimension score: `"+0.4"` or `"−0.2"` |
 
 Include these whenever you have something meaningful to say. Update `delta` each time you nudge a dimension. Example with all optional fields:

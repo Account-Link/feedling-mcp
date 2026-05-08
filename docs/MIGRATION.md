@@ -51,11 +51,13 @@ via MCP (it knows how).
    to re-add everything. A prompt that works:
 
    > "Here is a JSON export of my old Feedling data. For each entry
-   > under `memory`, call `feedling.memory.add_moment` with the
+   > under `memory`, call `feedling_memory_add_moment` with the
    > title, description, type, and occurred_at. For each entry under
    > `chat` with role=user, skip it (those re-enter naturally as we
-   > talk). For identity, call `feedling.identity.init` with the
-   > agent_name, self_introduction, and dimensions."
+   > talk). For identity, call `feedling_identity_init` with the
+   > agent_name, self_introduction, dimensions, and `days_with_user`
+   > (calendar days since our very first conversation — you compute
+   > this from your conversation history)."
 
    The agent's writes go through MCP's new envelope wrap — they land
    as ciphertext on the cloud server. Once the agent confirms it's

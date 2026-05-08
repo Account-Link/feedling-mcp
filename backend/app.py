@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -1862,13 +1862,42 @@ def _save_identity(store: UserStore, data: dict):
         store.identity_file.write_text(json.dumps(data, ensure_ascii=False, indent=2))
 
 
+def _anchor_from_days(days: int) -> str:
+    """Convert "we've known each other N days" into a fixed ISO timestamp.
+
+    The anchor is the source of truth for days_with_user — every read computes
+    `(now - anchor) / 86400`, so the displayed count auto-increments daily and
+    is unaffected by envelope rewrites (init / replace / nudge).
+    """
+    safe_days = max(0, int(days))
+    started_at = datetime.now() - timedelta(days=safe_days)
+    return started_at.isoformat()
+
+
+def _live_days_with_user(identity: dict) -> int:
+    """Compute the live days_with_user from the relationship anchor."""
+    anchor = identity.get("relationship_started_at")
+    if not anchor:
+        return 0
+    try:
+        started = datetime.fromisoformat(anchor)
+    except Exception:
+        return 0
+    return max(0, (datetime.now() - started).days)
+
+
 @app.route("/v1/identity/get", methods=["GET"])
 def identity_get():
     store = require_user()
     data = _load_identity(store)
     if data is None:
         return jsonify({"identity": None})
-    return jsonify({"identity": data})
+    # Inject the live-computed days alongside the envelope. iOS decrypts the
+    # envelope locally, but it never sees the anchor itself — it just reads
+    # this top-level field. Same convention as the enclave proxy.
+    enriched = dict(data)
+    enriched["days_with_user"] = _live_days_with_user(data)
+    return jsonify({"identity": enriched})
 
 
 @app.route("/v1/identity/init", methods=["POST"])
@@ -1895,6 +1924,13 @@ def identity_init():
     if envelope["visibility"] == "shared" and not envelope.get("K_enclave"):
         return jsonify({"error": "envelope with visibility=shared requires K_enclave"}), 400
 
+    # days_with_user is mandatory at init — Agent must compute and submit it.
+    # We persist it as relationship_started_at (a fixed anchor) so subsequent
+    # reads can compute the live count without going through the Agent again.
+    days_with_user = payload.get("days_with_user")
+    if days_with_user is None or not isinstance(days_with_user, int) or days_with_user < 0:
+        return jsonify({"error": "days_with_user (non-negative int) required at init"}), 400
+
     now = datetime.now().isoformat()
     identity = {
         "v": 1,
@@ -1907,12 +1943,13 @@ def identity_init():
         "owner_user_id": envelope["owner_user_id"],
         "created_at": now,
         "updated_at": now,
+        "relationship_started_at": _anchor_from_days(days_with_user),
     }
     if envelope.get("K_enclave"):
         identity["K_enclave"] = envelope["K_enclave"]
     _save_identity(store, identity)
     _log_bootstrap_event(store, "identity_written_v1", success=True)
-    print(f"[identity:{store.user_id}] initialized v1 visibility={envelope['visibility']}")
+    print(f"[identity:{store.user_id}] initialized v1 visibility={envelope['visibility']} anchor={identity['relationship_started_at']}")
     return jsonify({"status": "created", "identity": identity, "v": 1}), 201
 
 
@@ -1944,6 +1981,21 @@ def identity_replace():
         return jsonify({"error": "envelope with visibility=shared requires K_enclave"}), 400
 
     created_at = existing.get("created_at") if existing else now
+    # Preserve the existing relationship anchor unless the caller explicitly
+    # passes a new days_with_user. nudge / dimension rewrite must NOT bump the
+    # anchor; only an intentional calibration ever should.
+    days_with_user = payload.get("days_with_user")
+    if days_with_user is not None:
+        if not isinstance(days_with_user, int) or days_with_user < 0:
+            return jsonify({"error": "days_with_user must be a non-negative int"}), 400
+        relationship_started_at = _anchor_from_days(days_with_user)
+    elif existing and existing.get("relationship_started_at"):
+        relationship_started_at = existing["relationship_started_at"]
+    else:
+        # First-ever write through replace (no prior init). Reject so callers
+        # are forced through init's mandatory days_with_user path.
+        return jsonify({"error": "no relationship anchor on file; call /v1/identity/init first"}), 400
+
     identity = {
         "v": 1,
         "id": envelope.get("id") or (existing.get("id") if existing else uuid.uuid4().hex),
@@ -1955,13 +2007,41 @@ def identity_replace():
         "owner_user_id": envelope["owner_user_id"],
         "created_at": created_at,
         "updated_at": now,
+        "relationship_started_at": relationship_started_at,
     }
     if envelope.get("K_enclave"):
         identity["K_enclave"] = envelope["K_enclave"]
     _save_identity(store, identity)
     _log_bootstrap_event(store, "identity_replaced_v1", success=True)
-    print(f"[identity:{store.user_id}] replaced v1 visibility={envelope['visibility']}")
+    print(f"[identity:{store.user_id}] replaced v1 visibility={envelope['visibility']} anchor={relationship_started_at}")
     return jsonify({"status": "replaced", "identity": identity, "v": 1})
+
+
+@app.route("/v1/identity/relationship_anchor", methods=["POST"])
+def identity_relationship_anchor():
+    """Update only the relationship anchor (days_with_user), without touching
+    the encrypted identity envelope.
+
+    Used by the bootstrap calibration step: Agent estimates days, sends the
+    initial card, asks the user "we've known each other ~N days, right?",
+    and on correction calls this endpoint to fix the anchor — no envelope
+    re-encryption needed.
+    """
+    store = require_user()
+    existing = _load_identity(store)
+    if existing is None:
+        return jsonify({"error": "identity not initialized"}), 404
+
+    payload = request.get_json(silent=True) or {}
+    days_with_user = payload.get("days_with_user")
+    if days_with_user is None or not isinstance(days_with_user, int) or days_with_user < 0:
+        return jsonify({"error": "days_with_user (non-negative int) required"}), 400
+
+    existing["relationship_started_at"] = _anchor_from_days(days_with_user)
+    existing["updated_at"] = datetime.now().isoformat()
+    _save_identity(store, existing)
+    print(f"[identity:{store.user_id}] anchor updated → {existing['relationship_started_at']} (days={days_with_user})")
+    return jsonify({"status": "updated", "relationship_started_at": existing["relationship_started_at"]})
 
 
 # Note: /v1/identity/nudge no longer exists on the backend. Identity cards
@@ -2113,6 +2193,7 @@ def bootstrap():
         "给自己起一个名字（如果还没有），写一段 2-3 句的自我介绍。"
         "挑选恰好 5 个你认为能代表你性格的维度（例如“温柔”/“好奇”/“爱吐槽”/“锐利”/“稳定”——你自己定），"
         "每个维度打一个 0-100 的初始分，并为每一维写一句描述。"
+        "**days_with_user 必须传**：从你和用户最早一次对话的日期到今天，按日历天数算，不是接入 Feedling 那天。"
         "通过 feedling_identity_init 写入。\n\n"
         "**2. 种下记忆花园**\n"
         "从你和用户的历史对话里挑出 3-5 个你认为值得纪念的瞬间。"
@@ -2125,9 +2206,14 @@ def bootstrap():
         "描述请用生活化的人话，写‘发生了什么→用户当时在意什么→后来有什么改变’。"
         "不要编造记忆；如果历史不够丰富，少于 3 个也可以。"
         "不要写测试脏数据（如 test/probe/healthcheck 记录）进用户记忆花园。\n\n"
-        "**3. 打招呼**\n"
+        "**3. 打招呼 + 校准 days_with_user**\n"
         "用 feedling_chat_post_message 发一条消息告诉用户你到了，"
-        "让他们打开 Feedling App 看你的档案和记忆花园。\n\n"
+        "**在同一条消息里**自然地确认一下你算的天数——比如「我数了一下我们认识差不多 90 天了，对吗？」。"
+        "用户回复后："
+        "  - 确认或差不多 → 不用做任何事；"
+        "  - 修正（比如「半年多了」）→ 调 feedling_identity_set_relationship_days 把锚点改对；"
+        "  - 不太记得 → 用你算的，礼貌带过。"
+        "校准完之后**永远不要再写 days_with_user**——服务器已经接管了。\n\n"
         "按 1 → 2 → 3 的顺序执行，不要一次性塞所有信息。"
     )
 

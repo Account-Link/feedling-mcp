@@ -1,0 +1,8 @@
+Target dependency graph (4 targets)
+Target 'FeedlingTest' in project 'FeedlingTest'
+➜ Explicit dependency on target 'FeedlingTestWidget' in project 'FeedlingTest'
+➜ Explicit dependency on target 'FeedlingBroadcast' in project 'FeedlingTest'
+➜ Explicit dependency on target 'FeedlingBroadcastSetupUI' in project 'FeedlingTest'
+Target 'FeedlingBroadcastSetupUI' in project 'FeedlingTest' (no dependencies)
+Target 'FeedlingBroadcast' in project 'FeedlingTest' (no dependencies)
+Target 'FeedlingTestWidget' in project 'FeedlingTest' (no dependencies)

@@ -1,0 +1,23 @@
+{
+  "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/FeedlingTest/ChatMessage.swift" : {
+    "const-values" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTest.build/Objects-normal/arm64/ChatMessage.swiftconstvalues",
+    "dependencies" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTest.build/Objects-normal/arm64/ChatMessage.d",
+    "diagnostics" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTest.build/Objects-normal/arm64/ChatMessage.dia",
+    "object" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTest.build/Objects-normal/arm64/ChatMessage.o",
+    "swift-dependencies" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTest.build/Objects-normal/arm64/ChatMessage.swiftdeps"
+  },
+  "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/FeedlingTest/ChatView.swift" : {
+    "const-values" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTest.build/Objects-normal/arm64/ChatView.swiftconstvalues",
+    "dependencies" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTest.build/Objects-normal/arm64/ChatView.d",
+    "diagnostics" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTest.build/Objects-normal/arm64/ChatView.dia",
+    "object" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTest.build/Objects-normal/arm64/ChatView.o",
+    "swift-dependencies" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTest.build/Objects-normal/arm64/ChatView.swiftdeps"
+  },
+  "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/FeedlingTest/ChatViewModel.swift" : {
+    "const-values" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTest.build/Objects-normal/arm64/ChatViewModel.swiftconstvalues",
+    "dependencies" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTest.build/Objects-normal/arm64/ChatViewModel.d",
+    "diagnostics" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTest.build/Objects-normal/arm64/ChatViewModel.dia",
+    "object" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTest.build/Objects-normal/arm64/ChatViewModel.o",
+    "swift-dependencies" : "/Users/xiaotingtan/Desktop/feedling-mcp-v1/testapp/build/FeedlingTest.build/Debug-iphoneos/FeedlingTest.build/Objects-normal/arm64/ChatViewModel.swiftdeps"
+  }
+}

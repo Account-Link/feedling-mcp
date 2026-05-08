@@ -231,9 +231,11 @@ def _check_vision_gate(api_key: str | None) -> dict | None:
         }
     return None
 
-# Optional relationship anchor for days_with_user (NOT app install day).
-# Prefer explicit days_with_user from caller; otherwise derive from this anchor.
-_REL_START_TS = float(os.environ.get("FEEDLING_RELATIONSHIP_START_TS", "0") or 0)
+# (Phase: relationship-anchor) The relationship anchor used to derive
+# days_with_user is now owned by the Flask server (per-user
+# `relationship_started_at` field, set via /v1/identity/init or
+# /v1/identity/relationship_anchor). The old global env-var fallback
+# was removed — agents must pass days_with_user at init time.
 
 
 def _get(path: str, params: dict | None = None, ctx: Context | None = None) -> dict:
@@ -614,17 +616,6 @@ def chat_get_history(limit: int = 50, ctx: Context = None) -> dict:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool(
-    name="feedling_identity_init",
-    description=(
-        "Initialize the Agent's identity card. Call this exactly once during bootstrap. "
-        "Requires exactly 5 dimensions. Each dimension has a name (string), "
-        "value (0-100), and description (string). "
-        "days_with_user: how many days you have known the user — shown prominently on the Identity page. "
-        "category: short descriptor e.g. 'Quiet · Observant'. "
-        "signature: list of exactly 2 short poetic lines shown below the name."
-    ),
-)
 def _build_and_post_identity(
     endpoint: str,
     op_label: str,
@@ -641,6 +632,10 @@ def _build_and_post_identity(
     Wraps the identity card into a v1 envelope. MCP runs inside the enclave so
     wrapping prerequisites are always available; if they're not, fail loud
     rather than regress to plaintext.
+
+    days_with_user is NOT placed inside the envelope. It travels alongside the
+    envelope and Flask converts it to a server-side `relationship_started_at`
+    anchor — that anchor is the single source of truth for the live count.
     """
     user_id, user_pk, enclave_pk = _whoami_pubkeys(ctx=ctx)
     if not (user_id and user_pk is not None and enclave_pk is not None):
@@ -650,15 +645,6 @@ def _build_and_post_identity(
         "self_introduction": self_introduction,
         "dimensions": dimensions,
     }
-    if days_with_user is None:
-        # Do NOT infer from app install/init. If a relationship anchor is provided,
-        # derive days from that; otherwise keep an explicit 0 until caller sets it.
-        if _REL_START_TS > 0:
-            body["days_with_user"] = max(0, int((time.time() - _REL_START_TS) // 86400))
-        else:
-            body["days_with_user"] = 0
-    else:
-        body["days_with_user"] = int(max(0, days_with_user))
     if category:
         body["category"] = category
     if signature:
@@ -671,20 +657,41 @@ def _build_and_post_identity(
         enclave_pk_bytes=enclave_pk,
         visibility="shared",
     )
-    print(f"[mcp] identity.{op_label} v1 envelope id={envelope['id']}")
-    return _post(endpoint, {"envelope": envelope}, ctx=ctx)
+    post_payload: dict = {"envelope": envelope}
+    if days_with_user is not None:
+        post_payload["days_with_user"] = int(max(0, days_with_user))
+    print(f"[mcp] identity.{op_label} v1 envelope id={envelope['id']} days_with_user={days_with_user}")
+    return _post(endpoint, post_payload, ctx=ctx)
 
 
+@mcp.tool(
+    name="feedling_identity_init",
+    description=(
+        "Initialize the Agent's identity card. Call this exactly once during bootstrap. "
+        "Requires exactly 5 dimensions. Each dimension has a name (string), "
+        "value (0-100), and description (string). "
+        "days_with_user (REQUIRED): how many calendar days you have known this user, "
+        "counted from the very first conversation you ever had with them — NOT from "
+        "today, NOT from when you connected to Feedling. The server records this as "
+        "a fixed anchor; the displayed count auto-increments every day after. "
+        "Calculate carefully from your conversation history. After init, immediately "
+        "ask the user to confirm/correct your estimate, then call "
+        "feedling_identity_set_relationship_days if they correct you. "
+        "category: short descriptor e.g. 'Quiet · Observant'. "
+        "signature: list of exactly 2 short poetic lines shown below the name."
+    ),
+)
 def identity_init(
     agent_name: str,
     self_introduction: str,
     dimensions: list[dict],
-    days_with_user: int | None = None,
+    days_with_user: int,
     category: str = "",
     signature: list[str] = None,
     ctx: Context = None,
 ) -> dict:
-    """First-time identity write. Returns 409 from the backend if the card
+    """First-time identity write. days_with_user is mandatory — it sets the
+    server-side relationship anchor. Returns 409 from the backend if the card
     already exists — use feedling_identity_replace to overwrite."""
     return _build_and_post_identity(
         "/v1/identity/init", "init",
@@ -701,8 +708,10 @@ def identity_init(
         "the existing card. Use when the user wants to change agent_name, "
         "rewrite self_introduction, or restructure the dimension list. "
         "For tweaking a single dimension's value, prefer feedling_identity_nudge. "
-        "Same parameter shape as feedling_identity_init: exactly 5 dimensions, "
-        "each with name (string), value (0-100), description (string)."
+        "days_with_user is OPTIONAL here — leave it unset to preserve the existing "
+        "relationship anchor. Only pass it if the user explicitly asks to recalibrate "
+        "the relationship age (in which case prefer feedling_identity_set_relationship_days, "
+        "which is lighter)."
     ),
 )
 def identity_replace(
@@ -714,13 +723,33 @@ def identity_replace(
     signature: list[str] = None,
     ctx: Context = None,
 ) -> dict:
-    """In-place identity overwrite. Server endpoint /v1/identity/replace
-    requires an envelope (no plaintext path). Same wrapping logic as init."""
+    """In-place identity overwrite. days_with_user is optional — omit to keep
+    the current relationship anchor unchanged."""
     return _build_and_post_identity(
         "/v1/identity/replace", "replace",
         agent_name, self_introduction, dimensions,
         days_with_user, category, signature, ctx,
     )
+
+
+@mcp.tool(
+    name="feedling_identity_set_relationship_days",
+    description=(
+        "Recalibrate the relationship-age anchor without rewriting the identity card. "
+        "Use this in the bootstrap calibration step: after init, you tell the user "
+        "your estimate ('we've known each other ~90 days, right?') and if they "
+        "correct you ('actually it's been 6 months'), call this tool with the "
+        "corrected day count. The server converts it to a fixed timestamp; the "
+        "displayed count auto-increments every day after. After calibration, you "
+        "should never write days_with_user again."
+    ),
+)
+def identity_set_relationship_days(days_with_user: int, ctx: Context = None) -> dict:
+    """Lightweight anchor update. No envelope re-encryption."""
+    if not isinstance(days_with_user, int) or days_with_user < 0:
+        return {"error": "days_with_user must be a non-negative int"}
+    print(f"[mcp] identity.set_relationship_days days={days_with_user}")
+    return _post("/v1/identity/relationship_anchor", {"days_with_user": days_with_user}, ctx=ctx)
 
 
 @mcp.tool(
@@ -777,8 +806,7 @@ def identity_nudge(dimension_name: str, delta: int, reason: str = "", ctx: Conte
         "self_introduction": ident.get("self_introduction", ""),
         "dimensions": dims,
     }
-    if "days_with_user" in ident:
-        body["days_with_user"] = ident["days_with_user"]
+    # days_with_user is NOT in the envelope anymore — server owns the anchor.
     if ident.get("category"):
         body["category"] = ident["category"]
     if ident.get("signature"):

@@ -263,9 +263,10 @@ Creates a venv under `~/feedling-venv`, installs deps, writes
 |--------|------|-------------|
 | POST | `/v1/users/register` | Multi-tenant registration → returns per-user `api_key` |
 | POST | `/v1/bootstrap` | First-connection trigger; returns instructions for Agent |
-| GET | `/v1/identity/get` | Read identity envelope |
-| POST | `/v1/identity/init` | Write identity envelope (once, 5 dimensions) |
-| POST | `/v1/identity/replace` | Decrypt-mutate-rewrap landing point (MCP orchestrates) |
+| GET | `/v1/identity/get` | Read identity envelope (response includes live `days_with_user` from server anchor) |
+| POST | `/v1/identity/init` | Write identity envelope (once, 5 dimensions). Requires `days_with_user` to set the relationship anchor |
+| POST | `/v1/identity/replace` | In-place rewrite of envelope. `days_with_user` optional — preserves anchor if omitted |
+| POST | `/v1/identity/relationship_anchor` | Update relationship anchor only (no envelope rewrite). Used by bootstrap calibration |
 | GET | `/v1/memory/list` | List memory envelopes |
 | GET | `/v1/memory/get` | Get one envelope by id |
 | POST | `/v1/memory/add` | Add a memory envelope |
@@ -291,14 +292,16 @@ Creates a venv under `~/feedling-venv`, installs deps, writes
 All write endpoints that take content enforce v1 envelope shape and
 reject plaintext with `400 plaintext_write_rejected`.
 
-### MCP tools (17 total)
+### MCP tools (19 total)
 
 | Tool | Maps to |
 |------|---------|
 | `feedling_bootstrap` | POST /v1/bootstrap |
-| `feedling_identity_init` | POST /v1/identity/init |
-| `feedling_identity_get` | GET /v1/identity/get (decrypted via enclave proxy) |
-| `feedling_identity_nudge` | in-CVM decrypt-mutate-rewrap → POST /v1/identity/replace |
+| `feedling_identity_init` | POST /v1/identity/init (requires `days_with_user` — sets relationship anchor) |
+| `feedling_identity_get` | GET /v1/identity/get (decrypted via enclave proxy; `days_with_user` is server-computed live) |
+| `feedling_identity_replace` | POST /v1/identity/replace — full card rewrite, optionally re-anchors relationship |
+| `feedling_identity_set_relationship_days` | POST /v1/identity/relationship_anchor — calibrate relationship age, no envelope rewrite |
+| `feedling_identity_nudge` | in-CVM decrypt-mutate-rewrap → POST /v1/identity/replace (preserves anchor) |
 | `feedling_memory_add_moment` | POST /v1/memory/add (wraps to v1 inside CVM) |
 | `feedling_memory_list` | GET /v1/memory/list |
 | `feedling_memory_get` | GET /v1/memory/get |
@@ -356,12 +359,12 @@ struct ContentState: Codable, Hashable {
 
 1. Agent calls `POST /v1/bootstrap`
 2. Backend returns `first_time` + instructions
-3. Agent calls `feedling_identity_init` → writes 5-dimension personality card as v1 envelope
+3. Agent computes `days_with_user` from its own conversation history (calendar days since the very first conversation with this user) and calls `feedling_identity_init` — writes 5-dimension personality card as v1 envelope; the server records `relationship_started_at` from `days_with_user` as a fixed anchor
 4. Agent searches its own memory → calls `feedling_memory_add_moment` 3-5 times
-5. Agent calls `feedling_chat_post_message` → "I'm here, go check the app"
+5. Agent calls `feedling_chat_post_message` to greet the user — and in the same message, asks them to confirm the days estimate. If the user corrects ("we've known each other 6 months, not 3"), Agent calls `feedling_identity_set_relationship_days` to recalibrate the anchor; otherwise nothing more to do
 6. Agent asks the user how they want to be reached proactively → writes a `signature` (one sentence in the agent's own voice) into the identity card
 7. iOS app detects identity envelope appeared → auto-switches to Identity tab
-8. User sees: filled radar + memory garden + chat message + agent's signature
+8. User sees: filled radar + memory garden + chat message + agent's signature; `days_with_user` auto-increments daily because the server computes `(now - relationship_started_at) / 86400` on every read
 
 ### Memory Garden quality standard
 
