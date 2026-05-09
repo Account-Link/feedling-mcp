@@ -91,7 +91,16 @@ struct ChatView: View {
 
     // MARK: - Message list
 
+    @ViewBuilder
     private var messageList: some View {
+        if vm.messages.isEmpty && !vm.isWaitingForReply {
+            ChatEmptyStateView()
+        } else {
+            populatedMessageList
+        }
+    }
+
+    private var populatedMessageList: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {

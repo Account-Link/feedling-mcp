@@ -71,14 +71,14 @@ struct ContentView: View {
                     SettingsView()
                         .opacity(router.selectedTab == .settings ? 1 : 0)
                 }
-                // When keyboard is visible: remove bottom padding so the chat
-                // input bar sits directly above the keyboard (SwiftUI reduces
-                // the container height by keyboard height automatically).
-                // When no keyboard: use the stored device inset so the value
-                // never inflates when geo.safeAreaInsets.bottom grows.
-                .padding(.bottom, isKeyboardVisible ? 0 : (52 + deviceBottomInset))
+                // When keyboard is visible OR we're in a secondary detail
+                // view: remove bottom padding so the content uses the full
+                // height. When no keyboard and on a top-level tab: use the
+                // stored device inset so the value never inflates when
+                // geo.safeAreaInsets.bottom grows.
+                .padding(.bottom, (isKeyboardVisible || router.isInDetail) ? 0 : (52 + deviceBottomInset))
 
-                if !isKeyboardVisible {
+                if !isKeyboardVisible && !router.isInDetail {
                     CinnabarTabBar(selectedTab: $router.selectedTab,
                                    bottomInset: deviceBottomInset)
                 }
@@ -110,6 +110,11 @@ struct ContentView: View {
 
 class AppRouter: ObservableObject {
     @Published var selectedTab: AppTab = .chat
+    /// True while a secondary view (e.g. Memory Garden card detail) is on top
+    /// of the navigation stack. The root tab bar hides itself in this state so
+    /// users don't accidentally jump between top-level tabs while reading a
+    /// card and then have to find their way back.
+    @Published var isInDetail: Bool = false
 }
 
 // MARK: - Settings View
@@ -251,6 +256,29 @@ struct SettingsView: View {
                             } label: {
                                 HStack {
                                     Text("Privacy & Audit")
+                                        .font(.notoSerifSC(size: 13.5))
+                                        .foregroundStyle(Color.cinFg)
+                                    Spacer()
+                                    Text("OPEN ↗")
+                                        .font(.dmMono(size: 9.5, weight: .medium))
+                                        .foregroundStyle(Color.cinAccent1)
+                                        .kerning(2)
+                                }
+                                .padding(.horizontal, 24)
+                                .padding(.vertical, 12)
+                            }
+                            .buttonStyle(.plain)
+                            .overlay(alignment: .top) {
+                                Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.horizontal, 24)
+                            }
+                        }
+                        settingsSection("DIAGNOSTICS") {
+                            NavigationLink {
+                                HealthCheckView()
+                                    .environmentObject(lam)
+                            } label: {
+                                HStack {
+                                    Text("Health Check")
                                         .font(.notoSerifSC(size: 13.5))
                                         .foregroundStyle(Color.cinFg)
                                     Spacer()

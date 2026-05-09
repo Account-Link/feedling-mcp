@@ -2228,6 +2228,83 @@ def bootstrap():
     return jsonify({"status": "first_time", "instructions": instructions})
 
 
+@app.route("/v1/bootstrap/status", methods=["GET"])
+def bootstrap_status():
+    """Live progress signal for the iOS empty-state onboarding view.
+
+    Returns the agent's bootstrap progress as observed from server side
+    artifacts (no decryption needed, no MCP heartbeat plumbing). Each step
+    flips True the moment the corresponding write hits Flask.
+
+    Steps:
+      1. identity_written        — /v1/identity/init wrote envelope
+      2. memories_count          — /v1/memory/add wrote at least one moment
+      3. agent_messages_count    — /v1/chat/response wrote at least one reply
+      4. relationship_anchored   — /v1/identity/init or /relationship_anchor
+                                   set the anchor (== identity_written for
+                                   freshly bootstrapped users on the new
+                                   contract)
+
+    `agent_connected` is a derived heartbeat: if any of the above is true,
+    we know the agent has reached the server at least once.
+    `last_agent_activity` is the latest timestamp across all signals.
+    """
+    store = require_user()
+
+    identity = _load_identity(store)
+    has_identity = identity is not None
+    relationship_anchored = bool(identity and identity.get("relationship_started_at"))
+    identity_updated_at = (identity or {}).get("updated_at", "")
+
+    moments = _load_moments(store)
+    memory_count = len(moments) if isinstance(moments, list) else 0
+    last_moment_ts = ""
+    if memory_count > 0:
+        try:
+            last_moment_ts = max(
+                (m.get("created_at") or "") for m in moments if isinstance(m, dict)
+            )
+        except Exception:
+            last_moment_ts = ""
+
+    # chat_messages is mutated under chat_lock elsewhere; copy under the
+    # same lock so we don't race with /v1/chat/response writes.
+    with store.chat_lock:
+        chat_msgs = list(store.chat_messages)
+    agent_msgs = [m for m in chat_msgs if isinstance(m, dict) and m.get("role") == "agent"]
+    agent_msg_count = len(agent_msgs)
+    last_agent_msg_ts = ""
+    if agent_msg_count > 0:
+        # Chat ts is unix epoch float; identity/memory timestamps are ISO
+        # strings. Normalise to ISO so the lexicographic max() at the end
+        # picks the actual latest event across all three signals (otherwise
+        # a unix-float string compared char-by-char against an ISO string
+        # gives nonsense).
+        try:
+            latest_unix = max(
+                float(m.get("ts") or m.get("timestamp") or 0) for m in agent_msgs
+            )
+            last_agent_msg_ts = datetime.fromtimestamp(latest_unix).isoformat() if latest_unix > 0 else ""
+        except Exception:
+            last_agent_msg_ts = ""
+
+    agent_connected = has_identity or memory_count > 0 or agent_msg_count > 0
+    candidate_ts = [t for t in (identity_updated_at, last_moment_ts, last_agent_msg_ts) if t]
+    last_activity = max(candidate_ts) if (agent_connected and candidate_ts) else ""
+
+    is_complete = has_identity and memory_count >= 3 and agent_msg_count >= 1
+
+    return jsonify({
+        "agent_connected": agent_connected,
+        "last_agent_activity": last_activity,
+        "identity_written": has_identity,
+        "relationship_anchored": relationship_anchored,
+        "memories_count": memory_count,
+        "agent_messages_count": agent_msg_count,
+        "is_complete": is_complete,
+    })
+
+
 # ---------------------------------------------------------------------------
 # Envelope swap: replace an existing chat/memory item's ciphertext in place.
 #
