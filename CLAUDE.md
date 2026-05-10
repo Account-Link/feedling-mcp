@@ -30,3 +30,27 @@ tokens defined at the bottom of `DESIGN.md`.
 - `/v1/content/swap` is the ongoing in-place envelope-swap endpoint
   (visibility toggles). There is no v0→v1 migration path anymore;
   plaintext writes now return 400.
+
+## Public docs mirror (io-onboarding)
+
+The three public-facing onboarding docs live in a separate public repo
+at `github.com/teleport-computer/io-onboarding`:
+
+- `skill.md`            — agent-facing instructions (fetched by user's MCP client)
+- `quickstart.md`       — 5-step setup for human testers (zh + en)
+- `troubleshooting.md`  — common failure triage (zh + en)
+
+**These are NOT in this repo anymore.** When a user asks to change any
+of those three files, edit them in the local clone of the
+io-onboarding repo and push there. The iOS app's `ChatEmptyStateView.skillURL`
+constant pins to the raw URL of `skill.md` on `main`, so a push to
+io-onboarding is immediately visible to all installed apps (no rebuild
+needed for doc updates).
+
+When iterating on agent behavior (e.g. tightening the bootstrap rules)
+that is also documented in skill.md, update **both**:
+1. The relevant code in this repo (mcp_server.py / app.py / etc.)
+2. `skill.md` in the io-onboarding repo
+
+If the user says "update the skill" without specifying, they mean the
+public skill.md in io-onboarding.

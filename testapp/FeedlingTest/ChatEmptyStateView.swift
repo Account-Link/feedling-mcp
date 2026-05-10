@@ -14,9 +14,10 @@ struct ChatEmptyStateView: View {
 
     // MARK: - Public configuration
 
-    /// Public URL where the agent skill is hosted. Replace with the real
-    /// hosted URL once it's set up. Until then, copying yields this stub.
-    static let skillURL = "https://feedling.app/skill.md"
+    /// Public URL where the agent skill is hosted. Mirror lives at
+    /// github.com/teleport-computer/io-onboarding — update there + reflect
+    /// here if the hosting moves.
+    static let skillURL = "https://raw.githubusercontent.com/teleport-computer/io-onboarding/main/skill.md"
 
     // MARK: - State
 
