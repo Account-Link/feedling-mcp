@@ -13,15 +13,28 @@ struct ChatView: View {
     var agentName: String { identityVM.identity?.agentName.isEmpty == false ? identityVM.identity!.agentName : "—" }
     var dayCount: Int { identityVM.identity?.daysWithUser ?? 0 }
 
+    /// While onboarding (no messages yet), the agent name / REC header and
+    /// the message-input bar are both meaningless — there's no agent yet to
+    /// be addressed and nothing to send to. We render only ChatEmptyStateView
+    /// in that state. As soon as the first message lands (user-sent OR
+    /// agent-received), the regular chat chrome flips on.
+    private var showOnboarding: Bool {
+        vm.messages.isEmpty && !vm.isWaitingForReply
+    }
+
     var body: some View {
         ZStack(alignment: .bottom) {
             Color.cinBg.ignoresSafeArea()
-            VStack(spacing: 0) {
-                header
-                Divider().overlay(Color.cinFg)
-                messageList
+            if showOnboarding {
+                ChatEmptyStateView()
+            } else {
+                VStack(spacing: 0) {
+                    header
+                    Divider().overlay(Color.cinFg)
+                    populatedMessageList
+                }
+                inputBar
             }
-            inputBar
         }
         // The root container ignores keyboard safe area, so we track keyboard
         // height here and manually push the chat ZStack above the keyboard.
@@ -90,15 +103,6 @@ struct ChatView: View {
     }
 
     // MARK: - Message list
-
-    @ViewBuilder
-    private var messageList: some View {
-        if vm.messages.isEmpty && !vm.isWaitingForReply {
-            ChatEmptyStateView()
-        } else {
-            populatedMessageList
-        }
-    }
 
     private var populatedMessageList: some View {
         ScrollViewReader { proxy in

@@ -45,18 +45,18 @@ struct ChatEmptyStateView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     statusBadge
                     titleBlock
-                    hairline.padding(.top, 24).padding(.bottom, 22)
+                    hairline.padding(.vertical, 16)
                     stepsBlock
-                    hairline.padding(.top, 26).padding(.bottom, 22)
+                    hairline.padding(.vertical, 16)
                     progressBlock
                     if isStuck {
-                        hairline.padding(.top, 26).padding(.bottom, 22)
+                        hairline.padding(.vertical, 16)
                         stuckBlock
                     }
-                    Color.clear.frame(height: 110)   // clearance for input bar
+                    Color.clear.frame(height: 16)
                 }
                 .padding(.horizontal, 24)
-                .padding(.top, 28)
+                .padding(.top, 22)
             }
             .background(Color.cinBg)
 
@@ -104,28 +104,25 @@ struct ChatEmptyStateView: View {
     // MARK: - Title
 
     private var titleBlock: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("让你的 agent 入住")
-                .font(.notoSerifSC(size: 26, weight: .medium))
-                .foregroundStyle(Color.cinFg)
-                .padding(.top, 14)
-            Text("Without an agent, this stays empty.\nGive yours the skill and the connection.")
-                .font(.newsreader(size: 14, italic: true))
-                .foregroundStyle(Color.cinSub)
-                .lineSpacing(2)
-        }
+        // Single editorial headline; subtitle dropped — the headline's
+        // meaning is self-evident, and the recovered ~38 pt is what lets
+        // the rest of this view fit one screen on a 6.1" iPhone.
+        Text("让你的 agent 入住")
+            .font(.notoSerifSC(size: 22, weight: .medium))
+            .foregroundStyle(Color.cinFg)
+            .padding(.top, 12)
     }
 
     // MARK: - Steps
 
     private var stepsBlock: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            stepHeader("WHAT TO DO")
+        VStack(alignment: .leading, spacing: 14) {
+            sectionLabel("WHAT TO DO")
 
             stepCard(
                 index: "01",
                 title: "把 skill 给你的 agent",
-                description: "Agent 一辈子读一次。把这个 URL 喂给它，让它按里面的步骤做。",
+                description: "把这个 URL 喂给它，让它按里面的步骤做。",
                 primaryLabel: "COPY SKILL URL",
                 primaryAction: { copy(Self.skillURL, label: "Skill URL copied") }
             )
@@ -142,14 +139,14 @@ struct ChatEmptyStateView: View {
             stepCard(
                 index: "03",
                 title: "等它读你",
-                description: "它会写身份卡、种记忆、跟你打招呼。约 1–2 分钟。",
+                description: "写身份卡、种记忆、打招呼，约 1–2 分钟。",
                 primaryLabel: nil,
                 primaryAction: nil
             )
         }
     }
 
-    private func stepHeader(_ title: String) -> some View {
+    private func sectionLabel(_ title: String) -> some View {
         Text(title)
             .font(.dmMono(size: 9, weight: .medium))
             .foregroundStyle(Color.cinSub)
@@ -164,31 +161,32 @@ struct ChatEmptyStateView: View {
         primaryLabel: String?,
         primaryAction: (() -> Void)?
     ) -> some View {
-        HStack(alignment: .top, spacing: 16) {
+        HStack(alignment: .top, spacing: 14) {
             Text(index)
-                .font(.newsreader(size: 22))
+                .font(.newsreader(size: 20))
                 .foregroundStyle(Color.cinAccent1)
-                .frame(width: 28, alignment: .leading)
+                .frame(width: 26, alignment: .leading)
                 .padding(.top, 1)
-            VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(title)
-                    .font(.notoSerifSC(size: 15, weight: .medium))
+                    .font(.notoSerifSC(size: 14, weight: .medium))
                     .foregroundStyle(Color.cinFg)
                 Text(description)
-                    .font(.notoSerifSC(size: 12.5))
+                    .font(.notoSerifSC(size: 12))
                     .foregroundStyle(Color.cinSub)
-                    .lineSpacing(3)
+                    .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
 
                 if let codeBlock {
                     Text(codeBlock)
-                        .font(.dmMono(size: 10))
+                        .font(.dmMono(size: 9.5))
                         .foregroundStyle(Color.cinFg)
-                        .lineLimit(3)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
                         .multilineTextAlignment(.leading)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 9)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 7)
                         .background(Color.cinAccent1Soft)
                         .padding(.top, 4)
                 }
@@ -196,12 +194,12 @@ struct ChatEmptyStateView: View {
                 if let primaryLabel, let primaryAction {
                     Button(action: primaryAction) {
                         Text(primaryLabel)
-                            .font(.dmMono(size: 9.5, weight: .medium))
+                            .font(.dmMono(size: 9, weight: .medium))
                             .foregroundStyle(Color.cinAccent1)
                             .kerning(2.5)
                     }
                     .buttonStyle(.plain)
-                    .padding(.top, 6)
+                    .padding(.top, 4)
                 }
             }
         }
@@ -210,8 +208,9 @@ struct ChatEmptyStateView: View {
     // MARK: - Progress
 
     private var progressBlock: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            stepHeader("AGENT PROGRESS")
+        VStack(alignment: .leading, spacing: 9) {
+            sectionLabel("AGENT PROGRESS")
+                .padding(.bottom, 2)
 
             progressRow(
                 label: "Identity card",
@@ -234,19 +233,19 @@ struct ChatEmptyStateView: View {
     }
 
     private func progressRow(label: String, done: Bool, detail: String) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             ZStack {
                 Circle()
                     .stroke(done ? Color.cinAccent1 : Color.cinLine, lineWidth: 1)
-                    .frame(width: 14, height: 14)
+                    .frame(width: 12, height: 12)
                 if done {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 7, weight: .bold))
+                        .font(.system(size: 6, weight: .bold))
                         .foregroundStyle(Color.cinAccent1)
                 }
             }
             Text(label)
-                .font(.notoSerifSC(size: 13))
+                .font(.notoSerifSC(size: 12.5))
                 .foregroundStyle(done ? Color.cinFg : Color.cinSub)
             Spacer()
             Text(detail)
@@ -260,7 +259,7 @@ struct ChatEmptyStateView: View {
 
     private var stuckBlock: some View {
         VStack(alignment: .leading, spacing: 12) {
-            stepHeader("STUCK?")
+            sectionLabel("STUCK?")
             Text("超过 60 秒没动静。把下面这段复制给你的 agent，让它自己 debug：")
                 .font(.notoSerifSC(size: 12.5))
                 .foregroundStyle(Color.cinSub)
