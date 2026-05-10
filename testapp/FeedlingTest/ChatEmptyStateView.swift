@@ -220,14 +220,8 @@ struct ChatEmptyStateView: View {
                 }
 
                 if let primaryLabel, let primaryAction {
-                    Button(action: primaryAction) {
-                        Text(primaryLabel)
-                            .font(.dmMono(size: 9, weight: .medium))
-                            .foregroundStyle(Color.cinAccent1)
-                            .kerning(2.5)
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.top, 4)
+                    copyButton(primaryLabel, action: primaryAction)
+                        .padding(.top, 6)
                 }
             }
         }
@@ -312,17 +306,35 @@ struct ChatEmptyStateView: View {
                 .foregroundStyle(Color.cinSub)
                 .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
-            Button {
+            copyButton("COPY DEBUG PROMPT") {
                 copy(stuckPrompt, label: "Debug prompt copied")
-            } label: {
-                Text("COPY DEBUG PROMPT")
-                    .font(.dmMono(size: 9.5, weight: .medium))
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    /// Reusable outlined copy-to-clipboard button. Adds the `↗` affordance
+    /// + 1 pt cinnabar border so the action is visibly tappable — earlier
+    /// versions used bare kerned text and read as just-another-label rather
+    /// than an interactive control.
+    private func copyButton(_ label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Text(label)
+                    .font(.dmMono(size: 9, weight: .medium))
                     .foregroundStyle(Color.cinAccent1)
                     .kerning(2.5)
+                Text("↗")
+                    .font(.dmMono(size: 11, weight: .medium))
+                    .foregroundStyle(Color.cinAccent1)
             }
-            .buttonStyle(.plain)
-            .padding(.top, 2)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .overlay(
+                Rectangle().stroke(Color.cinAccent1, lineWidth: 1)
+            )
         }
+        .buttonStyle(.plain)
     }
 
     private var stuckPrompt: String {
