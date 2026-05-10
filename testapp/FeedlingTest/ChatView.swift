@@ -14,11 +14,24 @@ struct ChatView: View {
     var agentName: String { identityVM.identity?.agentName.isEmpty == false ? identityVM.identity!.agentName : "—" }
     var dayCount: Int { identityVM.identity?.daysWithUser ?? 0 }
 
-    /// While onboarding (no messages yet), the agent name / REC header and
-    /// the message-input bar are both meaningless — there's no agent yet to
-    /// be addressed and nothing to send to. We render only ChatEmptyStateView
-    /// in that state. As soon as the first message lands (user-sent OR
-    /// agent-received), the regular chat chrome flips on.
+    /// Input-bar placeholder. During onboarding the agent doesn't have a name
+    /// yet, so "给 — 写点什么…" reads as broken. Show a generic prompt that
+    /// makes it obvious the user can type back to whatever message just
+    /// landed (typically a "what should I call you" from the bootstrap loop).
+    private var placeholderText: String {
+        if voice.isRecording { return "正在听…" }
+        if identityVM.identity?.agentName.isEmpty == false {
+            return "给 \(identityVM.identity!.agentName) 写点什么…"
+        }
+        return "回复你的 agent…"
+    }
+
+    /// While onboarding (no messages yet), the agent name / REC header is
+    /// meaningless — there's no agent yet to address. We swap the populated
+    /// message list for ChatEmptyStateView, but the input bar stays mounted
+    /// the whole time: the agent often DMs the user mid-bootstrap ("paste me
+    /// your skill", "what should I call you") and the user needs an entry
+    /// point to reply. Hiding the input bar broke that loop in early testing.
     private var showOnboarding: Bool {
         vm.messages.isEmpty && !vm.isWaitingForReply
     }
@@ -26,16 +39,16 @@ struct ChatView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             Color.cinBg.ignoresSafeArea()
-            if showOnboarding {
-                ChatEmptyStateView()
-            } else {
-                VStack(spacing: 0) {
+            VStack(spacing: 0) {
+                if !showOnboarding {
                     header
                     Divider().overlay(Color.cinFg)
                     populatedMessageList
+                } else {
+                    ChatEmptyStateView()
                 }
-                inputBar
             }
+            inputBar
         }
         // The root container ignores keyboard safe area, so we track keyboard
         // height here and manually push the chat ZStack above the keyboard.
@@ -217,7 +230,7 @@ struct ChatView: View {
                     .foregroundStyle(Color.cinFg)
                     .tint(Color.cinAccent1)
                     .placeholder(when: vm.inputText.isEmpty) {
-                        Text(voice.isRecording ? "正在听…" : "给 \(agentName) 写点什么…")
+                        Text(placeholderText)
                             .font(.notoSerifSC(size: 13, weight: .regular))
                             .italic()
                             .foregroundStyle(Color.cinSub)
