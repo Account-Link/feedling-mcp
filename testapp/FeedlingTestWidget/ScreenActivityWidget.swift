@@ -48,7 +48,11 @@ struct ScreenActivityWidget: Widget {
             LockScreenView(state: context.state)
         } dynamicIsland: { context in
             DynamicIsland {
-                // Expanded — only show content when there's an active push
+                // Expanded — match the lock screen Live Activity visual
+                // (cinBg / cinFg). iOS doesn't expose an API to retint the
+                // Dynamic Island blob itself, so we paint cinBg inside the
+                // content area; a thin dark system ring at the blob edges is
+                // unavoidable. Subtitle + body mirror LockScreenView.activeView.
                 DynamicIslandExpandedRegion(.leading) {
                     EmptyView()
                 }
@@ -57,17 +61,34 @@ struct ScreenActivityWidget: Widget {
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     if !context.state.body.isEmpty {
-                        Text(context.state.body)
-                            .font(.cinSerif(14))
-                            .foregroundStyle(.white.opacity(0.9))
-                            .multilineTextAlignment(.leading)
-                            .lineLimit(5)
-                            .lineSpacing(3)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 8)
-                            .padding(.top, 6)
-                            .padding(.bottom, 10)
+                        VStack(alignment: .leading, spacing: 0) {
+                            if let sub = context.state.subtitle, !sub.isEmpty {
+                                Text(sub)
+                                    .font(.cinMono(9))
+                                    .foregroundStyle(Color.cinSub)
+                                    .kerning(1.5)
+                                    .padding(.horizontal, 14)
+                                    .padding(.top, 10)
+                                    .padding(.bottom, 6)
+                                Rectangle()
+                                    .fill(Color.cinLine)
+                                    .frame(height: 0.5)
+                                    .padding(.horizontal, 14)
+                            }
+                            Text(context.state.body)
+                                .font(.cinSerif(13))
+                                .foregroundStyle(Color.cinFg)
+                                .multilineTextAlignment(.leading)
+                                .lineLimit(5)
+                                .lineSpacing(3)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 14)
+                                .padding(.top, context.state.subtitle?.isEmpty == false ? 8 : 12)
+                                .padding(.bottom, 12)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .background(Color.cinBg)
                     }
                 }
             } compactLeading: {
