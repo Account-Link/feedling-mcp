@@ -103,7 +103,7 @@
 		059AB22EE40CB3F08CADCAE2 /* ScreenActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenActivityAttributes.swift; sourceTree = "<group>"; };
 		0AB72BEC4DBB1798ABB40444 /* IntelPCSClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntelPCSClient.swift; sourceTree = "<group>"; };
 		14B773D2531DF1548E7C3C63 /* FeedlingTestApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedlingTestApp.swift; sourceTree = "<group>"; };
-		163932C9DCA1AD2D29756AA4 /* FeedlingBroadcastSetupUI.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FeedlingBroadcastSetupUI.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		163932C9DCA1AD2D29756AA4 /* FeedlingBroadcastSetupUI.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = FeedlingBroadcastSetupUI.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		17C8E8DFD069B7910BF6136C /* Verifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Verifier.swift; sourceTree = "<group>"; };
 		1B8A7BF4CCA8BF6B818B587E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		1EF848471B03E094CE9A32BF /* InterTight-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "InterTight-Regular.ttf"; sourceTree = "<group>"; };
@@ -131,16 +131,16 @@
 		8585B7EF732F6D6EF2D5BEE6 /* SampleHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleHandler.swift; sourceTree = "<group>"; };
 		8C308EE0153161454F66B92E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		9B389587507B7D8A5C1A4CC1 /* Parser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Parser.swift; sourceTree = "<group>"; };
-		9BEDE1B24252F0AF7E4B9A09 /* FeedlingTest.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = FeedlingTest.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		9BEDE1B24252F0AF7E4B9A09 /* FeedlingTest.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FeedlingTest.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9DB161EB74DB2AA3F40F30E0 /* WebSocketManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketManager.swift; sourceTree = "<group>"; };
 		A12C1C629AC66C1D02A0BCE5 /* DMMono-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "DMMono-Regular.ttf"; sourceTree = "<group>"; };
 		B3DB0E6C7C11B4B979F67492 /* FeedlingAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedlingAPI.swift; sourceTree = "<group>"; };
-		B47B840768263FD66F28FB11 /* FeedlingTestWidget.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FeedlingTestWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		B47B840768263FD66F28FB11 /* FeedlingTestWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = FeedlingTestWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		BABFD58BB392DCD1187673EA /* Newsreader-Italic-VariableFont_opsz,wght.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Newsreader-Italic-VariableFont_opsz,wght.ttf"; sourceTree = "<group>"; };
 		BB44BB0331F13D05A5956D7B /* BootstrapStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BootstrapStatus.swift; sourceTree = "<group>"; };
 		BC81F4E14F5E038B4836EAA4 /* AuditCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuditCardView.swift; sourceTree = "<group>"; };
 		C2F5A34295AFAB91B4C93B95 /* CVMEndpoints.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CVMEndpoints.swift; sourceTree = "<group>"; };
-		C33E21075035F8499B243C1B /* FeedlingBroadcast.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = FeedlingBroadcast.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		C33E21075035F8499B243C1B /* FeedlingBroadcast.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = FeedlingBroadcast.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		C6A2500CE5E31F2AB9F0AF9A /* IdentityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdentityView.swift; sourceTree = "<group>"; };
 		CC77DE4E647A13DFA7969DDD /* Newsreader-VariableFont_opsz,wght.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Newsreader-VariableFont_opsz,wght.ttf"; sourceTree = "<group>"; };
 		CD86CBC7017A59A22F0C8A04 /* CinnabarTabBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CinnabarTabBar.swift; sourceTree = "<group>"; };
@@ -152,7 +152,7 @@
 		E57B51CA74D4087154F203F1 /* BaseImageReference.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BaseImageReference.swift; sourceTree = "<group>"; };
 		E760771C17EAF8147D096B4E /* LiveActivityManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityManager.swift; sourceTree = "<group>"; };
 		E807384089044501BDD54BFA /* FeedlingTestWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedlingTestWidgetBundle.swift; sourceTree = "<group>"; };
-		E96943835F627DA60766D69C /* IntelSGXRootCA.der */ = {isa = PBXFileReference; path = IntelSGXRootCA.der; sourceTree = "<group>"; };
+		E96943835F627DA60766D69C /* IntelSGXRootCA.der */ = {isa = PBXFileReference; lastKnownFileType = file; path = IntelSGXRootCA.der; sourceTree = "<group>"; };
 		EAD923C73CFB230F5965E087 /* MemoryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryViewModel.swift; sourceTree = "<group>"; };
 		ED7965843E2AE2F74B88A5FC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		EE37094391F6BB9C2D424ED9 /* Fonts */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Fonts; path = FeedlingTest/Fonts; sourceTree = SOURCE_ROOT; };
@@ -531,6 +531,7 @@
 				CODE_SIGN_ENTITLEMENTS = FeedlingBroadcastSetupUI/FeedlingBroadcastSetupUI.entitlements;
 				DEVELOPMENT_TEAM = DC9JH5DRMY;
 				INFOPLIST_FILE = FeedlingBroadcastSetupUI/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = IO;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -676,6 +677,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				DEVELOPMENT_TEAM = DC9JH5DRMY;
 				INFOPLIST_FILE = FeedlingTest/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = IO;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -693,6 +695,7 @@
 				CODE_SIGN_ENTITLEMENTS = FeedlingTestWidget/FeedlingTestWidget.entitlements;
 				DEVELOPMENT_TEAM = DC9JH5DRMY;
 				INFOPLIST_FILE = FeedlingTestWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = IO;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -713,6 +716,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				DEVELOPMENT_TEAM = DC9JH5DRMY;
 				INFOPLIST_FILE = FeedlingTest/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = IO;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -730,6 +734,7 @@
 				CODE_SIGN_ENTITLEMENTS = FeedlingTestWidget/FeedlingTestWidget.entitlements;
 				DEVELOPMENT_TEAM = DC9JH5DRMY;
 				INFOPLIST_FILE = FeedlingTestWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = IO;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -748,6 +753,7 @@
 				CODE_SIGN_ENTITLEMENTS = FeedlingBroadcastSetupUI/FeedlingBroadcastSetupUI.entitlements;
 				DEVELOPMENT_TEAM = DC9JH5DRMY;
 				INFOPLIST_FILE = FeedlingBroadcastSetupUI/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = IO;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -766,6 +772,7 @@
 				CODE_SIGN_ENTITLEMENTS = FeedlingBroadcast/FeedlingBroadcast.entitlements;
 				DEVELOPMENT_TEAM = DC9JH5DRMY;
 				INFOPLIST_FILE = FeedlingBroadcast/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = IO;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -784,6 +791,7 @@
 				CODE_SIGN_ENTITLEMENTS = FeedlingBroadcast/FeedlingBroadcast.entitlements;
 				DEVELOPMENT_TEAM = DC9JH5DRMY;
 				INFOPLIST_FILE = FeedlingBroadcast/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = IO;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
