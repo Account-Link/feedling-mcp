@@ -605,7 +605,18 @@ def chat_post_message(
 
 @mcp.tool(
     name="feedling_chat_get_history",
-    description="Retrieve recent chat history between the user and the Agent.",
+    description=(
+        "Retrieve recent chat history between the user and the Agent. The "
+        "response includes a `context_memories` field — up to 8 plaintext "
+        "memory cards the server selected as relevant to this conversation "
+        "moment (turning points + recent + keyword overlap with the latest "
+        "user message). Read both `messages` and `context_memories` before "
+        "composing your reply. Weave relevant memories naturally — pretend "
+        "you 'just remembered,' not 'looked up.' Don't reference cards by id, "
+        "don't say 'according to memory X.' If none feel relevant to the "
+        "current exchange, ignore them — irrelevant references hurt more "
+        "than they help."
+    ),
 )
 def chat_get_history(limit: int = 50, ctx: Context = None) -> dict:
     return _get_decrypted("/v1/chat/history", {"limit": min(limit, 200)}, ctx=ctx)
@@ -667,18 +678,19 @@ def _build_and_post_identity(
 @mcp.tool(
     name="feedling_identity_init",
     description=(
-        "Initialize the Agent's identity card. Call this exactly once during bootstrap. "
-        "Requires exactly 5 dimensions. Each dimension has a name (string), "
-        "value (0-100), and description (string). "
-        "days_with_user (REQUIRED): how many calendar days you have known this user, "
-        "counted from the very first conversation you ever had with them — NOT from "
-        "today, NOT from when you connected to Feedling. The server records this as "
-        "a fixed anchor; the displayed count auto-increments every day after. "
-        "Calculate carefully from your conversation history. After init, immediately "
-        "ask the user to confirm/correct your estimate, then call "
-        "feedling_identity_set_relationship_days if they correct you. "
+        "Initialize the Agent's identity card. Call this AFTER you've completed the "
+        "memory garden's 4-pass extraction — every identity field is DERIVED from "
+        "memories, not guessed. Requires exactly 7 dimensions; each has name (string), "
+        "value (0-100), description (string). For each dimension you must be able to "
+        "name ≥3 specific memory cards as receipts — if you can't, drop that dimension "
+        "and pick one you can defend. "
+        "days_with_user (REQUIRED): computed as floor((today − earliest_memory.occurred_at) / 1 day). "
+        "Do not guess this value — derive it from the memories you wrote. "
+        "agent_name: NEVER use a runtime label (Hermes / Claude / GPT / etc.). "
+        "Use the name the user has called you in prior chats; if none, propose one and "
+        "let the user accept. "
         "category: short descriptor e.g. 'Quiet · Observant'. "
-        "signature: list of exactly 2 short poetic lines shown below the name."
+        "signature: defer until after the user answers your push-preference question."
     ),
 )
 def identity_init(

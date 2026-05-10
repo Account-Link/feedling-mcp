@@ -579,6 +579,55 @@ def _decrypt_envelope(env: dict, authorized_user_id: str, content_sk: nacl.publi
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# context_memories — attached to every /v1/chat/history response.
+# Selection logic is pure (no nacl / no Flask); lives in
+# context_memory_selection.py so it can be unit-tested without this
+# module's heavy native deps.
+# ---------------------------------------------------------------------------
+
+from context_memory_selection import select_context_memories  # noqa: E402
+
+
+def _load_decrypted_moments(
+    api_key: str,
+    authorized_user_id: str,
+    content_sk,
+    limit: int = 200,
+) -> list[dict]:
+    """Fetch memory list from Flask, decrypt in-enclave, return plaintext
+    dicts. Failures (local_only, decrypt errors) are silently dropped —
+    context_memories is best-effort, never the source of error responses.
+    """
+    try:
+        listing = _flask_get(
+            "/v1/memory/list", api_key, params={"limit": str(limit)}
+        )
+    except httpx.HTTPError:
+        return []
+    out: list[dict] = []
+    for m in listing.get("moments", []) or []:
+        if m.get("visibility") == "local_only":
+            continue  # enclave doesn't have K_enclave for these
+        try:
+            plaintext = _decrypt_envelope(m, authorized_user_id, content_sk)
+            inner = json.loads(plaintext.decode("utf-8"))
+        except (DecryptFailure, json.JSONDecodeError):
+            continue
+        out.append({
+            "id": m.get("id"),
+            "title": inner.get("title"),
+            "description": inner.get("description"),
+            "type": inner.get("type"),
+            "occurred_at": m.get("occurred_at"),
+            "created_at": m.get("created_at"),
+            "her_quote": inner.get("her_quote"),
+            "context": inner.get("context"),
+            "linked_dimension": inner.get("linked_dimension"),
+        })
+    return out
+
+
 @app.route("/v1/chat/history", methods=["GET"])
 def v1_chat_history():
     """Decrypt-and-serve chat history for the authenticated user.
@@ -670,9 +719,25 @@ def v1_chat_history():
                 "decrypt_status": f"error: {e.reason}",
             })
 
+    # Attach context_memories — up to 8 plaintext memory cards selected
+    # for this conversation moment. Best-effort: if anything fails, return
+    # the chat response without them rather than 500-ing.
+    context_memories: list[dict] = []
+    try:
+        latest_user_text = ""
+        for m in reversed(decrypted):
+            if m.get("role") == "user" and m.get("content"):
+                latest_user_text = m["content"]
+                break
+        moments = _load_decrypted_moments(api_key, authorized_user_id, content_sk)
+        context_memories = select_context_memories(moments, latest_user_text)
+    except Exception as e:
+        print(f"[chat/history:{authorized_user_id}] context_memories failed: {e}")
+
     return jsonify({
         "user_id": authorized_user_id,
         "messages": decrypted,
+        "context_memories": context_memories,
         "total": hist.get("total", len(decrypted)),
         "decrypt_errors": errors,
     })

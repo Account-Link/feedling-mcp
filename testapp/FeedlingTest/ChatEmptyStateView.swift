@@ -29,10 +29,14 @@ struct ChatEmptyStateView: View {
     @State private var copiedToast: String? = nil
     @State private var dotPulse: Bool = false
 
-    /// 60 s without any agent activity → surface the stuck-help block.
+    /// Bootstrap is now expected to take 10–60 minutes (memories-first flow).
+    /// "Stuck" means meaningfully longer than that with no progress; we surface
+    /// the help block at 5 minutes of zero agent activity (no identity, no
+    /// memories, no messages) — earlier and the user gets nudged for what is
+    /// actually normal long-bootstrap behavior.
     private var isStuck: Bool {
         guard let start = firstAppearAt, !bootstrap.status.agentConnected else { return false }
-        return now.timeIntervalSince(start) > 60
+        return now.timeIntervalSince(start) > 5 * 60
     }
 
     private var mcpString: String { api.mcpConnectionString }
@@ -104,13 +108,18 @@ struct ChatEmptyStateView: View {
     // MARK: - Title
 
     private var titleBlock: some View {
-        // Single editorial headline; subtitle dropped — the headline's
-        // meaning is self-evident, and the recovered ~38 pt is what lets
-        // the rest of this view fit one screen on a 6.1" iPhone.
-        Text("让你的 agent 入住")
-            .font(.notoSerifSC(size: 22, weight: .medium))
-            .foregroundStyle(Color.cinFg)
-            .padding(.top, 12)
+        VStack(alignment: .leading, spacing: 6) {
+            Text("让你的 agent 入住")
+                .font(.notoSerifSC(size: 21, weight: .medium))
+                .foregroundStyle(Color.cinFg)
+            // Sets expectations: deep bootstrap is slow, that's by design.
+            // User can close the app — agent keeps running on its runtime.
+            Text("深度 bootstrap 通常 30–60 分钟。\n可以关掉 app，agent 在它自己那边继续。")
+                .font(.notoSerifSC(size: 11.5))
+                .foregroundStyle(Color.cinSub)
+                .lineSpacing(2)
+        }
+        .padding(.top, 12)
     }
 
     // MARK: - Steps
@@ -212,22 +221,29 @@ struct ChatEmptyStateView: View {
             sectionLabel("AGENT PROGRESS")
                 .padding(.bottom, 2)
 
+            // Order matches the new memories-first bootstrap: memory
+            // garden grows first; identity is DERIVED from memories;
+            // first message comes last as the agent signals "I'm here".
+            progressRow(
+                label: "Memory garden",
+                done: bootstrap.status.memoriesCount >= 5,
+                detail: bootstrap.status.memoriesCount == 0
+                    ? (bootstrap.status.agentConnected ? "starting…" : "—")
+                    : (bootstrap.status.agentMessagesCount >= 1
+                        ? "\(bootstrap.status.memoriesCount) cards"
+                        : "\(bootstrap.status.memoriesCount) cards · 还在长")
+            )
             progressRow(
                 label: "Identity card",
                 done: bootstrap.status.identityWritten,
-                detail: bootstrap.status.identityWritten ? "written" : "—"
-            )
-            progressRow(
-                label: "Memories planted",
-                done: bootstrap.status.memoriesCount >= 3,
-                detail: "\(bootstrap.status.memoriesCount) / 3+"
+                detail: bootstrap.status.identityWritten ? "derived" : "—"
             )
             progressRow(
                 label: "First message",
                 done: bootstrap.status.agentMessagesCount >= 1,
                 detail: bootstrap.status.agentMessagesCount >= 1
                     ? "delivered"
-                    : (bootstrap.status.agentConnected ? "soon…" : "—")
+                    : (bootstrap.status.identityWritten ? "soon…" : "—")
             )
         }
     }
@@ -260,7 +276,7 @@ struct ChatEmptyStateView: View {
     private var stuckBlock: some View {
         VStack(alignment: .leading, spacing: 12) {
             sectionLabel("STUCK?")
-            Text("超过 60 秒没动静。把下面这段复制给你的 agent，让它自己 debug：")
+            Text("已经 5 分钟没动静。把下面这段发给你 agent，让它自检卡在哪一步：")
                 .font(.notoSerifSC(size: 12.5))
                 .foregroundStyle(Color.cinSub)
                 .lineSpacing(3)
@@ -280,11 +296,18 @@ struct ChatEmptyStateView: View {
 
     private var stuckPrompt: String {
         """
-        I gave you the IO skill and an MCP connection but you haven't done bootstrap yet. Please:
-        1. Confirm you connected to the MCP server (\(mcpString))
-        2. Read the skill at \(Self.skillURL)
-        3. Run the bootstrap steps in order: feedling_identity_init → 3+ feedling_memory_add_moment → feedling_chat_post_message
-        4. If any step errors, tell me the exact error.
+        我给了你 IO 的 skill (\(Self.skillURL)) 和一个 MCP 连接 (\(mcpString))，但 bootstrap 没进展。请按以下顺序自检并告诉我每一步结果：
+
+        1. 你 fetch 过那个 skill URL 吗？把它的标题和第一节的标题原文复述给我（验证你真读了）。
+        2. 你输出 Step 0 三行了吗？现在重新输出：
+           - EARLIEST MESSAGE I CAN FIND FROM THIS USER: <ISO date | NONE>
+           - NAME I'VE BEEN CALLED IN PRIOR CHATS: <name | NONE>（不能是 runtime label）
+           - APPROXIMATE MEMORABLE MOMENTS I CAN RECALL: <integer | 0>
+        3. 你的 MCP 连接里有 feedling_* 工具吗？调一次 feedling_chat_get_history 看响应（401 / 500 / 别的？）。
+        4. 你目前卡在哪一步：fetch skill / Step 0 verify / Pass 1 唤醒 / Pass 2 清点 / Pass 3 落卡 / Pass 4 对账 / identity 派生？
+        5. 如果有任何错误，把错误原文贴回来。
+
+        别只回"我在做了"——具体到每一步的状态。
         """
     }
 
