@@ -13,8 +13,40 @@ class ChatViewModel: ObservableObject {
     private var pollingTask: Task<Void, Never>?
     private var waitingTimeoutTask: Task<Void, Never>?
     private var latestTs: Double = 0
+    private var resetObserver: NSObjectProtocol?
 
     // MARK: - Lifecycle
+
+    init() {
+        // Drop in-memory chat when credentials are wiped, so the UI flips to
+        // ChatEmptyStateView immediately rather than showing stale messages
+        // from the old account until the next poll cycle overwrites them.
+        resetObserver = NotificationCenter.default.addObserver(
+            forName: .feedlingCredentialsReset,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.resetForFreshAccount()
+            }
+        }
+    }
+
+    deinit {
+        if let resetObserver { NotificationCenter.default.removeObserver(resetObserver) }
+    }
+
+    private func resetForFreshAccount() {
+        messages = []
+        inputText = ""
+        isSending = false
+        isWaitingForReply = false
+        latestTs = 0
+        waitingTimeoutTask?.cancel()
+        waitingTimeoutTask = nil
+        // Polling task keeps running — once new credentials register, it
+        // naturally polls the new (empty) account and stays empty.
+    }
 
     func startPolling() {
         guard pollingTask == nil || pollingTask!.isCancelled else { return }

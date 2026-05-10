@@ -528,6 +528,11 @@ final class FeedlingAPI: ObservableObject {
         _ = ContentKeyStore.shared.wipeKeypair()
         _ = KeyStore.shared.wipeKeypair()
         _ = ApiKeyStore.shared.wipe()
+
+        // Tell the view models to drop their in-memory caches. Without this,
+        // chat/identity/garden views keep stale data on screen until their
+        // next poll cycle overwrites it — visually broken after a wipe.
+        NotificationCenter.default.post(name: .feedlingCredentialsReset, object: nil)
     }
 
     /// Discard current credentials and regenerate. Asks server to register fresh.
@@ -542,6 +547,10 @@ final class FeedlingAPI: ObservableObject {
         UserDefaults.standard.set(false, forKey: Keys.registrationFailed)
         _ = ApiKeyStore.shared.wipe()
         persist()
+        // Post BEFORE re-registration so the view models go empty immediately;
+        // the new account's data (none, until agent connects) flows in via
+        // their normal polling once registration completes.
+        NotificationCenter.default.post(name: .feedlingCredentialsReset, object: nil)
         await ensureRegisteredIfCloud()
     }
 
@@ -1170,4 +1179,16 @@ private final class LockBox: @unchecked Sendable {
         value = true
         return true
     }
+}
+
+// MARK: - Notification names
+
+extension Notification.Name {
+    /// Posted when local credentials (api_key / userId / Keychain) are wiped
+    /// or rotated — i.e. by `regenerateCredentials()` or
+    /// `deleteMyDataAndResetLocalState()`. Subscribers (ChatViewModel,
+    /// IdentityViewModel, MemoryViewModel) drop their in-memory caches so
+    /// the UI flips to empty/onboarding state immediately rather than
+    /// showing stale data from the old account until the next poll cycle.
+    static let feedlingCredentialsReset = Notification.Name("feedling.credentialsReset")
 }

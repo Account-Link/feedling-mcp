@@ -152,6 +152,32 @@ class MemoryViewModel: ObservableObject {
 
     private var timer: Timer?
     private let seenKey = "feedling.seenMomentIds"
+    private var resetObserver: NSObjectProtocol?
+
+    init() {
+        resetObserver = NotificationCenter.default.addObserver(
+            forName: .feedlingCredentialsReset,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.resetForFreshAccount()
+            }
+        }
+    }
+
+    deinit {
+        if let resetObserver { NotificationCenter.default.removeObserver(resetObserver) }
+    }
+
+    /// Wipe in-memory cards + persisted unread/seen state. The new account
+    /// has no memories; we want the Garden tab to render its empty state
+    /// immediately, with no carryover from the old account.
+    private func resetForFreshAccount() {
+        moments = []
+        unreadIds = []
+        UserDefaults.standard.removeObject(forKey: seenKey)
+    }
 
     private var seenIds: Set<String> {
         get { Set(UserDefaults.standard.stringArray(forKey: seenKey) ?? []) }

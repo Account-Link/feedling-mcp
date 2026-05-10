@@ -139,6 +139,32 @@ class IdentityViewModel: ObservableObject {
 
     private var timer: Timer?
     private var wasNil = true
+    private var resetObserver: NSObjectProtocol?
+
+    init() {
+        resetObserver = NotificationCenter.default.addObserver(
+            forName: .feedlingCredentialsReset,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.resetForFreshAccount()
+            }
+        }
+    }
+
+    deinit {
+        if let resetObserver { NotificationCenter.default.removeObserver(resetObserver) }
+    }
+
+    /// Drop the cached identity so IdentityView immediately re-renders its
+    /// pre-bootstrap state instead of showing the old agent's name + radar.
+    private func resetForFreshAccount() {
+        identity = nil
+        isLoading = false
+        didJustBootstrap = false
+        wasNil = true
+    }
 
     func startPolling() {
         Task { await loadIdentity() }
