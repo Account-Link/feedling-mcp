@@ -95,7 +95,7 @@ services:
   # baked into REPORT_DATA. Moving this behind ingress would break the
   # Phase 3 pinning guarantee.
   enclave:
-    image: ghcr.io/teleport-computer/feedling:bf75144
+    image: ghcr.io/teleport-computer/feedling:231e4e5
     command: ["python", "-u", "backend/enclave_app.py"]
     restart: unless-stopped
     environment:
@@ -139,7 +139,7 @@ services:
   # frames are app-layer encrypted (FrameEnvelope v1) so gateway TLS
   # is sufficient for transport hygiene.
   backend:
-    image: ghcr.io/teleport-computer/feedling:bf75144
+    image: ghcr.io/teleport-computer/feedling:231e4e5
     command: ["python", "-u", "backend/app.py"]
     restart: unless-stopped
     environment:
@@ -173,7 +173,7 @@ services:
   # (a) drops the MCP-TLS pin row, or (b) pins the ingress cert SPKI via
   # a new attested fingerprint. See header TODO.
   mcp:
-    image: ghcr.io/teleport-computer/feedling:bf75144
+    image: ghcr.io/teleport-computer/feedling:231e4e5
     command: ["python", "-u", "backend/mcp_server.py"]
     restart: unless-stopped
     environment:
