@@ -301,6 +301,7 @@ struct CinMessageBubble: View {
                 .padding(.vertical, 12)
                 .background(Color.cinAccent1Soft)
                 .frame(maxWidth: UIScreen.main.bounds.width * 0.82, alignment: .leading)
+                .textSelection(.enabled)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.bottom, 14)
@@ -318,6 +319,7 @@ struct CinMessageBubble: View {
                     .padding(.vertical, 12)
                     .background(Color.cinAccent2)
                     .frame(maxWidth: UIScreen.main.bounds.width * 0.78, alignment: .trailing)
+                    .textSelection(.enabled)
                 Text(message.date, style: .time)
                     .font(.dmMono(size: 8))
                     .foregroundStyle(Color.cinSub)

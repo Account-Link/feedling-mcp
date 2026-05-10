@@ -98,11 +98,11 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             withAnimation(.easeInOut(duration: 0.2)) { isKeyboardVisible = false }
         }
-        .onChange(of: identityViewModel.didJustBootstrap) { didBootstrap in
-            if didBootstrap {
-                router.selectedTab = .identity
-            }
-        }
+        // Removed the automatic tab-switch to Identity on bootstrap-detect.
+        // It was keyed on `wasNil` which resets to true every app launch, so
+        // every cold open of an already-bootstrapped account would yank the
+        // user from Chat → Identity within a few seconds. Users navigate
+        // themselves.
     }
 }
 

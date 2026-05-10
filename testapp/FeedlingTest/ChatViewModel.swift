@@ -184,10 +184,14 @@ class ChatViewModel: ObservableObject {
         latestTs = optimistic.ts
         isWaitingForReply = true
 
-        // Auto-cancel the loading indicator after 60s if no reply arrives
+        // Auto-cancel the typing indicator after 5 min if no reply arrives.
+        // Was 60s, but real agent latency post-bootstrap can be 1–3 min and
+        // testers were seeing the dots vanish mid-think. 5 min is generous
+        // for any healthy agent and still bounded so a fully stuck loop
+        // eventually clears the indicator.
         waitingTimeoutTask?.cancel()
         waitingTimeoutTask = Task {
-            try? await Task.sleep(nanoseconds: 60_000_000_000)
+            try? await Task.sleep(nanoseconds: 300_000_000_000)
             if !Task.isCancelled { isWaitingForReply = false }
         }
 
