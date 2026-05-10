@@ -552,7 +552,7 @@ struct AuditCardView: View {
             if vm.isRunning && vm.report == nil {
                 HStack {
                     ProgressView()
-                    Text("Auditing Feedling's enclave…")
+                    Text("Auditing IO's enclave…")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -572,7 +572,7 @@ struct AuditCardView: View {
 
     private var headerRow: some View {
         HStack {
-            Label("Feedling privacy audit", systemImage: "lock.shield")
+            Label("IO privacy audit", systemImage: "lock.shield")
                 .font(.headline)
             Spacer()
             if vm.isRunning {

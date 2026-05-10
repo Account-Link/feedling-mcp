@@ -47,7 +47,7 @@ targets:
     info:
       path: FeedlingTest/Info.plist
       properties:
-        CFBundleDisplayName: Feedling Test
+        CFBundleDisplayName: IO
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleShortVersionString: $(MARKETING_VERSION)
         ITSAppUsesNonExemptEncryption: false
@@ -103,7 +103,7 @@ targets:
     info:
       path: FeedlingBroadcast/Info.plist
       properties:
-        CFBundleDisplayName: Feedling Broadcast
+        CFBundleDisplayName: IO
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleShortVersionString: $(MARKETING_VERSION)
         NSExtension:
@@ -129,7 +129,7 @@ targets:
     info:
       path: FeedlingBroadcastSetupUI/Info.plist
       properties:
-        CFBundleDisplayName: Feedling Broadcast Setup
+        CFBundleDisplayName: IO Broadcast Setup
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleShortVersionString: $(MARKETING_VERSION)
         NSExtension:
@@ -158,7 +158,7 @@ targets:
     info:
       path: FeedlingTestWidget/Info.plist
       properties:
-        CFBundleDisplayName: Feedling Widget
+        CFBundleDisplayName: IO Widget
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleShortVersionString: $(MARKETING_VERSION)
         NSExtension:

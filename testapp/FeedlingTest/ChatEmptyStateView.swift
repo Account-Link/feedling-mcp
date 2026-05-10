@@ -280,7 +280,7 @@ struct ChatEmptyStateView: View {
 
     private var stuckPrompt: String {
         """
-        I gave you the Feedling skill and an MCP connection but you haven't done bootstrap yet. Please:
+        I gave you the IO skill and an MCP connection but you haven't done bootstrap yet. Please:
         1. Confirm you connected to the MCP server (\(mcpString))
         2. Read the skill at \(Self.skillURL)
         3. Run the bootstrap steps in order: feedling_identity_init → 3+ feedling_memory_add_moment → feedling_chat_post_message
