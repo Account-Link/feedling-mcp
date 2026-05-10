@@ -8,7 +8,10 @@ class SharedConfig {
     static let frameUpdateNotificationName = "com.feedling.frameUpdate"
     static let stopBroadcastNotificationName = "com.feedling.stopBroadcast"
     static let captureIntervalMsKey = "capture_interval_ms"
-    static let captureIntervalMsDefault: Int = 1000  // 1 second default
+    /// 30 s default. Agent doesn't need 1 fps — it pulls a frame on demand
+    /// via decrypt_frame when it actually wants to look. Higher cadence
+    /// just burns user bandwidth + CVM ingest cycles.
+    static let captureIntervalMsDefault: Int = 30_000
     static let ingestTokenKey = "ingest_ws_token"
     static let ingestEndpointKey = "ingest_ws_endpoint"
 
