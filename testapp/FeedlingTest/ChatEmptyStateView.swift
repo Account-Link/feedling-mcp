@@ -57,9 +57,7 @@ struct ChatEmptyStateView: View {
                         hairline.padding(.vertical, 16)
                         stuckBlock
                     }
-                    // Clearance for the always-mounted ChatView input bar
-                    // floating above this scroll view.
-                    Color.clear.frame(height: 96)
+                    Color.clear.frame(height: 16)
                 }
                 .padding(.horizontal, 24)
                 .padding(.top, 22)

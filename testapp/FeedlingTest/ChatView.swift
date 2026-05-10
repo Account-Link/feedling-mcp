@@ -26,12 +26,15 @@ struct ChatView: View {
         return "回复你的 agent…"
     }
 
-    /// While onboarding (no messages yet), the agent name / REC header is
-    /// meaningless — there's no agent yet to address. We swap the populated
-    /// message list for ChatEmptyStateView, but the input bar stays mounted
-    /// the whole time: the agent often DMs the user mid-bootstrap ("paste me
-    /// your skill", "what should I call you") and the user needs an entry
-    /// point to reply. Hiding the input bar broke that loop in early testing.
+    /// Onboarding state = "agent hasn't moved in yet." The four bootstrap
+    /// passes happen in the user's external agent runtime (Claude Desktop /
+    /// Code), not here — Feedling chat doesn't host that work. The Chat tab
+    /// stays a pure instructions surface until the agent's first
+    /// `feedling_chat_post_message` lands (skill Step 6 — greeting + days
+    /// verification). That message both opens the conversation and triggers
+    /// this flag to flip. No header, no input bar before then: the user has
+    /// no business sending to a channel the agent hasn't introduced itself
+    /// in, and an input bar on a wall-of-instructions page reads as broken.
     private var showOnboarding: Bool {
         vm.messages.isEmpty && !vm.isWaitingForReply
     }
@@ -40,15 +43,17 @@ struct ChatView: View {
         ZStack(alignment: .bottom) {
             Color.cinBg.ignoresSafeArea()
             VStack(spacing: 0) {
-                if !showOnboarding {
+                if showOnboarding {
+                    ChatEmptyStateView()
+                } else {
                     header
                     Divider().overlay(Color.cinFg)
                     populatedMessageList
-                } else {
-                    ChatEmptyStateView()
                 }
             }
-            inputBar
+            if !showOnboarding {
+                inputBar
+            }
         }
         // The root container ignores keyboard safe area, so we track keyboard
         // height here and manually push the chat ZStack above the keyboard.
