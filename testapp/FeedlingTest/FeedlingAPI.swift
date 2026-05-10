@@ -25,6 +25,11 @@ final class FeedlingAPI: ObservableObject {
         static let registrationFailed = "feedling.registrationFailed"
         static let cloudApiKey = "feedling.cloudApiKey"
         static let cloudUserId = "feedling.cloudUserId"
+        // One-time flag: existing installs had apiKey stored as iCloud-synced
+        // Keychain entries, which transiently fail to load right after a
+        // phone restart and silently orphaned at least one prod account.
+        // Set to true after we've re-saved the loaded apiKey as device-local.
+        static let keychainMigratedV2 = "feedling.keychain.migratedToLocal_v2"
     }
 
     enum StorageMode: String {
@@ -83,6 +88,16 @@ final class FeedlingAPI: ObservableObject {
             self.apiKey = env
         } else if let stored = ApiKeyStore.shared.load(), !stored.isEmpty {
             self.apiKey = stored
+            // One-time migration off iCloud-synced Keychain entries. Earlier
+            // ApiKeyStore.save() preferred kSecAttrSynchronizable=true, which
+            // transiently fails to load right after a phone restart while
+            // iCloud Keychain Sync reconnects — that window orphaned a prod
+            // account on 2026-05-10 by triggering a silent re-register.
+            // Re-save device-local-only so the failure mode can't recur.
+            if !defaults.bool(forKey: Keys.keychainMigratedV2) {
+                ApiKeyStore.shared.save(stored)
+                defaults.set(true, forKey: Keys.keychainMigratedV2)
+            }
         } else if let legacy = defaults.string(forKey: Keys.apiKey), !legacy.isEmpty {
             // One-time migration: pull existing UserDefaults key into Keychain.
             self.apiKey = legacy
@@ -93,10 +108,18 @@ final class FeedlingAPI: ObservableObject {
 
         self.userId = defaults.string(forKey: Keys.userId) ?? ""
         self.storageMode = StorageMode(rawValue: defaults.string(forKey: Keys.storageMode) ?? "") ?? .cloud
-        // Mirror the resolved apiKey back to UserDefaults so the App Group +
-        // broadcast extension see the migrated value immediately.
-        defaults.set(apiKey, forKey: Keys.apiKey)
-        syncToAppGroup()
+        // Only mirror to UserDefaults / app group if we actually resolved an
+        // apiKey. If apiKey is empty here it means Keychain returned nil
+        // (transient miss after restart) AND the UserDefaults legacy fall-
+        // back was also empty; clobbering UserDefaults + app group with ""
+        // in that state would destroy the only remaining recovery path and
+        // also break the broadcast extension's WebSocket auth. Leave the
+        // existing values in place; the next launch (when Keychain has
+        // recovered) will pick up the entry and persist normally.
+        if !apiKey.isEmpty {
+            defaults.set(apiKey, forKey: Keys.apiKey)
+            syncToAppGroup()
+        }
     }
 
     // MARK: - Public config
@@ -213,6 +236,21 @@ final class FeedlingAPI: ObservableObject {
     func ensureRegisteredIfCloud() async {
         guard storageMode == .cloud else { return }
         guard apiKey.isEmpty else { return }
+
+        // Belt-and-suspenders against the 2026-05-10 orphan-account bug. If
+        // hasRegistered is already true but apiKey resolved to empty, this
+        // is NOT a fresh-install state — Keychain transiently failed to
+        // load (likely iCloud Keychain Sync still reconnecting after a
+        // device restart). Silently registering here would mint a new
+        // user_id on the CVM and orphan the user's existing account, since
+        // the old data is keyed by the old (still valid) api_key the device
+        // can no longer see. Refuse; the next launch with healthy Keychain
+        // will pick up the entry and proceed normally.
+        if UserDefaults.standard.bool(forKey: Keys.hasRegistered) {
+            print("[register] BLOCKED: hasRegistered=true but apiKey empty — refusing to re-register and orphan existing account")
+            UserDefaults.standard.set(true, forKey: Keys.registrationFailed)
+            return
+        }
 
         await waitForNetwork()
 
@@ -855,6 +893,16 @@ final class ApiKeyStore {
 
     /// Saves `key` to Keychain. Empty key is treated as a wipe so callers
     /// that go through `persist()` clear the stored key when they zero `apiKey`.
+    ///
+    /// Stored device-local only (not iCloud-synced). Earlier versions tried
+    /// kSecAttrSynchronizable=true first and fell back to local; that turned
+    /// out to be actively harmful. Synced entries can transiently fail to
+    /// load right after a phone restart while iCloud Keychain Sync is
+    /// reconnecting, which on 2026-05-10 caused a silent re-register +
+    /// orphaned-account bug for a prod user. apiKey is per-device anyway —
+    /// each device's ContentKeyStore generates its own keypair, so syncing
+    /// the api_key across devices without syncing the content keypair would
+    /// just produce decrypt failures. Local-only is the right scope.
     func save(_ key: String) {
         if key.isEmpty {
             _ = wipe()
@@ -862,7 +910,8 @@ final class ApiKeyStore {
         }
         let data = Data(key.utf8)
 
-        // Wipe any prior entry so we don't leave a stale shadow.
+        // Wipe any prior entry (synced or local) so we don't leave a stale
+        // shadow alongside the new local-only entry.
         let wipeQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.service,
@@ -871,25 +920,16 @@ final class ApiKeyStore {
         ]
         SecItemDelete(wipeQuery as CFDictionary)
 
-        // Prefer iCloud-synced; fall back to device-local.
-        let syncedQuery: [String: Any] = [
+        let localQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.service,
             kSecAttrAccount as String: Self.account,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
-            kSecAttrSynchronizable as String: true,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
             kSecValueData as String: data,
         ]
-        var status = SecItemAdd(syncedQuery as CFDictionary, nil)
+        let status = SecItemAdd(localQuery as CFDictionary, nil)
         if status != errSecSuccess {
-            let localQuery: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: Self.service,
-                kSecAttrAccount as String: Self.account,
-                kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-                kSecValueData as String: data,
-            ]
-            _ = SecItemAdd(localQuery as CFDictionary, nil)
+            print("[ApiKeyStore] save failed: status=\(status)")
         }
     }
 }
