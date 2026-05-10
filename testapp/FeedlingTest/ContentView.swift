@@ -132,6 +132,9 @@ struct SettingsView: View {
         Locale.preferredLanguages.first?.hasPrefix("zh") ?? false
 
     @State private var isBroadcasting = false
+    @State private var showDeleteConfirm: Bool = false
+    @State private var isDeleting: Bool = false
+    @State private var deleteError: String? = nil
     private let broadcastPollTimer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     private let mockStates: [ScreenActivityAttributes.ContentState] = [
@@ -295,6 +298,44 @@ struct SettingsView: View {
                                 Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.horizontal, 24)
                             }
                         }
+                        settingsSection("RESET") {
+                            Button {
+                                showDeleteConfirm = true
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text(isDeleting ? "Deleting…" : "Delete Account & Reset")
+                                            .font(.notoSerifSC(size: 13.5))
+                                            .foregroundStyle(Color.cinAccent2)
+                                        Spacer()
+                                        if !isDeleting {
+                                            Text("WIPE ↗")
+                                                .font(.dmMono(size: 9.5, weight: .medium))
+                                                .foregroundStyle(Color.cinAccent2)
+                                                .kerning(2)
+                                        }
+                                    }
+                                    Text("Wipes your IO account on the server, all chat / identity / memory data, plus local credentials & keychain. App returns to first-launch state. Use before re-bootstrapping a fresh agent.")
+                                        .font(.notoSerifSC(size: 11))
+                                        .foregroundStyle(Color.cinSub)
+                                        .lineSpacing(2)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    if let err = deleteError {
+                                        Text(err)
+                                            .font(.dmMono(size: 9))
+                                            .foregroundStyle(Color.cinAccent2)
+                                            .padding(.top, 4)
+                                    }
+                                }
+                                .padding(.horizontal, 24)
+                                .padding(.vertical, 12)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isDeleting)
+                            .overlay(alignment: .top) {
+                                Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.horizontal, 24)
+                            }
+                        }
                         settingsFooter
                     }
                 }
@@ -319,6 +360,30 @@ struct SettingsView: View {
                         .transition(.opacity)
                 }
             }
+            .alert("Delete account?", isPresented: $showDeleteConfirm) {
+                Button("Cancel", role: .cancel) { }
+                Button("Delete everything", role: .destructive) {
+                    Task { await runDeleteAccount() }
+                }
+            } message: {
+                Text("This wipes your IO account on the server (chat, identity, memory garden) and all local credentials. The app will return to first-launch state. There is no undo.")
+            }
+        }
+    }
+
+    private func runDeleteAccount() async {
+        deleteError = nil
+        isDeleting = true
+        defer { isDeleting = false }
+        do {
+            try await FeedlingAPI.shared.deleteMyDataAndResetLocalState()
+            showToast("Account deleted")
+            // Wait a beat for the user to see the toast, then trigger
+            // re-registration so MCP/skill setup can proceed cleanly.
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            await FeedlingAPI.shared.ensureRegisteredIfCloud()
+        } catch {
+            deleteError = "\(error)"
         }
     }
 
