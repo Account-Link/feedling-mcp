@@ -49,6 +49,25 @@
 
 ---
 
+## 2026-05-10
+
+### [DONE] CVM deploy CI now follows the repo's GHCR owner
+
+- Fixed the `deploy-cvm` job after the repo/package moved from
+  `account-link` to `teleport-computer`: CI was publishing
+  `ghcr.io/teleport-computer/feedling:<sha>` but waiting for
+  `ghcr.io/account-link/feedling:<sha>`, so it timed out before
+  `phala deploy`.
+- `ci.yml` now derives the GHCR owner from `github.repository_owner`,
+  checks the image with `docker manifest inspect`, and pins
+  `deploy/docker-compose.phala.yaml` to the same owner dynamically.
+- Updated the current Phala compose image references to
+  `ghcr.io/teleport-computer/feedling:*`; the next push to `main`
+  should publish the new image, pin the compose to the new short SHA,
+  and continue through the real CVM deploy.
+
+---
+
 ## 2026-04-21
 
 ### [DONE] Code + CI ready for prod9 migration (pure-CVM, ingress-terminated)

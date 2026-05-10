@@ -224,12 +224,15 @@ jobs:
       - name: Wait for ghcr.io image :<sha>
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
           SHA_SHORT=$(git rev-parse --short HEAD)
-          echo "waiting for ghcr.io/account-link/feedling:$SHA_SHORT"
+          IMAGE_OWNER=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/${IMAGE_OWNER}/feedling"
+          echo "waiting for ${IMAGE}:$SHA_SHORT"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
           for i in $(seq 1 60); do
-            if gh api "/orgs/account-link/packages/container/feedling/versions?per_page=100" 2>/dev/null \
-                 | jq -e --arg t "$SHA_SHORT" '[.[].metadata.container.tags[]] | index($t)' >/dev/null; then
+            if docker manifest inspect "${IMAGE}:$SHA_SHORT" >/dev/null 2>&1; then
               echo "image :$SHA_SHORT available"
               exit 0
             fi
@@ -240,9 +243,13 @@ jobs:
 
       - name: Pin image tag in deploy/docker-compose.phala.yaml
         id: pin
+        env:
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
           SHA_SHORT=$(git rev-parse --short HEAD)
-          sed -i -E "s|(ghcr\.io/account-link/feedling:)[a-f0-9]+|\1${SHA_SHORT}|g" \
+          IMAGE_OWNER=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/${IMAGE_OWNER}/feedling"
+          sed -i -E "s|ghcr\.io/[^/]+/feedling:[a-f0-9]+|${IMAGE}:${SHA_SHORT}|g" \
             deploy/docker-compose.phala.yaml
           if git diff --quiet -- deploy/docker-compose.phala.yaml; then
             echo "tag already pinned to :$SHA_SHORT — no-op bump"
