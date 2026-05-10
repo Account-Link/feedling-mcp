@@ -235,6 +235,78 @@ class ChatViewModel: ObservableObject {
         _ = try? await URLSession.shared.data(for: req)
         isSending = false
     }
+
+    /// Send a single image as its own chat message. Image and text messages
+    /// are separate in the wire protocol (`content_type` plaintext metadata
+    /// distinguishes them); the user sends one or the other per send.
+    ///
+    /// `jpegData` should already be compressed to a sane size (≤ 400 KB).
+    /// View layer is responsible for that — this method just encrypts and POSTs.
+    func sendImage(_ jpegData: Data) async {
+        guard !isSending else { return }
+        guard !jpegData.isEmpty else {
+            print("[chat] sendImage called with empty data")
+            return
+        }
+        isSending = true
+        defer { isSending = false }
+
+        let optimistic = ChatMessage(
+            id: UUID().uuidString,
+            role: "user",
+            content: "",
+            ts: Date().timeIntervalSince1970,
+            source: "chat",
+            contentType: .image,
+            imageData: jpegData
+        )
+        messages.append(optimistic)
+        latestTs = optimistic.ts
+        isWaitingForReply = true
+
+        waitingTimeoutTask?.cancel()
+        waitingTimeoutTask = Task {
+            try? await Task.sleep(nanoseconds: 300_000_000_000)
+            if !Task.isCancelled { isWaitingForReply = false }
+        }
+
+        let api = FeedlingAPI.shared
+        guard let userPK = api.userContentPublicKey,
+              let enclavePK = api.enclaveContentPublicKey,
+              !api.userId.isEmpty
+        else {
+            print("[chat] sendImage skipped — content keypair not ready")
+            return
+        }
+
+        let body: Data?
+        do {
+            let env = try ContentEncryption.envelope(
+                plaintext: jpegData,
+                ownerUserID: api.userId,
+                userContentPK: userPK,
+                enclaveContentPK: enclavePK,
+                visibility: .shared
+            )
+            // jsonBody() already returns {"envelope": {...}}; we add the
+            // content_type tag at the same outer level (plaintext metadata,
+            // server uses it to mark the row as image vs text).
+            var outer = env.jsonBody()
+            outer["content_type"] = "image"
+            body = try JSONSerialization.data(withJSONObject: outer)
+            print("[chat] sending v1 image envelope id=\(env.id) bytes=\(jpegData.count)")
+        } catch {
+            print("[chat] image envelope build failed: \(error)")
+            return
+        }
+
+        guard let req = FeedlingAPI.shared.authorizedRequest(
+            path: "/v1/chat/message",
+            method: "POST",
+            body: body
+        ) else { return }
+        _ = try? await URLSession.shared.data(for: req)
+    }
 }
 
 // MARK: - Decodable helpers

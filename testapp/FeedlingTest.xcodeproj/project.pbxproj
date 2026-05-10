@@ -39,6 +39,7 @@
 		A3AA0B796AD846E609C8715A /* ScreenActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8485AF4D5CF32FCD3BD19600 /* ScreenActivityWidget.swift */; };
 		A3CDDB2378A71F1A511E1A9D /* FeedlingTestApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14B773D2531DF1548E7C3C63 /* FeedlingTestApp.swift */; };
 		BC9B0CBC17AAC1255B45A190 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1B8A7BF4CCA8BF6B818B587E /* Assets.xcassets */; };
+		BE77D35EC6B586EA5FC67CB4 /* PhotoPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BA3A0BAFD19C49F094D8AA4 /* PhotoPicker.swift */; };
 		C2D60991CBA072B7D413C5B0 /* BootstrapStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB44BB0331F13D05A5956D7B /* BootstrapStatus.swift */; };
 		C83C124663797489C1BFE393 /* Fonts in Resources */ = {isa = PBXBuildFile; fileRef = EE37094391F6BB9C2D424ED9 /* Fonts */; };
 		CB2DF8DCA51CEF662CF65FAB /* ScreenActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 059AB22EE40CB3F08CADCAE2 /* ScreenActivityAttributes.swift */; };
@@ -117,6 +118,7 @@
 		3EF00CAFA25D111BFF46454D /* MemoryGardenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryGardenView.swift; sourceTree = "<group>"; };
 		408A6FFA15EE70ECF1B9E9DA /* SampleHandler+WebSocketQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SampleHandler+WebSocketQueue.swift"; sourceTree = "<group>"; };
 		4A19FD1364EF06641F6EE2D8 /* DCAPQVL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DCAPQVL.swift; sourceTree = "<group>"; };
+		4BA3A0BAFD19C49F094D8AA4 /* PhotoPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoPicker.swift; sourceTree = "<group>"; };
 		50CA03E6CA8335EC78038FDA /* ContentEncryption.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentEncryption.swift; sourceTree = "<group>"; };
 		55823AFBDF473E1DBABB4A3E /* FeedlingTestWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FeedlingTestWidget.entitlements; sourceTree = "<group>"; };
 		5F3C6BFE5F5FF06EF002CFD3 /* ChatViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatViewModel.swift; sourceTree = "<group>"; };
@@ -195,6 +197,7 @@
 				E760771C17EAF8147D096B4E /* LiveActivityManager.swift */,
 				3EF00CAFA25D111BFF46454D /* MemoryGardenView.swift */,
 				EAD923C73CFB230F5965E087 /* MemoryViewModel.swift */,
+				4BA3A0BAFD19C49F094D8AA4 /* PhotoPicker.swift */,
 				FDF6B500F0B96AC8406636E8 /* DCAP */,
 				FD4A1B710E01E31E97DDA207 /* Fonts */,
 			);
@@ -494,6 +497,7 @@
 				75E49560000F12897D980616 /* MemoryGardenView.swift in Sources */,
 				F9120D4FF5D273FE20E6D45C /* MemoryViewModel.swift in Sources */,
 				E87DFBE44DA3BB134227A46C /* Parser.swift in Sources */,
+				BE77D35EC6B586EA5FC67CB4 /* PhotoPicker.swift in Sources */,
 				CB2DF8DCA51CEF662CF65FAB /* ScreenActivityAttributes.swift in Sources */,
 				EFCC88EE53E5CE40F2B65208 /* SignatureData.swift in Sources */,
 				E81AC2D16CA59935AA71DC4F /* Verifier.swift in Sources */,

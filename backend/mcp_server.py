@@ -587,6 +587,11 @@ def chat_post_message(
     )
 
     payload: dict = {"envelope": envelope}
+    # Plaintext for the APNs alert push. MCP has plaintext at this point
+    # (we just sealed it), so we hand it directly to Flask — the server
+    # never decrypts the envelope itself. Apple's APNs gateway sees this
+    # string, same privacy posture as Live Activity push.
+    payload["alert_body"] = content
     if push_live_activity:
         payload["push_live_activity"] = True
         payload["push_body"] = push_body or content
@@ -599,6 +604,64 @@ def chat_post_message(
     print(
         f"[mcp] chat.post_message v1 envelope id={envelope['id']} "
         f"push_live_activity={bool(push_live_activity)}"
+    )
+    return _post("/v1/chat/response", payload, ctx=ctx)
+
+
+@mcp.tool(
+    name="feedling_chat_post_image",
+    description=(
+        "Post an IMAGE message from the Agent into the user's chat window. "
+        "Use this when sharing what you see is genuinely valuable — generated "
+        "screenshots, vision-derived images, found images you want the user "
+        "to look at. Don't post decorative or redundant images. "
+        "Image and text are separate messages: this tool only takes the image. "
+        "If you want to caption the image, send `feedling_chat_post_message` "
+        "as a separate message. "
+        "Privacy hard rule: NEVER include content from the user's screen "
+        "(decrypt_frame outputs) — agent seeing the screen ≠ user wanting "
+        "the screen archived in their chat history."
+    ),
+)
+def chat_post_image(
+    image_b64: str,
+    ctx: Context = None,
+) -> dict:
+    """Agent posts an image (base64-encoded JPEG/PNG, ≤ 1 MB after decode)
+    as a v1 chat envelope with content_type=image."""
+    if not image_b64 or not isinstance(image_b64, str):
+        return {"error": "image_b64 required (non-empty base64 string)"}
+    try:
+        # Strip optional data-URL prefix if the caller included one.
+        b64 = image_b64.split(",", 1)[1] if image_b64.startswith("data:") else image_b64
+        image_bytes = base64.b64decode(b64, validate=True)
+    except Exception as e:
+        return {"error": f"image_b64 base64 decode failed: {e}"}
+    if len(image_bytes) == 0:
+        return {"error": "image_b64 decoded to 0 bytes"}
+    if len(image_bytes) > 1_048_576:
+        return {"error": f"image too large: {len(image_bytes)} bytes (max 1 MB)"}
+
+    user_id, user_pk, enclave_pk = _whoami_pubkeys(ctx=ctx)
+    if not (user_id and user_pk is not None and enclave_pk is not None):
+        return {"error": "cannot post chat — pubkeys unavailable"}
+
+    envelope = build_envelope(
+        plaintext=image_bytes,
+        owner_user_id=user_id,
+        user_pk_bytes=user_pk,
+        enclave_pk_bytes=enclave_pk,
+        visibility="shared",
+    )
+    # Generic alert body for image messages — agent didn't supply a caption
+    # (per spec, image and text are separate messages). User taps in to see.
+    payload: dict = {
+        "envelope": envelope,
+        "content_type": "image",
+        "alert_body": "[image]",
+    }
+    print(
+        f"[mcp] chat.post_image v1 envelope id={envelope['id']} bytes={len(image_bytes)}"
     )
     return _post("/v1/chat/response", payload, ctx=ctx)
 

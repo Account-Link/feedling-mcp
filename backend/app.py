@@ -408,7 +408,13 @@ class UserStore:
         except Exception as e:
             print(f"[{self.user_id}/chat] save failed: {e}")
 
-    def append_chat(self, role: str, source: str, envelope: dict) -> dict:
+    def append_chat(
+        self,
+        role: str,
+        source: str,
+        envelope: dict,
+        content_type: str = "text",
+    ) -> dict:
         """Append a v1 ciphertext chat message. `envelope` holds the AEAD
         payload. See docs/DESIGN_E2E.md §3.2 for field definitions. Server
         never decrypts — the envelope is stored verbatim.
@@ -416,8 +422,14 @@ class UserStore:
         The client supplies the envelope's `id`, which becomes the stored
         message id so the AEAD additional-data the client baked in
         (owner||v||id) stays verifiable by the enclave on read-back.
+
+        `content_type` is plaintext metadata: "text" (default) or "image".
+        Used by clients/enclave to render the decrypted bytes correctly —
+        the envelope itself only carries opaque bytes; the type tag tells
+        the renderer to show a string vs decode JPEG.
         """
         msg_id = envelope.get("id") if isinstance(envelope.get("id"), str) and envelope["id"] else uuid.uuid4().hex
+        ct = content_type if content_type in ("text", "image") else "text"
 
         msg: dict = {
             "id": msg_id,
@@ -431,6 +443,7 @@ class UserStore:
             "enclave_pk_fpr": envelope.get("enclave_pk_fpr", ""),
             "visibility": envelope.get("visibility", "shared"),
             "owner_user_id": envelope.get("owner_user_id", self.user_id),
+            "content_type": ct,
         }
         if envelope.get("K_enclave") is not None:
             msg["K_enclave"] = envelope["K_enclave"]
@@ -1347,6 +1360,47 @@ def push_live_start():
     return jsonify(response)
 
 
+def _send_chat_alert(store: UserStore, alert_body: str, alert_title: str = ""):
+    """Fire an APNs alert push for an agent chat message. Best-effort:
+    failure here never blocks the chat write. The MCP layer (which has
+    the plaintext at envelope-build time) passes alert_body in here so
+    Flask doesn't have to decrypt anything. Apple's APNs gateway sees
+    this string — same posture as Live Activity already has.
+
+    Body is truncated to ~80 chars so long replies render as "...".
+    Tap on the notification opens the app (iOS handles routing).
+    """
+    if not alert_body:
+        return
+    # Match iOS-registered token type: LiveActivityManager registers
+    # the standard APNs push token as type="device".
+    device_token = next(
+        (t["token"] for t in store.tokens if t.get("type") == "device" and t.get("token")),
+        None,
+    )
+    if not device_token:
+        print(f"[chat-alert:{store.user_id}] no device token — skip push")
+        return
+
+    # Truncate at 80 chars; iOS shows the rest after tapping into chat.
+    body = alert_body.strip()
+    if len(body) > 80:
+        body = body[:79] + "…"
+
+    apns_payload = {
+        "aps": {
+            "alert": {"title": alert_title or "", "body": body},
+            "sound": "default",
+        },
+        "feedling": {"type": "chat_reply"},
+    }
+    try:
+        result = _send_apns(device_token, apns_payload, push_type="alert", topic=BUNDLE_ID)
+        print(f"[chat-alert:{store.user_id}] {result.get('status')}")
+    except Exception as e:
+        print(f"[chat-alert:{store.user_id}] failed: {e}")
+
+
 @app.route("/v1/push/notification", methods=["POST"])
 def push_notification():
     store = require_user()
@@ -1770,9 +1824,12 @@ def chat_message():
         return jsonify({"error": "envelope.visibility must be 'shared' or 'local_only'"}), 400
     if envelope["visibility"] == "shared" and not envelope.get("K_enclave"):
         return jsonify({"error": "envelope with visibility=shared requires K_enclave"}), 400
-    msg = store.append_chat("user", "chat", envelope)
+    content_type = payload.get("content_type", "text")
+    if content_type not in ("text", "image"):
+        return jsonify({"error": "content_type must be 'text' or 'image'"}), 400
+    msg = store.append_chat("user", "chat", envelope, content_type=content_type)
     store.notify_chat_waiters()
-    print(f"[chat:{store.user_id}] user(v1, visibility={envelope['visibility']}) id={msg['id']}")
+    print(f"[chat:{store.user_id}] user(v1, visibility={envelope['visibility']}, type={content_type}) id={msg['id']}")
     return jsonify({"id": msg["id"], "ts": msg["ts"], "v": msg["v"]})
 
 
@@ -1797,7 +1854,10 @@ def chat_response():
         return jsonify({"error": "envelope.visibility must be 'shared' or 'local_only'"}), 400
     if envelope["visibility"] == "shared" and not envelope.get("K_enclave"):
         return jsonify({"error": "envelope with visibility=shared requires K_enclave"}), 400
-    msg = store.append_chat("openclaw", "chat", envelope)
+    content_type = payload.get("content_type", "text")
+    if content_type not in ("text", "image"):
+        return jsonify({"error": "content_type must be 'text' or 'image'"}), 400
+    msg = store.append_chat("openclaw", "chat", envelope, content_type=content_type)
     if payload.get("push_live_activity"):
         push_payload = {
             "title": payload.get("title", ""),
@@ -1806,7 +1866,14 @@ def chat_response():
             "data": payload.get("data", {}),
         }
         push_live_activity_inner(store, push_payload)
-    print(f"[chat:{store.user_id}] openclaw(v1) id={msg['id']}")
+    # Fire APNs alert push so users not currently in the app still see
+    # the agent's message. MCP supplies `alert_body` (plaintext) — the
+    # server itself doesn't decrypt the envelope. Best-effort: failures
+    # here don't block the chat write.
+    alert_body = payload.get("alert_body", "")
+    if alert_body:
+        _send_chat_alert(store, alert_body, alert_title=payload.get("title", ""))
+    print(f"[chat:{store.user_id}] openclaw(v1, type={content_type}) id={msg['id']}")
     return jsonify({"id": msg["id"], "ts": msg["ts"], "v": msg["v"]})
 
 

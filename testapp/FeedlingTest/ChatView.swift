@@ -9,6 +9,7 @@ struct ChatView: View {
 
     @State private var micPulse: Bool = false
     @State private var keyboardHeight: CGFloat = 0
+    @State private var showPhotoPicker: Bool = false
 
     var agentName: String { identityVM.identity?.agentName.isEmpty == false ? identityVM.identity!.agentName : "—" }
     var dayCount: Int { identityVM.identity?.daysWithUser ?? 0 }
@@ -60,6 +61,14 @@ struct ChatView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             withAnimation(.easeInOut(duration: 0.25)) { keyboardHeight = 0 }
+        }
+        .sheet(isPresented: $showPhotoPicker) {
+            PhotoPicker { jpegData in
+                showPhotoPicker = false
+                guard let data = jpegData else { return }
+                Task { await vm.sendImage(data) }
+            }
+            .ignoresSafeArea()
         }
     }
 
@@ -184,6 +193,22 @@ struct ChatView: View {
                 .buttonStyle(.plain)
                 .padding(.leading, 4)
 
+                // Photo picker button — image messages are independent of
+                // the text field; tapping opens the system picker, the
+                // selected photo is compressed + sent as its own message.
+                Button {
+                    if voice.isRecording { voice.stop() }
+                    dismissKeyboard()
+                    showPhotoPicker = true
+                } label: {
+                    Image(systemName: "photo")
+                        .font(.system(size: 15, weight: .light))
+                        .foregroundStyle(Color.cinSub)
+                        .frame(width: 36, height: 36)
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, 2)
+
                 Rectangle().fill(Color.cinLine).frame(width: 1, height: 18).padding(.horizontal, 8)
 
                 TextField("", text: $vm.inputText, axis: .vertical)
@@ -293,33 +318,63 @@ struct CinMessageBubble: View {
             .padding(.bottom, 5)
             .padding(.leading, 2)
 
-            Text(message.content.replacingOccurrences(of: "\\n", with: "\n"))
-                .font(.notoSerifSC(size: 13.5))
-                .foregroundStyle(Color.cinFg)
-                .lineSpacing(4)
-                .padding(.horizontal, 15)
-                .padding(.vertical, 12)
-                .background(Color.cinAccent1Soft)
-                .frame(maxWidth: UIScreen.main.bounds.width * 0.82, alignment: .leading)
-                .textSelection(.enabled)
+            if message.contentType == .image {
+                imageBubble(tint: Color.cinAccent1Soft)
+            } else {
+                Text(message.content.replacingOccurrences(of: "\\n", with: "\n"))
+                    .font(.notoSerifSC(size: 13.5))
+                    .foregroundStyle(Color.cinFg)
+                    .lineSpacing(4)
+                    .padding(.horizontal, 15)
+                    .padding(.vertical, 12)
+                    .background(Color.cinAccent1Soft)
+                    .frame(maxWidth: UIScreen.main.bounds.width * 0.82, alignment: .leading)
+                    .textSelection(.enabled)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.bottom, 14)
+    }
+
+    /// Image bubble — shared by agent + user paths. Renders the cached
+    /// JPEG bytes (populated by ChatMessage.decryptedIfNeeded) into a
+    /// rounded thumbnail at most ~70% screen wide. Falls back to a small
+    /// "decrypting…" placeholder if the bytes haven't arrived yet.
+    private func imageBubble(tint: Color) -> some View {
+        Group {
+            if let data = message.imageData, let ui = UIImage(data: data) {
+                Image(uiImage: ui)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: UIScreen.main.bounds.width * 0.7)
+            } else {
+                Text("· · ·")
+                    .font(.dmMono(size: 12))
+                    .foregroundStyle(Color.cinSub)
+                    .kerning(3)
+                    .frame(width: 120, height: 120)
+                    .background(tint)
+            }
+        }
     }
 
     private var userBubble: some View {
         HStack(spacing: 0) {
             Spacer(minLength: UIScreen.main.bounds.width * 0.22)
             VStack(alignment: .trailing, spacing: 4) {
-                Text(message.content.replacingOccurrences(of: "\\n", with: "\n"))
-                    .font(.notoSerifSC(size: 13.5))
-                    .foregroundStyle(Color.cinBg)
-                    .lineSpacing(4)
-                    .padding(.horizontal, 15)
-                    .padding(.vertical, 12)
-                    .background(Color.cinAccent2)
-                    .frame(maxWidth: UIScreen.main.bounds.width * 0.78, alignment: .trailing)
-                    .textSelection(.enabled)
+                if message.contentType == .image {
+                    imageBubble(tint: Color.cinAccent2.opacity(0.2))
+                } else {
+                    Text(message.content.replacingOccurrences(of: "\\n", with: "\n"))
+                        .font(.notoSerifSC(size: 13.5))
+                        .foregroundStyle(Color.cinBg)
+                        .lineSpacing(4)
+                        .padding(.horizontal, 15)
+                        .padding(.vertical, 12)
+                        .background(Color.cinAccent2)
+                        .frame(maxWidth: UIScreen.main.bounds.width * 0.78, alignment: .trailing)
+                        .textSelection(.enabled)
+                }
                 Text(message.date, style: .time)
                     .font(.dmMono(size: 8))
                     .foregroundStyle(Color.cinSub)

@@ -680,6 +680,9 @@ def v1_chat_history():
     errors = []
     for m in hist.get("messages", []):
         v = int(m.get("v", 0))
+        # Default to "text" for legacy messages stored before the
+        # content_type field was added.
+        ctype = m.get("content_type", "text")
         # v1+ envelope (v0 plaintext paths were stripped post-migration).
         if m.get("visibility") == "local_only":
             decrypted.append({
@@ -688,6 +691,7 @@ def v1_chat_history():
                 "ts": m["ts"],
                 "source": m.get("source"),
                 "content": None,
+                "content_type": ctype,
                 "v": v,
                 "visibility": "local_only",
                 "decrypt_status": "local_only_agent_cannot_read",
@@ -696,16 +700,25 @@ def v1_chat_history():
 
         try:
             plaintext = _decrypt_envelope(m, authorized_user_id, content_sk)
-            decrypted.append({
+            entry: dict = {
                 "id": m["id"],
                 "role": m["role"],
                 "ts": m["ts"],
                 "source": m.get("source"),
-                "content": plaintext.decode("utf-8", errors="replace"),
+                "content_type": ctype,
                 "v": v,
                 "visibility": m.get("visibility", "shared"),
                 "decrypt_status": "ok",
-            })
+            }
+            if ctype == "image":
+                # Image plaintext is raw JPEG bytes — surface as base64 so
+                # JSON callers (vision-capable agents, iOS clients with
+                # local copies) can decode and render. `content` left empty.
+                entry["content"] = ""
+                entry["image_b64"] = base64.b64encode(plaintext).decode("ascii")
+            else:
+                entry["content"] = plaintext.decode("utf-8", errors="replace")
+            decrypted.append(entry)
         except DecryptFailure as e:
             # Surface the failure per-item so the agent sees partial
             # progress rather than a blanket 500 on one bad blob.
@@ -715,6 +728,7 @@ def v1_chat_history():
                 "role": m["role"],
                 "ts": m["ts"],
                 "content": None,
+                "content_type": ctype,
                 "v": v,
                 "decrypt_status": f"error: {e.reason}",
             })
