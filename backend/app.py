@@ -2288,11 +2288,35 @@ def bootstrap_status():
         except Exception:
             last_agent_msg_ts = ""
 
+    # chat_loop_verified — has the agent responded to a user message at
+    # least once? `agent_messages_count >= 1` only proves the agent SPOKE;
+    # the loop is verified when an agent message appears AFTER a user
+    # message (i.e., the agent's poll/respond cycle is actually wired).
+    # The bootstrap-time greeting alone doesn't count.
+    sorted_msgs = sorted(
+        chat_msgs,
+        key=lambda m: float(m.get("ts") or m.get("timestamp") or 0),
+    )
+    chat_loop_verified = False
+    seen_user = False
+    for m in sorted_msgs:
+        role = m.get("role")
+        if role == "user":
+            seen_user = True
+        elif role == "agent" and seen_user:
+            chat_loop_verified = True
+            break
+
     agent_connected = has_identity or memory_count > 0 or agent_msg_count > 0
     candidate_ts = [t for t in (identity_updated_at, last_moment_ts, last_agent_msg_ts) if t]
     last_activity = max(candidate_ts) if (agent_connected and candidate_ts) else ""
 
-    is_complete = has_identity and memory_count >= 3 and agent_msg_count >= 1
+    is_complete = (
+        has_identity
+        and memory_count >= 3
+        and agent_msg_count >= 1
+        and chat_loop_verified
+    )
 
     return jsonify({
         "agent_connected": agent_connected,
@@ -2301,6 +2325,7 @@ def bootstrap_status():
         "relationship_anchored": relationship_anchored,
         "memories_count": memory_count,
         "agent_messages_count": agent_msg_count,
+        "chat_loop_verified": chat_loop_verified,
         "is_complete": is_complete,
     })
 

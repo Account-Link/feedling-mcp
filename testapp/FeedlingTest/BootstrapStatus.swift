@@ -10,6 +10,10 @@ struct BootstrapStatus: Codable, Equatable {
     let relationshipAnchored: Bool
     let memoriesCount: Int
     let agentMessagesCount: Int
+    /// True when an agent message appears in chat history AFTER a user
+    /// message — i.e., the agent's poll/respond loop is actually wired,
+    /// not just that the agent posted its bootstrap greeting once.
+    let chatLoopVerified: Bool
     let isComplete: Bool
 
     static let empty = BootstrapStatus(
@@ -19,6 +23,7 @@ struct BootstrapStatus: Codable, Equatable {
         relationshipAnchored: false,
         memoriesCount: 0,
         agentMessagesCount: 0,
+        chatLoopVerified: false,
         isComplete: false
     )
 
@@ -29,6 +34,7 @@ struct BootstrapStatus: Codable, Equatable {
         case relationshipAnchored = "relationship_anchored"
         case memoriesCount       = "memories_count"
         case agentMessagesCount  = "agent_messages_count"
+        case chatLoopVerified    = "chat_loop_verified"
         case isComplete          = "is_complete"
     }
 

@@ -147,12 +147,31 @@ struct ChatEmptyStateView: View {
 
             stepCard(
                 index: "03",
-                title: "等它读你",
-                description: "写身份卡、种记忆、打招呼，约 1–2 分钟。",
-                primaryLabel: nil,
-                primaryAction: nil
+                title: "明确叫它开始",
+                description: "Agent 不会自己启动 bootstrap，必须你显式叫它。把下面这段发给它，然后耐心等。",
+                codeBlock: startPrompt,
+                primaryLabel: "COPY START PROMPT",
+                primaryAction: { copy(startPrompt, label: "Start prompt copied") }
             )
         }
+    }
+
+    /// The "begin" trigger — copies a directive prompt that forces the
+    /// agent through Step 0 verification and the four bootstrap passes.
+    /// Without this, agents reliably skip work even after fetching the skill.
+    private var startPrompt: String {
+        """
+        现在 fetch 这个 URL 并按里面的 Step 0 立即输出三行（earliest message / name / memorable moments）：
+        \(Self.skillURL)
+
+        要求：
+        - 用我跟你聊天的语言（中文）。从你第一句回复开始全程不混语言。
+        - 你的名字不能是 Hermes / Claude / Claude Code / GPT / 其他 runtime 默认 label。如果我们之前没起过名字，输出完 Step 0 我们一起起。
+        - skill 里要求 4 个 pass 的深度记忆提取，预计 30–60 分钟。不要跳过深度，我会等。
+        - bootstrap 完成后，你必须开始持续轮询 (long-poll) IO 的 chat — 我之后给你发消息你要能在 30 秒内回复。Chat loop 没接上 = bootstrap 没完成。
+
+        现在开始。
+        """
     }
 
     private func sectionLabel(_ title: String) -> some View {
@@ -221,9 +240,12 @@ struct ChatEmptyStateView: View {
             sectionLabel("AGENT PROGRESS")
                 .padding(.bottom, 2)
 
-            // Order matches the new memories-first bootstrap: memory
-            // garden grows first; identity is DERIVED from memories;
-            // first message comes last as the agent signals "I'm here".
+            // Order matches the new memories-first bootstrap: memory garden
+            // grows first; identity is DERIVED from memories; first message
+            // signals "I'm here"; chat loop verifies the agent is actually
+            // polling and will respond going forward (the previous 3-row
+            // version missed this — agents would post the greeting and
+            // never poll again, leaving the user typing into the void).
             progressRow(
                 label: "Memory garden",
                 done: bootstrap.status.memoriesCount >= 5,
@@ -244,6 +266,15 @@ struct ChatEmptyStateView: View {
                 detail: bootstrap.status.agentMessagesCount >= 1
                     ? "delivered"
                     : (bootstrap.status.identityWritten ? "soon…" : "—")
+            )
+            progressRow(
+                label: "Chat loop",
+                done: bootstrap.status.chatLoopVerified,
+                detail: bootstrap.status.chatLoopVerified
+                    ? "verified"
+                    : (bootstrap.status.agentMessagesCount >= 1
+                        ? "send a message →"
+                        : "—")
             )
         }
     }
