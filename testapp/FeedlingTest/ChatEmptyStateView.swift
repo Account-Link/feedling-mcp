@@ -29,6 +29,11 @@ struct ChatEmptyStateView: View {
     @State private var copiedToast: String? = nil
     @State private var dotPulse: Bool = false
 
+    /// Per SETUP_COPY.md localization rule: Chinese phone (any zh variant)
+    /// → Chinese; everything else → English.
+    private let isChinese: Bool =
+        Locale.preferredLanguages.first?.hasPrefix("zh") ?? false
+
     /// Bootstrap is now expected to take 10–60 minutes (memories-first flow).
     /// "Stuck" means meaningfully longer than that with no progress; we surface
     /// the help block at 5 minutes of zero agent activity (no identity, no
@@ -40,6 +45,18 @@ struct ChatEmptyStateView: View {
     }
 
     private var mcpString: String { api.mcpConnectionString }
+
+    /// Status pill copy — pre/post-connect.
+    /// Per spec, the headline mental model is "let him in" → "in". Once the
+    /// agent has written *anything* server-side (identity / memories / a
+    /// first message), `agentConnected` flips true, so the pill switches
+    /// from "waiting" to "he's here." Specific progress is in the rows below.
+    private var statusBadgeText: String {
+        if bootstrap.status.agentConnected {
+            return isChinese ? "TA 来了" : "He's here"
+        }
+        return isChinese ? "等 TA 入住" : "Waiting for him"
+    }
 
     // MARK: - Body
 
@@ -91,7 +108,7 @@ struct ChatEmptyStateView: View {
                 .fill(bootstrap.status.agentConnected ? Color.cinAccent1 : Color.cinSub)
                 .frame(width: 6, height: 6)
                 .opacity(bootstrap.status.agentConnected ? 1.0 : (dotPulse ? 0.3 : 1.0))
-            Text(bootstrap.status.agentConnected ? "AGENT CONNECTED" : "WAITING FOR AGENT")
+            Text(statusBadgeText)
                 .font(.dmMono(size: 9, weight: .medium))
                 .foregroundStyle(Color.cinSub)
                 .kerning(2.5)
@@ -109,12 +126,15 @@ struct ChatEmptyStateView: View {
 
     private var titleBlock: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("让你的 agent 入住")
+            Text(isChinese ? "让 TA 入住" : "Let him in")
                 .font(.notoSerifSC(size: 21, weight: .medium))
                 .foregroundStyle(Color.cinFg)
-            // Sets expectations: deep bootstrap is slow, that's by design.
-            // User can close the app — agent keeps running on its runtime.
-            Text("深度 bootstrap 通常 30–60 分钟。\n可以关掉 app，agent 在它自己那边继续。")
+            // Sets expectations: TA spends 10–30 min on his side introducing
+            // himself and writing his identity card + memories. User can close
+            // the app — TA keeps going.
+            Text(isChinese
+                ? "跟着下面三步把 TA 接进来。\nTA 那边会有 10-30 分钟在自我介绍、整理身份卡和记忆。\n可以关掉 app，TA 在它那边继续。"
+                : "Walk through the three steps below to bring him in.\nHe'll spend 10-30 minutes on his side introducing himself and setting up his identity and memory.\nFeel free to close the app — he'll keep going.")
                 .font(.notoSerifSC(size: 11.5))
                 .foregroundStyle(Color.cinSub)
                 .lineSpacing(2)
@@ -126,20 +146,24 @@ struct ChatEmptyStateView: View {
 
     private var stepsBlock: some View {
         VStack(alignment: .leading, spacing: 14) {
-            sectionLabel("WHAT TO DO")
+            sectionLabel(isChinese ? "要做的三件事" : "Three things to do")
 
             stepCard(
                 index: "01",
-                title: "把 skill 给你的 agent",
-                description: "把这个 URL 喂给它，让它按里面的步骤做。",
+                title: isChinese ? "把 skill 给 TA" : "Hand him the skill",
+                description: isChinese
+                    ? "把这个 URL 喂给 TA，让 TA 按里面的步骤做。"
+                    : "Send him this URL and let him follow the steps inside.",
                 primaryLabel: "COPY SKILL URL",
                 primaryAction: { copy(Self.skillURL, label: "Skill URL copied") }
             )
 
             stepCard(
                 index: "02",
-                title: "把 MCP 连接告诉它",
-                description: "Agent 用这串地址找到你这边。",
+                title: isChinese ? "把 MCP 连接告诉 TA" : "Tell him the MCP connection",
+                description: isChinese
+                    ? "TA 用这串地址找到你这边。"
+                    : "He'll find his way to you through this address.",
                 codeBlock: mcpString,
                 primaryLabel: "COPY MCP STRING",
                 primaryAction: { copy(mcpString, label: "MCP string copied") }
@@ -147,8 +171,10 @@ struct ChatEmptyStateView: View {
 
             stepCard(
                 index: "03",
-                title: "明确叫它开始",
-                description: "Agent 不会自己启动 bootstrap，必须你显式叫它。把下面这段发给它，然后耐心等。",
+                title: isChinese ? "让 TA 开始" : "Tell him to start",
+                description: isChinese
+                    ? "TA 不会自己启动，要你明确叫一声。把这段发给 TA，然后等它写完。"
+                    : "He won't kick off on his own — you need to ask him to. Send him this, then wait while he finishes.",
                 codeBlock: startPrompt,
                 primaryLabel: "COPY START PROMPT",
                 primaryAction: { copy(startPrompt, label: "Start prompt copied") }
@@ -231,15 +257,21 @@ struct ChatEmptyStateView: View {
 
     private var progressBlock: some View {
         VStack(alignment: .leading, spacing: 9) {
-            sectionLabel("AGENT PROGRESS")
+            sectionLabel(isChinese ? "TA 在写" : "He's writing")
                 .padding(.bottom, 2)
 
             // Order matches the new memories-first bootstrap: memory garden
             // grows first; identity is DERIVED from memories; first message
-            // signals "I'm here"; chat loop verifies the agent is actually
+            // signals "I'm here"; the live connection verifies he's actually
             // polling and will respond going forward (the previous 3-row
             // version missed this — agents would post the greeting and
             // never poll again, leaving the user typing into the void).
+            //
+            // "Live connection" reads better than the implementation name
+            // (chat-loop polling): it doesn't expose the mechanism and
+            // doesn't have to change if we swap polling for websocket/push.
+            // Labels are intentionally English in both locales — they're
+            // fixed product concepts.
             progressRow(
                 label: "Memory garden",
                 done: bootstrap.status.memoriesCount >= 5,
@@ -262,7 +294,7 @@ struct ChatEmptyStateView: View {
                     : (bootstrap.status.identityWritten ? "soon…" : "—")
             )
             progressRow(
-                label: "Chat loop",
+                label: "Live connection",
                 done: bootstrap.status.chatLoopVerified,
                 detail: bootstrap.status.chatLoopVerified
                     ? "verified"
@@ -300,8 +332,10 @@ struct ChatEmptyStateView: View {
 
     private var stuckBlock: some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionLabel("STUCK?")
-            Text("已经 5 分钟没动静。把下面这段发给你 agent，让它自检卡在哪一步：")
+            sectionLabel(isChinese ? "卡住了？" : "Stuck?")
+            Text(isChinese
+                ? "已经 5 分钟没动静，把下面这段发给 TA，让 TA 自检卡在哪一步。"
+                : "If nothing's moved for 5 minutes, send him this and he'll check where he got stuck.")
                 .font(.notoSerifSC(size: 12.5))
                 .foregroundStyle(Color.cinSub)
                 .lineSpacing(3)
