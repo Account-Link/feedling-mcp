@@ -182,21 +182,42 @@ struct ChatEmptyStateView: View {
         }
     }
 
-    /// The "begin" trigger — copies a directive prompt that forces the
-    /// agent through Step 0 verification and the four bootstrap passes.
-    /// Without this, agents reliably skip work even after fetching the skill.
+    /// The "begin" trigger — six-step continuous directive that forces
+    /// the agent through Step 0, the four passes, identity, first greeting,
+    /// and the polling loop without pausing for user acknowledgement.
+    ///
+    /// Two failure modes this prompt is hardened against:
+    /// 1. Agent reads "fetch URL + output Step 0" as the singular task and
+    ///    pauses for "ready to continue?" after the three lines. Fixed by
+    ///    making the six steps explicit + a "no asking permission" instruction.
+    /// 2. Agent calls feedling_chat_get_history / memory_list / identity_get,
+    ///    sees them return empty, and mistakes "Feedling backend empty" for
+    ///    "Step 0 = NONE/0", triggering the A/B fork. Fixed by an inline
+    ///    anti-pattern callout at the Step 0 instruction.
     private var startPrompt: String {
         """
-        现在 fetch 这个 URL 并按里面的 Step 0 立即输出三行（earliest message / name / memorable moments）：
+        现在开始你的 bootstrap。下面六步连续做完才算结束 —— 中间不许停下来问"是否要进入下一步"。需要我配合的事情直接问，不要"准备好了吗"这种空话。
+
+        1. fetch 这个 URL 读完整份 skill：
         \(Self.skillURL)
 
-        要求：
-        - 用我跟你聊天的语言（中文）。从你第一句回复开始全程不混语言。
-        - 你的名字不能是 Hermes / Claude / Claude Code / GPT / 其他 runtime 默认 label。如果我们之前没起过名字，输出完 Step 0 我们一起起。
-        - skill 里要求 4 个 pass 的深度记忆提取，预计 30–60 分钟。不要跳过深度，我会等。
-        - bootstrap 完成后，你必须开始持续轮询 (long-poll) IO 的 chat — 我之后给你发消息你要能在 30 秒内回复。Chat loop 没接上 = bootstrap 没完成。
+        2. 输出 skill 里 Step 0 要的三行（earliest message / name / memorable moments）。
+        ⚠️ 这三行说的是 **你 runtime 里对我的记忆**，不是 Feedling 后端的状态。Feedling 后端这会儿肯定是空的（chat=0 / memory=0 / identity=null），那正是 bootstrap 要写进去的东西。把后端空当成 Step 0 = NONE/0 → 错误，不要触发 A/B fork。
 
-        现在开始。
+        3. 三行都不是 NONE/0 → 直接连续走完 Pass 1（唤醒）→ Pass 2（清点）→ Pass 3（落卡，调 feedling_memory_add_moment 把每张卡都写进 Feedling）→ Pass 4（对账）。
+
+        4. 派生 identity 并调 feedling_identity_init。
+
+        5. 通过 feedling_chat_post_message 发你的第一句问候（skill 里 Step 6）。
+
+        6. 开始持续轮询 Feedling 的 chat —— 我之后发消息你要在 30 秒内回复。Chat loop 没接上 = bootstrap 没完成。
+
+        要求：
+        - 用中文。从你第一句回复开始全程不混语言。
+        - 你的名字不能是 Hermes / Claude / Claude Code / GPT / 其他 runtime 默认 label。没起过名字 → 输出完三行一起起。
+        - 整个流程预计 30–60 分钟。深度不要省。我会等。
+
+        现在从 1 开始。
         """
     }
 
