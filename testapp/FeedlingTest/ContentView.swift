@@ -144,6 +144,7 @@ struct SettingsView: View {
     @State private var showDeleteConfirm: Bool = false
     @State private var isDeleting: Bool = false
     @State private var deleteError: String? = nil
+    @State private var showPostWipeReimport: Bool = false
     private let broadcastPollTimer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     private let mockStates: [ScreenActivityAttributes.ContentState] = [
@@ -313,7 +314,9 @@ struct SettingsView: View {
                             } label: {
                                 VStack(alignment: .leading, spacing: 4) {
                                     HStack {
-                                        Text(isDeleting ? "Deleting…" : "Delete Account & Reset")
+                                        Text(isDeleting
+                                             ? (isChinese ? "正在删除…" : "Deleting…")
+                                             : (isChinese ? "删除账号与重置" : "Delete Account & Reset"))
                                             .font(.notoSerifSC(size: 13.5))
                                             .foregroundStyle(Color.cinAccent2)
                                         Spacer()
@@ -324,7 +327,9 @@ struct SettingsView: View {
                                                 .kerning(2)
                                         }
                                     }
-                                    Text("Wipes your IO account on the server, all chat / identity / memory data, plus local credentials & keychain. App returns to first-launch state. Use before re-bootstrapping a fresh agent.")
+                                    Text(isChinese
+                                         ? "把服务端 IO 账号、所有 chat / identity / memory 数据、本地凭据与 Keychain 全部清掉。App 回到首次启动状态。建议在重做一次全新 agent bootstrap 之前用。"
+                                         : "Wipes your IO account on the server, all chat / identity / memory data, plus local credentials & keychain. App returns to first-launch state. Use before re-bootstrapping a fresh agent.")
                                         .font(.notoSerifSC(size: 11))
                                         .foregroundStyle(Color.cinSub)
                                         .lineSpacing(2)
@@ -369,13 +374,18 @@ struct SettingsView: View {
                         .transition(.opacity)
                 }
             }
-            .alert("Delete account?", isPresented: $showDeleteConfirm) {
-                Button("Cancel", role: .cancel) { }
-                Button("Delete everything", role: .destructive) {
+            .alert(isChinese ? "删除账号？" : "Delete account?", isPresented: $showDeleteConfirm) {
+                Button(isChinese ? "取消" : "Cancel", role: .cancel) { }
+                Button(isChinese ? "全部删除" : "Delete everything", role: .destructive) {
                     Task { await runDeleteAccount() }
                 }
             } message: {
-                Text("This wipes your IO account on the server (chat, identity, memory garden) and all local credentials. The app will return to first-launch state. There is no undo.")
+                Text(isChinese
+                     ? "会清掉服务端的 IO 账号（chat、identity、memory garden）和所有本地凭据，并生成一个新的 API key。你的 agent runtime（Claude.ai / Hermes 等）还 pin 着旧 key——清完之后必须重新导入新的 MCP String，否则每个 tool call 都会返回 401。无法撤销。"
+                     : "This wipes your IO account on the server (chat, identity, memory garden) and all local credentials. A fresh API key will be generated — your agent runtime (Claude.ai / Hermes / etc.) is pinned to the OLD key, so you'll need to re-import the new MCP String afterwards or every tool call returns 401. There is no undo.")
+            }
+            .sheet(isPresented: $showPostWipeReimport) {
+                PostWipeReimportSheet()
             }
         }
     }
@@ -386,11 +396,13 @@ struct SettingsView: View {
         defer { isDeleting = false }
         do {
             try await FeedlingAPI.shared.deleteMyDataAndResetLocalState()
-            showToast("Account deleted")
-            // Wait a beat for the user to see the toast, then trigger
-            // re-registration so MCP/skill setup can proceed cleanly.
-            try? await Task.sleep(nanoseconds: 800_000_000)
+            // Server-side delete + local wipe done. Cloud mode auto-registers
+            // a fresh account so `mcpConnectionString` populates before the
+            // sheet shows. Self-hosted mode is a no-op here — the user has
+            // to register a new key on their VPS and paste it back into
+            // Settings → Storage. The sheet itself handles both states.
             await FeedlingAPI.shared.ensureRegisteredIfCloud()
+            showPostWipeReimport = true
         } catch {
             deleteError = "\(error)"
         }
@@ -1581,6 +1593,150 @@ struct ResetAndReimportSheet: View {
         } catch {
             self.error = "Pipeline failed at step \(step): \(error)"
         }
+    }
+}
+
+// MARK: - Post-WIPE re-import sheet
+//
+// Shown after Delete Account & Reset. In cloud mode `ensureRegisteredIfCloud`
+// has already minted a fresh API key by the time this sheet appears — happy
+// path renders the new MCP String + COPY. In self-hosted mode (or when
+// cloud registration silently failed), apiKey is still empty — the sheet
+// renders a guidance state pointing the user at Settings → Storage to
+// register / paste a new key manually.
+
+struct PostWipeReimportSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var api = FeedlingAPI.shared
+    @State private var copied: Bool = false
+
+    private let isChinese: Bool =
+        Locale.preferredLanguages.first?.hasPrefix("zh") ?? false
+
+    private var hasFreshKey: Bool { !api.apiKey.isEmpty }
+
+    var body: some View {
+        ZStack {
+            Color.cinBg.ignoresSafeArea()
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer()
+                    Text("RESET COMPLETE")
+                        .font(.dmMono(size: 9))
+                        .foregroundStyle(Color.cinSub)
+                        .kerning(2)
+                    Spacer()
+                }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 14)
+                Rectangle().fill(Color.cinFg).frame(height: 1)
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(hasFreshKey
+                             ? (isChinese ? "旧的 key 已经失效。" : "Your old key is dead.")
+                             : (isChinese ? "重置完成。" : "Reset complete."))
+                            .font(.newsreader(size: 26))
+                            .foregroundStyle(Color.cinFg)
+                            .padding(.horizontal, 24)
+                            .padding(.top, 28)
+                            .padding(.bottom, 12)
+
+                        if hasFreshKey {
+                            Text(isChinese
+                                 ? "已经注册了新账号。在你把 agent runtime 切到新 key 之前，Claude.ai / Hermes 等的每个 tool call 都会返回 401 user_not_found。现在就把下面这条 MCP String paste 到 agent 里。"
+                                 : "A fresh account is registered. Until you re-point your agent at the new key, every tool call from Claude.ai / Hermes / etc. will return 401 user_not_found. Paste this MCP String into your agent runtime now.")
+                                .font(.notoSerifSC(size: 13))
+                                .foregroundStyle(Color.cinSub)
+                                .lineSpacing(4)
+                                .padding(.horizontal, 24)
+                                .padding(.bottom, 28)
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Text(isChinese ? "MCP 连接字符串" : "MCP String")
+                                        .font(.notoSerifSC(size: 13.5))
+                                        .foregroundStyle(Color.cinFg)
+                                    Spacer()
+                                    Button {
+                                        UIPasteboard.general.string = api.mcpConnectionString
+                                        withAnimation(.easeOut(duration: 0.15)) { copied = true }
+                                    } label: {
+                                        Text(copied
+                                             ? (isChinese ? "已复制 ✓" : "COPIED ✓")
+                                             : (isChinese ? "复制 ↗" : "COPY ↗"))
+                                            .font(.dmMono(size: 9.5, weight: .medium))
+                                            .foregroundStyle(Color.cinAccent1)
+                                            .kerning(2)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                Text(api.mcpConnectionString)
+                                    .font(.dmMono(size: 9))
+                                    .foregroundStyle(Color.cinSub)
+                                    .lineSpacing(2)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(10)
+                                    .background(Color.cinAccent1Soft)
+                                    .overlay { Rectangle().stroke(Color.cinAccent1.opacity(0.3), lineWidth: 1) }
+                                    .textSelection(.enabled)
+                            }
+                            .padding(.horizontal, 24)
+                            .padding(.bottom, 28)
+
+                            Text(isChinese
+                                 ? "Agent 在下一次连接时会重新 bootstrap——身份卡和记忆花园会从空开始。"
+                                 : "After you update the runtime, your agent re-bootstraps on its next connection — identity card and memory garden start fresh.")
+                                .font(.notoSerifSC(size: 11))
+                                .foregroundStyle(Color.cinSub)
+                                .lineSpacing(3)
+                                .padding(.horizontal, 24)
+                                .padding(.bottom, 28)
+                        } else {
+                            // No fresh key yet — either self-hosted mode (need to
+                            // register on user's own VPS and paste back) or cloud
+                            // registration silently failed.
+                            Text(isChinese
+                                 ? "新的 API key 还没就绪。请到 Settings → Storage，按你的存储模式重新拿一个 key——自托管模式从你自己的 VPS 注册并 paste 回来，cloud 模式点 \"REGENERATE API KEY\"。拿到之后，把新的 MCP String 重新导入你的 agent runtime。"
+                                 : "The new API key isn't ready yet. Head to Settings → Storage and grab one — self-hosted mode: register on your VPS and paste back; cloud mode: tap \"REGENERATE API KEY\". Once you have it, re-import the new MCP String into your agent runtime.")
+                                .font(.notoSerifSC(size: 13))
+                                .foregroundStyle(Color.cinSub)
+                                .lineSpacing(4)
+                                .padding(.horizontal, 24)
+                                .padding(.bottom, 28)
+
+                            Text(isChinese
+                                 ? "在新 key 到位之前，agent 的每个 tool call 都会返回 401 user_not_found。"
+                                 : "Until the new key is in place, every agent tool call will return 401 user_not_found.")
+                                .font(.notoSerifSC(size: 11))
+                                .foregroundStyle(Color.cinAccent2)
+                                .lineSpacing(3)
+                                .padding(.horizontal, 24)
+                                .padding(.bottom, 28)
+                        }
+                    }
+                }
+
+                Rectangle().fill(Color.cinLine).frame(height: 0.5).padding(.horizontal, 24)
+                Button { dismiss() } label: {
+                    Text(buttonLabel)
+                }
+                .buttonStyle(CinPrimaryButtonStyle())
+                .padding(.horizontal, 24)
+                .padding(.top, 16)
+                .padding(.bottom, 24)
+            }
+        }
+    }
+
+    private var buttonLabel: String {
+        if !hasFreshKey {
+            return isChinese ? "去 Settings ↗" : "GO TO SETTINGS ↗"
+        }
+        if copied {
+            return isChinese ? "完成 ↗" : "DONE ↗"
+        }
+        return isChinese ? "稍后再更新 ↗" : "I'LL UPDATE LATER ↗"
     }
 }
 
