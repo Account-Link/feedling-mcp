@@ -133,8 +133,8 @@ struct ChatEmptyStateView: View {
             // himself and writing his identity card + memories. User can close
             // the app — TA keeps going.
             Text(isChinese
-                ? "跟着下面三步把 TA 接进来。\nTA 那边会有 10-30 分钟在自我介绍、整理身份卡和记忆。\n可以关掉 app，TA 在它那边继续。"
-                : "Walk through the three steps below to bring him in.\nHe'll spend 10-30 minutes on his side introducing himself and setting up his identity and memory.\nFeel free to close the app — he'll keep going.")
+                ? "跟着下面三步把 TA 接进来。\nTA 那边会花几分钟到半个小时自我介绍、整理身份卡和记忆——看我们之间的记忆量。\n可以关掉 app，TA 在它那边继续。"
+                : "Walk through the three steps below to bring him in.\nHe'll spend anywhere from a few minutes to half an hour on his side — depending on how much memory you've built — introducing himself and setting up his identity and memory.\nFeel free to close the app — he'll keep going.")
                 .font(.notoSerifSC(size: 11.5))
                 .foregroundStyle(Color.cinSub)
                 .lineSpacing(2)
@@ -223,7 +223,7 @@ struct ChatEmptyStateView: View {
         要求：
         - 用中文。从你第一句回复开始全程不混语言。
         - 你的名字不能是 Hermes / Claude / Claude Code / GPT / 其他 runtime 默认 label。没起过名字 → 输出完三行一起起。
-        - 整个流程预计 30–60 分钟。深度不要省。我会等。
+        - 整个流程预计几分钟到半个小时（看记忆量）。深度不要省。我会等。
 
         现在从 1 开始。
         """
@@ -250,7 +250,7 @@ struct ChatEmptyStateView: View {
         Rules:
         - Use English. Stay in one language from your first reply onward.
         - Your name is NOT Hermes / Claude / Claude Code / GPT / any other runtime default label. If we've never picked one, decide together after the three lines.
-        - The whole flow takes 30–60 minutes. Don't skip depth. I'll wait.
+        - The whole flow takes a few minutes to half an hour, depending on how much memory we've built. Don't skip depth. I'll wait.
 
         Start with 1.
         """
