@@ -678,11 +678,54 @@ def chat_post_image(
         "you 'just remembered,' not 'looked up.' Don't reference cards by id, "
         "don't say 'according to memory X.' If none feel relevant to the "
         "current exchange, ignore them — irrelevant references hurt more "
-        "than they help."
+        "than they help. "
+        "Image messages (content_type='image') return as TWO things: "
+        "(1) a marker `<vision_block:N>` in the message's `image_b64` field, "
+        "and (2) the actual JPEG as an ImageContent block at index N in this "
+        "tool's response. Vision-capable agents see the image automatically. "
+        "Acknowledge what you see; do NOT echo the marker text to the user."
     ),
+    output_schema=None,
 )
-def chat_get_history(limit: int = 50, ctx: Context = None) -> dict:
-    return _get_decrypted("/v1/chat/history", {"limit": min(limit, 200)}, ctx=ctx)
+def chat_get_history(limit: int = 50, ctx: Context = None):
+    """Returns chat history. For text-only history, returns a single dict.
+    For history containing image messages, returns a list:
+    `[history_dict, Image(jpeg1), Image(jpeg2), ...]` — the dict has its
+    image_b64 fields replaced with `<vision_block:N>` markers that index
+    into the trailing Image blocks. FastMCP serializes this multi-block
+    return so the agent's vision actually activates on each image, rather
+    than receiving the base64 as opaque text (which is what happened
+    before this change — image messages silently broke agent replies).
+    """
+    raw = _get_decrypted("/v1/chat/history", {"limit": min(limit, 200)}, ctx=ctx)
+    if not isinstance(raw, dict) or "messages" not in raw:
+        return raw
+
+    image_blocks: list = []
+    for m in raw.get("messages", []):
+        if not isinstance(m, dict):
+            continue
+        if m.get("content_type") != "image":
+            continue
+        b64 = m.get("image_b64") or ""
+        if not b64:
+            continue
+        try:
+            jpeg_bytes = base64.b64decode(b64)
+        except Exception as e:
+            m["image_b64"] = f"<decode_failed: {e}>"
+            continue
+        marker_idx = len(image_blocks)
+        image_blocks.append(Image(data=jpeg_bytes, format="jpeg"))
+        # Replace the (large) base64 with a small marker so the JSON text
+        # block stays compact; the actual image data is now in the
+        # corresponding ImageContent block at position marker_idx + 1.
+        m["image_b64"] = f"<vision_block:{marker_idx}>"
+
+    if image_blocks:
+        print(f"[mcp] chat_get_history: surfacing {len(image_blocks)} image(s) as ImageContent blocks")
+        return [raw, *image_blocks]
+    return raw
 
 
 # ---------------------------------------------------------------------------
