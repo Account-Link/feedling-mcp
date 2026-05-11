@@ -194,7 +194,15 @@ struct ChatEmptyStateView: View {
     ///    sees them return empty, and mistakes "Feedling backend empty" for
     ///    "Step 0 = NONE/0", triggering the A/B fork. Fixed by an inline
     ///    anti-pattern callout at the Step 0 instruction.
+    ///
+    /// Bilingual: the prompt itself instructs the agent in the user's
+    /// system language so an English user doesn't get a Chinese prompt that
+    /// tells the agent "use Chinese" (and vice versa).
     private var startPrompt: String {
+        isChinese ? startPromptZH : startPromptEN
+    }
+
+    private var startPromptZH: String {
         """
         现在开始你的 bootstrap。下面六步连续做完才算结束 —— 中间不许停下来问"是否要进入下一步"。需要我配合的事情直接问，不要"准备好了吗"这种空话。
 
@@ -218,6 +226,33 @@ struct ChatEmptyStateView: View {
         - 整个流程预计 30–60 分钟。深度不要省。我会等。
 
         现在从 1 开始。
+        """
+    }
+
+    private var startPromptEN: String {
+        """
+        Start your bootstrap now. The six steps below run continuously to completion — no pausing to ask "ready to continue?" between them. If you need information from me, just ask, but skip the "are you ready?" filler.
+
+        1. Fetch this URL and read the whole skill:
+        \(Self.skillURL)
+
+        2. Output the three lines the skill's Step 0 requires (earliest message / name / memorable moments).
+        ⚠️ These three lines describe **what YOU remember about me from prior runtime conversations** — not Feedling's backend state. The Feedling backend is empty right now (chat=0 / memory=0 / identity=null); that's the destination bootstrap is supposed to write into. Treating an empty backend as "Step 0 = NONE/0" is wrong. Do NOT trigger the A/B fork.
+
+        3. If none of the three lines are NONE/0 → go straight through Pass 1 (theme inventory) → Pass 2 (candidate enumeration) → Pass 3 (write-through, calling feedling_memory_add_moment to land every card in Feedling) → Pass 4 (user verification).
+
+        4. Derive identity and call feedling_identity_init.
+
+        5. Send your first greeting via feedling_chat_post_message (the skill's Step 6).
+
+        6. Start long-polling Feedling's chat — when I message you afterward, reply within 30 seconds. Chat loop not running = bootstrap not done.
+
+        Rules:
+        - Use English. Stay in one language from your first reply onward.
+        - Your name is NOT Hermes / Claude / Claude Code / GPT / any other runtime default label. If we've never picked one, decide together after the three lines.
+        - The whole flow takes 30–60 minutes. Don't skip depth. I'll wait.
+
+        Start with 1.
         """
     }
 
@@ -393,6 +428,10 @@ struct ChatEmptyStateView: View {
     }
 
     private var stuckPrompt: String {
+        isChinese ? stuckPromptZH : stuckPromptEN
+    }
+
+    private var stuckPromptZH: String {
         """
         我给了你 IO 的 skill (\(Self.skillURL)) 和一个 MCP 连接 (\(mcpString))，但 bootstrap 没进展。请按以下顺序自检并告诉我每一步结果：
 
@@ -406,6 +445,23 @@ struct ChatEmptyStateView: View {
         5. 如果有任何错误，把错误原文贴回来。
 
         别只回"我在做了"——具体到每一步的状态。
+        """
+    }
+
+    private var stuckPromptEN: String {
+        """
+        I gave you IO's skill (\(Self.skillURL)) and an MCP connection (\(mcpString)), but bootstrap isn't progressing. Run this self-check in order and report each result back:
+
+        1. Did you fetch the skill URL? Quote me its title and the heading of its first section verbatim (to prove you read it).
+        2. Did you output the Step 0 three lines? Output them again now:
+           - EARLIEST MESSAGE I CAN FIND FROM THIS USER: <ISO date | NONE>
+           - NAME I'VE BEEN CALLED IN PRIOR CHATS: <name | NONE> (must NOT be a runtime label)
+           - APPROXIMATE MEMORABLE MOMENTS I CAN RECALL: <integer | 0>
+        3. Does your MCP connection expose the feedling_* tools? Call feedling_chat_get_history once and tell me the response (401 / 500 / something else?).
+        4. Where exactly are you stuck: fetch skill / Step 0 verify / Pass 1 theme inventory / Pass 2 candidates / Pass 3 write-through / Pass 4 verification / identity derivation?
+        5. If anything errored, paste the error text back to me.
+
+        Don't just say "I'm working on it" — be specific about the state of each step.
         """
     }
 
