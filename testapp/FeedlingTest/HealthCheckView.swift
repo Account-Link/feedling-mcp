@@ -63,10 +63,14 @@ struct HealthCheckView: View {
         }
         .navigationBarHidden(true)
         .onAppear {
+            router.enterDetail()
             bootstrap.startPolling(interval: 4)
             isBroadcasting = UserDefaults(suiteName: "group.com.feedling.mcp")?.bool(forKey: "isBroadcasting") ?? false
         }
-        .onDisappear { bootstrap.stopPolling() }
+        .onDisappear {
+            router.exitDetail()
+            bootstrap.stopPolling()
+        }
         .onReceive(broadcastPollTimer) { _ in
             isBroadcasting = UserDefaults(suiteName: "group.com.feedling.mcp")?.bool(forKey: "isBroadcasting") ?? false
         }

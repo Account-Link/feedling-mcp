@@ -316,8 +316,8 @@ struct MemoryCardDetailView: View {
         .navigationBarHidden(true)
         // Hide the root tab bar while this secondary view is on screen so
         // top-level tab switching doesn't compete with the in-page back button.
-        .onAppear { router.isInDetail = true }
-        .onDisappear { router.isInDetail = false }
+        .onAppear { router.enterDetail() }
+        .onDisappear { router.exitDetail() }
     }
 
     private var navHeader: some View {

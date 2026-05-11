@@ -110,11 +110,20 @@ struct ContentView: View {
 
 class AppRouter: ObservableObject {
     @Published var selectedTab: AppTab = .chat
-    /// True while a secondary view (e.g. Memory Garden card detail) is on top
-    /// of the navigation stack. The root tab bar hides itself in this state so
-    /// users don't accidentally jump between top-level tabs while reading a
-    /// card and then have to find their way back.
-    @Published var isInDetail: Bool = false
+    /// Depth counter for secondary (pushed) views. The root tab bar hides
+    /// itself whenever any secondary view is on screen so users don't jump
+    /// between top-level tabs while reading a card / running diagnostics /
+    /// etc. and then have to find their way back.
+    ///
+    /// We use a counter rather than a Bool because nested pushes are real
+    /// (e.g. Settings → Privacy → Audit). A boolean would flip to false when
+    /// the inner view pops, even though we're still in the middle layer.
+    @Published private var detailDepth: Int = 0
+
+    var isInDetail: Bool { detailDepth > 0 }
+
+    func enterDetail() { detailDepth += 1 }
+    func exitDetail()  { detailDepth = max(0, detailDepth - 1) }
 }
 
 // MARK: - Settings View
@@ -393,10 +402,6 @@ struct SettingsView: View {
                 .font(.newsreader(size: 13, italic: true))
                 .foregroundStyle(Color.cinFg)
             Spacer()
-            Text("v 0.5.0")
-                .font(.dmMono(size: 9))
-                .foregroundStyle(Color.cinSub)
-                .kerning(2)
         }
         .padding(.horizontal, 24)
         .padding(.top, 16)
@@ -483,7 +488,7 @@ struct SettingsView: View {
                 .padding(.top, 18)
                 .padding(.bottom, 12)
 
-            VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center, spacing: 16) {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(lam.isActive
                         ? (isChinese ? "TA 正在灵动岛" : "He's on your island")
@@ -498,43 +503,18 @@ struct SettingsView: View {
                         .lineSpacing(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                .padding(.horizontal, 18)
-                .padding(.top, 16)
-                .padding(.bottom, 14)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                Rectangle()
-                    .fill(Color.cinAccent1.opacity(lam.isActive ? 0.4 : 0.2))
-                    .frame(height: 1)
-
-                Button {
-                    if lam.isActive {
-                        Task { await lam.stopActivity() }
-                    } else {
+                RailToggle(isOn: lam.isActive) { next in
+                    if next {
                         Task { await lam.startActivity() }
+                    } else {
+                        Task { await lam.stopActivity() }
                     }
-                } label: {
-                    HStack(spacing: 8) {
-                        if lam.isActive {
-                            LiveDot()
-                            Text(isChinese ? "实时中 · 点按停止 ↗" : "LIVE · TAP TO STOP ↗")
-                                .font(.dmMono(size: 9, weight: .medium))
-                                .foregroundStyle(Color.cinAccent1)
-                                .kerning(2.5)
-                        } else {
-                            Circle().fill(Color.cinAccent1).frame(width: 6, height: 6)
-                            Text(isChinese ? "点按开启灵动岛 ↗" : "TAP TO START LIVE ACTIVITY ↗")
-                                .font(.dmMono(size: 9, weight: .medium))
-                                .foregroundStyle(Color.cinAccent1)
-                                .kerning(2.5)
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 52)
-                    .background(Color.cinAccent1.opacity(lam.isActive ? 0.1 : 0))
-                    .animation(.easeInOut(duration: 0.25), value: lam.isActive)
                 }
-                .buttonStyle(.plain)
             }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 16)
             .background(Color.cinAccent1Soft)
             .overlay { Rectangle().stroke(Color.cinAccent1.opacity(lam.isActive ? 0.7 : 0.3), lineWidth: 1) }
             .animation(.easeInOut(duration: 0.25), value: lam.isActive)
@@ -957,6 +937,7 @@ private struct OnboardingButtonStyle: ButtonStyle {
 // MARK: - Privacy page (NavigationLink destination from Settings)
 
 struct PrivacyPageView: View {
+    @EnvironmentObject var router: AppRouter
     @ObservedObject private var api = FeedlingAPI.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showExportSheet = false
@@ -1052,6 +1033,8 @@ struct PrivacyPageView: View {
             }
         }
         .navigationBarHidden(true)
+        .onAppear { router.enterDetail() }
+        .onDisappear { router.exitDetail() }
         .sheet(isPresented: $showExportSheet) { ExportSheet() }
         .sheet(isPresented: $showDeleteSheet) { DeleteSheet() }
         .sheet(isPresented: $showResetSheet) { ResetAndReimportSheet() }
@@ -1149,6 +1132,7 @@ struct PrivacyPageView: View {
 }
 
 struct AuditCardPage: View {
+    @EnvironmentObject var router: AppRouter
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -1179,10 +1163,13 @@ struct AuditCardPage: View {
             }
         }
         .navigationBarHidden(true)
+        .onAppear { router.enterDetail() }
+        .onDisappear { router.exitDetail() }
     }
 }
 
 struct StorageBackendView: View {
+    @EnvironmentObject var router: AppRouter
     @ObservedObject private var api = FeedlingAPI.shared
     @Environment(\.dismiss) private var dismiss
 
@@ -1217,6 +1204,8 @@ struct StorageBackendView: View {
             }
         }
         .navigationBarHidden(true)
+        .onAppear { router.enterDetail() }
+        .onDisappear { router.exitDetail() }
     }
 
     private func backendRow(_ name: String, value: String) -> some View {
@@ -1598,6 +1587,7 @@ struct ResetAndReimportSheet: View {
 // MARK: - Runbook viewer ("Help me run my own server")
 
 struct RunbookView: View {
+    @EnvironmentObject var router: AppRouter
     @Environment(\.dismiss) private var dismiss
     @State private var runbookText: String = "Loading…"
 
@@ -1639,6 +1629,8 @@ struct RunbookView: View {
             }
         }
         .navigationBarHidden(true)
+        .onAppear { router.enterDetail() }
+        .onDisappear { router.exitDetail() }
         .task { await load() }
     }
 
@@ -1747,6 +1739,65 @@ private struct LiveDot: View {
                 pulse = true
             }
         }
+    }
+}
+
+/// Rail · 拉线 — the brand's switch component. A thin track + a hollow
+/// circular handle that slides left (OFF, ink) to right (ON, vermilion).
+/// Used for steady-state toggles like Live Activity, where a pulsing
+/// "tap to start" button reads as anxious for what is meant to be a
+/// background-on capability.
+///
+/// Optimistic visual state: tapping flips `displayedOn` immediately so the
+/// handle slides without waiting for the upstream async work to finish.
+/// `onChange(isOn)` resyncs if the authoritative state diverges (e.g.
+/// startActivity failed, or another surface stopped it).
+private struct RailToggle: View {
+    let isOn: Bool
+    let onToggle: (Bool) -> Void
+
+    @State private var displayedOn: Bool
+
+    init(isOn: Bool, onToggle: @escaping (Bool) -> Void) {
+        self.isOn = isOn
+        self.onToggle = onToggle
+        self._displayedOn = State(initialValue: isOn)
+    }
+
+    private let trackWidth: CGFloat = 64
+    private let handleSize: CGFloat = 20
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(displayedOn ? Color.cinAccent1 : Color.cinFg)
+                    .frame(width: trackWidth - handleSize, height: 1.5)
+                    .offset(x: handleSize / 2)
+
+                Circle()
+                    .strokeBorder(displayedOn ? Color.cinAccent1 : Color.cinFg, lineWidth: 1.5)
+                    .background(Circle().fill(Color.cinBg))
+                    .frame(width: handleSize, height: handleSize)
+                    .offset(x: displayedOn ? trackWidth - handleSize : 0)
+            }
+            .frame(width: trackWidth, height: handleSize)
+
+            Text(displayedOn ? "ON" : "OFF")
+                .font(.dmMono(size: 8.5, weight: .medium))
+                .foregroundStyle(displayedOn ? Color.cinAccent1 : Color.cinSub)
+                .kerning(2)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            let next = !displayedOn
+            displayedOn = next
+            onToggle(next)
+        }
+        .onChange(of: isOn) { newValue in
+            if newValue != displayedOn { displayedOn = newValue }
+        }
+        .animation(.spring(response: 0.32, dampingFraction: 0.72), value: displayedOn)
     }
 }
 
