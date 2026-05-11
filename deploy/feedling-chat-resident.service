@@ -9,7 +9,11 @@ User=ubuntu
 WorkingDirectory=/home/ubuntu/feedling-mcp
 EnvironmentFile=/home/ubuntu/feedling-chat-resident.env
 ExecStart=/home/ubuntu/feedling-venv/bin/python tools/chat_resident_consumer.py
-Restart=on-failure
+# Restart=always (not on-failure) so the service respawns even after an
+# external SIGTERM. The user previously hit exit_code=-15 (SIGTERM) with no
+# respawn; on-failure treats SIGTERM as a clean exit. `systemctl stop` is
+# still honored — systemd flags those as intentional and skips restart.
+Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal

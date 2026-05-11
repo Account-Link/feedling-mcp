@@ -114,6 +114,19 @@ FALLBACK_REPLY = os.environ.get(
 )
 POLL_TIMEOUT = int(os.environ.get("POLL_TIMEOUT", "30"))
 
+# Placeholder routed to text-only agent backends when the user sends an
+# image-only message. Without this the consumer would silently drop image
+# messages because their `content` is "" by design (enclave decrypts the
+# JPEG into `image_b64`, leaves `content` empty). Vision-capable agents
+# can ignore this hint and call `feedling_chat_get_history` themselves
+# to read `image_b64`.
+IMAGE_PLACEHOLDER = os.environ.get(
+    "IMAGE_PLACEHOLDER",
+    "[The user just sent you an image. Acknowledge it warmly in your normal "
+    "voice and ask what they want to share about it. If you can read images, "
+    "call feedling_chat_get_history to see it.]",
+)
+
 # ---------------------------------------------------------------------------
 # Decrypt sources — at least one must be set for v1 encrypted backends.
 #
@@ -904,18 +917,32 @@ def _process_messages(messages: list) -> float:
             continue
 
         content = msg.get("content", "").strip()
-        if not content:
-            # No plaintext — decrypt source missing or failed upstream.
+        content_type = msg.get("content_type", "text")
+
+        if content_type == "image":
+            # Image messages legitimately have content == "" — the JPEG
+            # lives in image_b64. Route a placeholder to text-only agents
+            # so they produce a reply instead of silently dropping the
+            # message. Vision-capable agents can ignore the placeholder
+            # and read image_b64 via feedling_chat_get_history.
+            log.info(
+                "image message [ts=%.3f] — routing IMAGE_PLACEHOLDER to agent",
+                ts,
+            )
+            content = IMAGE_PLACEHOLDER
+        elif not content:
+            # Genuinely empty text — decrypt source missing or failed.
             # Never send a fallback for content we cannot read.
             log.warning(
-                "user message has no plaintext content ts=%.3f — skipping "
-                "(set FEEDLING_ENCLAVE_URL or FEEDLING_MCP_URL to enable decryption)",
-                ts,
+                "user message has no plaintext content ts=%.3f content_type=%s "
+                "— skipping (set FEEDLING_ENCLAVE_URL or FEEDLING_MCP_URL to "
+                "enable decryption)",
+                ts, content_type,
             )
             latest = max(latest, ts)
             continue
-
-        log.info("user message [ts=%.3f]: %s", ts, content[:80])
+        else:
+            log.info("user message [ts=%.3f]: %s", ts, content[:80])
 
         try:
             replies = call_agent(content)
