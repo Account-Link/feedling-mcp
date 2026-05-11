@@ -246,6 +246,18 @@ jobs:
         env:
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
+          # Sync to latest main FIRST. Rerun case (e.g. a previous deploy-
+          # cvm partially failed after the prior run already pushed the
+          # "deploy: bump CVM image to :<sha>" commit): without this, the
+          # checkout sits on the original triggering commit, the sed
+          # re-creates the pin locally, `git commit` succeeds, and
+          # `git push origin HEAD:main` is rejected as non-fast-forward.
+          # Resetting to origin/main makes this step idempotent — when the
+          # pin already landed in a prior run, the diff is empty and we
+          # take the no-op branch cleanly.
+          git fetch origin main
+          git reset --hard origin/main
+
           SHA_SHORT=$(git rev-parse --short HEAD)
           IMAGE_OWNER=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
           IMAGE="ghcr.io/${IMAGE_OWNER}/feedling"
