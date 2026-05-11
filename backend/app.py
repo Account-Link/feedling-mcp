@@ -129,7 +129,17 @@ _load_users()
 # ---------------------------------------------------------------------------
 
 MAX_FRAMES = 200
-MAX_CHAT_MESSAGES = 500
+# Chat history ring buffer per user. Bumped from 500 → 5000 on 2026-05-11
+# to give users meaningful scroll-back across months of normal use without
+# silently losing their oldest conversations. At ~800 bytes per text-only
+# envelope this caps chat.json around 4 MB; image-heavy users will see it
+# grow into the tens of MB because envelopes carry the encrypted JPEG
+# inline. Each chat append rewrites the whole file (see _persist_chat),
+# so the bigger the file, the slower the write — at 5000 the per-message
+# write cost is roughly 100-500 ms depending on image density. If that
+# starts mattering, the next step is switching chat persistence to an
+# append-only JSONL log so writes become O(1) regardless of history depth.
+MAX_CHAT_MESSAGES = 5000
 PUSH_COOLDOWN_SECONDS = int(os.environ.get("FEEDLING_PUSH_COOLDOWN_SEC", 300))
 LIVE_ACTIVITY_DEDUPE_SEC = int(os.environ.get("FEEDLING_LIVE_ACTIVITY_DEDUPE_SEC", 900))
 
