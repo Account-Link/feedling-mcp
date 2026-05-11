@@ -330,7 +330,17 @@ struct ChatEmptyStateView: View {
             // fixed product concepts.
             progressRow(
                 label: "Memory garden",
-                done: bootstrap.status.memoriesCount >= 5,
+                // "Done" = depth threshold met (>= 3 cards) OR agent has
+                // moved past the memory phase (identityWritten implies all
+                // four passes are complete per skill protocol). Earlier
+                // hardcoded threshold of 5 left short-relationship users
+                // (< 1 month, legitimately few memorable moments) staring
+                // at an empty ring forever even though their bootstrap was
+                // complete. The detail row still says "还在长" while the
+                // agent is mid-Pass-3, so a long-relationship agent doesn't
+                // false-stop at 3 — skill.md hard rule forbids stopping
+                // until every real moment is landed (uncapped count).
+                done: bootstrap.status.memoriesCount >= 3 || bootstrap.status.identityWritten,
                 detail: bootstrap.status.memoriesCount == 0
                     ? (bootstrap.status.agentConnected ? "starting…" : "—")
                     : (bootstrap.status.agentMessagesCount >= 1
