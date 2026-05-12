@@ -2728,5 +2728,11 @@ def _forbidden(e):
 
 
 if __name__ == "__main__":
-    print("Feedling server running at http://0.0.0.0:5001 (mode=multi-tenant, auth=api-key)")
-    app.run(host="0.0.0.0", port=5001, debug=False)
+    # PORT is read so isolation/load tests can spin up a hermetic backend on
+    # a random free port without colliding with a developer's local dev
+    # server on 5001 (or with another test running in parallel). Production
+    # deploys can leave it unset — the 5001 default matches the published
+    # compose/Dockerfile contract.
+    port = int(os.environ.get("FEEDLING_PORT", os.environ.get("PORT", "5001")))
+    print(f"Feedling server running at http://0.0.0.0:{port} (mode=multi-tenant, auth=api-key)")
+    app.run(host="0.0.0.0", port=port, debug=False)
