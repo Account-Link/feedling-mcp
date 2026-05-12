@@ -111,7 +111,7 @@ struct IdentityCard: Codable {
                 let dimensions: [Dimension]?
                 let signature: [String]?
                 let category: String?
-                let days_with_user: Int?
+                // days_with_user intentionally omitted — see below.
             }
             let inner = try JSONDecoder().decode(Inner.self, from: pt)
             var copy = self
@@ -120,7 +120,21 @@ struct IdentityCard: Codable {
             copy.dimensions          = inner.dimensions ?? []
             copy.signature           = inner.signature
             copy.category            = inner.category
-            copy.daysWithUserWritten = inner.days_with_user ?? self.daysWithUserWritten
+            // DELIBERATELY do NOT touch daysWithUserWritten here.
+            //
+            // Earlier this code did:
+            //   copy.daysWithUserWritten = inner.days_with_user ?? self.daysWithUserWritten
+            // which overwrote the server's live-computed days
+            // (already decoded above from the top-level JSON field
+            // `days_with_user`, which the server recomputes every
+            // request from the relationship anchor) with a STALE
+            // value embedded in the encrypted body at bootstrap time
+            // — freezing the displayed count permanently.
+            //
+            // The server's anchor is the single source of truth.
+            // Whatever Int (if any) sits inside the envelope body is
+            // a historical artifact and must be ignored. Keeping the
+            // server's value already on `self` does the right thing.
             return copy
         } catch {
             print("[identity] unseal failed: \(error)")
