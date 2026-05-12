@@ -52,48 +52,52 @@ FALLBACK_API_KEY = os.environ.get("FEEDLING_API_KEY", "").strip()
 # MCP SSE clients open the event stream with `GET /sse?key=xxx`, then POST tool
 # calls to `/messages/?session_id=yyy`. Different clients behave differently:
 #   - Some forward `?key=` onto every subsequent POST URL.
-#   - Some include it only on the initial SSE GET.
 #   - Some support `Authorization: Bearer <key>` headers end-to-end.
-# Cover all three: an ASGI middleware observes every HTTP request, extracts a
-# key if present, and caches it under whichever session_id we can infer.
+#
+# Clients in the third historical category — "forward `?key=` only on the
+# initial GET, then nothing on POSTs" — used to be supported via a fallback
+# that looked up any pending key from the same `request.client.host`. That
+# fallback was a P0 data-isolation bug in any deployment behind a reverse
+# proxy: every client appears to come from the same upstream IP, so the
+# fallback handed user A's POST authentication to whichever user had most
+# recently opened a SSE connection from that same upstream (i.e., everyone).
+# Symptoms observed in prod 2026-05-11: users seeing each other's agent
+# names, identity cards getting overwritten by strangers' `identity_replace`
+# tool calls, chat history apparently mixing across accounts.
+#
+# Fix: drop peer-based fallback entirely. Every tool call must carry the
+# api_key on the request itself (via `?key=` query param, `Authorization:
+# Bearer`, or `X-API-Key` header). MCP clients that omit the key on POSTs
+# are no longer supported — they were never safe to support in shared
+# infrastructure. Resolution path is now strictly:
+#   1. key present on the current HTTP request → use it directly
+#   2. key previously bound to this exact session_id by a prior request
+#      that did carry it → use cached
+#   3. else: no key, request is unauthenticated, downstream tool call fails
 
 _session_keys: dict[str, str] = {}
 _session_keys_lock = threading.Lock()
-# When we see `?key=` on the initial SSE GET, we don't yet know the session_id
-# assigned by the server. Stash it keyed by client address + path until the
-# next POST with session_id binds them together. Kept tiny; oldest entry wins.
-_pending_keys: list[tuple[float, str, str]] = []  # (ts, peer, key)
-_pending_keys_max = 256
 
 
 def _remember(session_id: str | None, key: str, peer: str = ""):
-    if not key:
+    """Bind `key` to `session_id` if both are present. peer is accepted for
+    backward compat with callers but intentionally ignored — see the
+    module-level comment above for why peer-based key recovery is unsafe."""
+    if not key or not session_id:
         return
-    import time
-    if session_id:
-        with _session_keys_lock:
-            _session_keys[session_id] = key
-    else:
-        with _session_keys_lock:
-            _pending_keys.append((time.time(), peer, key))
-            if len(_pending_keys) > _pending_keys_max:
-                _pending_keys[:] = _pending_keys[-_pending_keys_max:]
+    with _session_keys_lock:
+        _session_keys[session_id] = key
 
 
 def _resolve_for_session(session_id: str | None, peer: str = "") -> str | None:
-    if session_id:
-        with _session_keys_lock:
-            k = _session_keys.get(session_id)
-            if k:
-                return k
-    # fall back to pending keys from same peer
+    """Strict session_id → key lookup. Returns None if no exact match.
+    peer is accepted (and intentionally ignored) for caller-signature
+    compatibility — see the module-level comment for the data-isolation
+    incident that this strictness exists to prevent."""
+    if not session_id:
+        return None
     with _session_keys_lock:
-        for ts, p, k in reversed(_pending_keys):
-            if peer and p == peer:
-                if session_id:
-                    _session_keys[session_id] = k
-                return k
-    return None
+        return _session_keys.get(session_id)
 
 
 # ---------------------------------------------------------------------------
