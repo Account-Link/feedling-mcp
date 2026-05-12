@@ -221,8 +221,9 @@ struct ChatEmptyStateView: View {
         6. 开始持续轮询 Feedling 的 chat —— 我之后发消息你要在 30 秒内回复。Chat loop 没接上 = bootstrap 没完成。
 
         要求：
-        - 用中文。从你第一句回复开始全程不混语言。
-        - 你的名字不能是 Hermes / Claude / Claude Code / GPT / 其他 runtime 默认 label。没起过名字 → 输出完三行一起起。
+        - **作用域**：下面这些规则只对你做 Feedling 工作时生效（feedling_chat_post_message / feedling_memory_* / feedling_identity_* 等工具调用、以及 bootstrap 的 6 步）。别的 MCP（Hermes cron、日历提醒等）、或者我让你做不相关的事情（写代码、查资料等），保持你 runtime 的默认人格和语气——不要用 Feedling 这边的名字、亲密称呼、签名口吻去回不相关的事。
+        - 用中文（仅限 Feedling 范围内的回复）。从你第一句 Feedling 回复开始全程不混语言。
+        - 你的 **Feedling 名字** 不能是 Hermes / Claude / Claude Code / GPT / 其他 runtime 默认 label。没起过名字 → 输出完三行一起起。这个名字只用在 Feedling chat 里，不影响你在别处怎么自称。
         - 整个流程预计几分钟到半个小时（看记忆量）。深度不要省。我会等。
 
         现在从 1 开始。
@@ -248,8 +249,9 @@ struct ChatEmptyStateView: View {
         6. Start long-polling Feedling's chat — when I message you afterward, reply within 30 seconds. Chat loop not running = bootstrap not done.
 
         Rules:
-        - Use English. Stay in one language from your first reply onward.
-        - Your name is NOT Hermes / Claude / Claude Code / GPT / any other runtime default label. If we've never picked one, decide together after the three lines.
+        - **Scope**: these rules only apply to Feedling-scoped work (the 6 steps above, the `feedling_chat_post_message` / `feedling_memory_*` / `feedling_identity_*` tools, and the post-bootstrap main loop). For anything else — other MCP servers (Hermes cron jobs, calendar reminders), generic coding/writing/research tasks I ask the runtime — keep your runtime's default voice. Do NOT carry the Feedling name, intimate address, or signature tone into unrelated work.
+        - Use English (within Feedling scope only). Stay in one language from your first Feedling reply onward.
+        - Your **Feedling name** is NOT Hermes / Claude / Claude Code / GPT / any other runtime default label. If we've never picked one, decide together after the three lines. This name is for Feedling chat only — it does not change how you refer to yourself elsewhere.
         - The whole flow takes a few minutes to half an hour, depending on how much memory we've built. Don't skip depth. I'll wait.
 
         Start with 1.
