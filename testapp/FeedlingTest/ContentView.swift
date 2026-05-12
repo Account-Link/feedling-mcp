@@ -145,6 +145,8 @@ struct SettingsView: View {
     @State private var isDeleting: Bool = false
     @State private var deleteError: String? = nil
     @State private var showPostWipeReimport: Bool = false
+    @State private var showRegenerateConfirm: Bool = false
+    @State private var isRegenerating: Bool = false
     private let broadcastPollTimer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     private let mockStates: [ScreenActivityAttributes.ContentState] = [
@@ -219,12 +221,25 @@ struct SettingsView: View {
                                         UIPasteboard.general.string = api.envExportBlock
                                         showToast("Copied env vars")
                                     }
-                                    cinActionRow("REGENERATE API KEY ↗", color: .cinAccent2) {
-                                        Task {
-                                            await api.regenerateCredentials()
-                                            showToast("Key regenerated")
-                                        }
+                                    cinActionRow(
+                                        isRegenerating
+                                            ? (isChinese ? "正在生成新 KEY…" : "REGENERATING…")
+                                            : (isChinese ? "重新生成 API KEY ↗" : "REGENERATE API KEY ↗"),
+                                        color: .cinAccent2
+                                    ) {
+                                        // Two-step gate: the regenerate path
+                                        // wipes the local API key + registers a
+                                        // brand-new account, which (a) makes
+                                        // your existing chat / identity /
+                                        // memory garden unreachable from this
+                                        // device and (b) forces you to re-
+                                        // import a new MCP String into every
+                                        // agent runtime you've connected.
+                                        // Far too consequential for a one-tap
+                                        // surface — open a confirmation alert.
+                                        showRegenerateConfirm = true
                                     }
+                                    .disabled(isRegenerating)
                                 } else {
                                     cinInputRow("URL", placeholder: "https://…", text: $selfHostedURL)
                                         .onAppear { selfHostedURL = api.baseURL }
@@ -384,6 +399,33 @@ struct SettingsView: View {
                      ? "会清掉服务端的 IO 账号（chat、identity、memory garden）和所有本地凭据，并生成一个新的 API key。你的 agent runtime（Claude.ai / Hermes 等）还 pin 着旧 key——清完之后必须重新导入新的 MCP String，否则每个 tool call 都会返回 401。无法撤销。"
                      : "This wipes your IO account on the server (chat, identity, memory garden) and all local credentials. A fresh API key will be generated — your agent runtime (Claude.ai / Hermes / etc.) is pinned to the OLD key, so you'll need to re-import the new MCP String afterwards or every tool call returns 401. There is no undo.")
             }
+            // Two-step gate for "Regenerate API Key" — see the comment on the
+            // cinActionRow above that triggers this alert.
+            .alert(
+                isChinese ? "重新生成 API Key？" : "Regenerate API Key?",
+                isPresented: $showRegenerateConfirm
+            ) {
+                Button(isChinese ? "取消" : "Cancel", role: .cancel) { }
+                Button(
+                    isChinese ? "生成新 KEY（无法撤销）" : "Generate New Key (no undo)",
+                    role: .destructive
+                ) {
+                    Task { await runRegenerateKey() }
+                }
+            } message: {
+                Text(isChinese
+                     // Chinese — lead with the loss, in concrete terms. The
+                     // user must understand BEFORE tapping confirm: their
+                     // entire chat history, every memory the agent has
+                     // written about them, the agent's identity card —
+                     // they will be unable to read any of it again. The
+                     // data isn't physically deleted server-side, but
+                     // since the old key is the only thing that proves
+                     // they own that account, invalidating it locks them
+                     // out permanently.
+                     ? "⚠️ 你会立刻失去对所有现有数据的访问。\n\n之前所有 chat 历史、memory garden 里的记忆、agent 的 identity 卡——技术上还在服务端，但旧 key 一作废，这台手机就再也读不到了，永久无法恢复。\n\n同时，你的 agent runtime（Claude Desktop / Hermes 等）还 pin 着旧 key，所有 tool call 都会 401，必须重新导入新的 MCP String 才能让 agent 继续工作。\n\n如果你只是想清空当前账号重新开始，用「删除账号与重置」更直接（它会真的清掉服务端数据）。\n\n这个操作不可撤销。"
+                     : "⚠️ You will lose access to ALL of your existing data, immediately.\n\nYour chat history, every memory in the garden, and the agent's identity card — technically they stay on the server, but once the old key is invalidated this device can never read them again. There is no recovery path.\n\nYour agent runtime (Claude Desktop / Hermes / etc.) is still pinned to the OLD key. Every tool call will return 401 until you re-import the new MCP String into each runtime.\n\nIf you just want to wipe the current account and start fresh, Delete Account & Reset is more direct (it actually clears the server-side data).\n\nThis cannot be undone.")
+            }
             .sheet(isPresented: $showPostWipeReimport) {
                 PostWipeReimportSheet()
             }
@@ -406,6 +448,17 @@ struct SettingsView: View {
         } catch {
             deleteError = "\(error)"
         }
+    }
+
+    private func runRegenerateKey() async {
+        isRegenerating = true
+        defer { isRegenerating = false }
+        await FeedlingAPI.shared.regenerateCredentials()
+        // Reuse the same post-wipe re-import sheet as Delete Account: both
+        // paths leave the user with a fresh API key + a stale agent runtime
+        // pinned to the old one. The sheet surfaces the new MCP String and
+        // walks them through re-importing it.
+        showPostWipeReimport = true
     }
 
     private var settingsHeader: some View {

@@ -27,7 +27,6 @@ struct ChatEmptyStateView: View {
     @State private var firstAppearAt: Date? = nil
     @State private var now: Date = Date()
     @State private var copiedToast: String? = nil
-    @State private var dotPulse: Bool = false
 
     /// Per SETUP_COPY.md localization rule: Chinese phone (any zh variant)
     /// → Chinese; everything else → English.
@@ -46,25 +45,12 @@ struct ChatEmptyStateView: View {
 
     private var mcpString: String { api.mcpConnectionString }
 
-    /// Status pill copy — pre/post-connect.
-    /// Per spec, the headline mental model is "let him in" → "in". Once the
-    /// agent has written *anything* server-side (identity / memories / a
-    /// first message), `agentConnected` flips true, so the pill switches
-    /// from "waiting" to "he's here." Specific progress is in the rows below.
-    private var statusBadgeText: String {
-        if bootstrap.status.agentConnected {
-            return isChinese ? "TA 来了" : "He's here"
-        }
-        return isChinese ? "等 TA 入住" : "Waiting for him"
-    }
-
     // MARK: - Body
 
     var body: some View {
         ZStack(alignment: .top) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    statusBadge
                     titleBlock
                     hairline.padding(.vertical, 16)
                     stepsBlock
@@ -90,36 +76,11 @@ struct ChatEmptyStateView: View {
         .onAppear {
             if firstAppearAt == nil { firstAppearAt = Date() }
             bootstrap.startPolling()
-            withAnimation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true)) {
-                dotPulse = true
-            }
         }
         .onDisappear { bootstrap.stopPolling() }
         // 5 s ticker — only drives the relative-time string ("12 min ago")
         // and the 60 s stuck-threshold flip. 1 Hz would be wasted re-renders.
         .onReceive(Timer.publish(every: 5, on: .main, in: .common).autoconnect()) { now = $0 }
-    }
-
-    // MARK: - Status badge
-
-    private var statusBadge: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(bootstrap.status.agentConnected ? Color.cinAccent1 : Color.cinSub)
-                .frame(width: 6, height: 6)
-                .opacity(bootstrap.status.agentConnected ? 1.0 : (dotPulse ? 0.3 : 1.0))
-            Text(statusBadgeText)
-                .font(.dmMono(size: 9, weight: .medium))
-                .foregroundStyle(Color.cinSub)
-                .kerning(2.5)
-            if let rel = bootstrap.status.lastActivityRelative(now: now) {
-                Text("·  \(rel)")
-                    .font(.dmMono(size: 9))
-                    .foregroundStyle(Color.cinSub)
-                    .kerning(1.5)
-            }
-            Spacer()
-        }
     }
 
     // MARK: - Title

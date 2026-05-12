@@ -118,15 +118,17 @@ struct MemoryGardenView: View {
             Image(systemName: "leaf")
                 .font(.system(size: 48, weight: .thin))
                 .foregroundStyle(Color.cinLine)
-            Text(isChinese ? "花园还是空的" : "The garden is empty")
+            Text(isChinese ? "记忆花园还是空的" : "The memory garden's still empty")
                 .font(.newsreader(size: 22, italic: true))
                 .foregroundStyle(Color.cinSub)
             Text(isChinese
-                 ? "让你的 AI 运行 bootstrap，种下第一批记忆。"
-                 : "Ask your AI to run bootstrap and plant the first memories.")
+                 ? "等 TA 入住完，这里会种下你们之间值得记住的瞬间。"
+                 : "Once he's settled in, the moments worth keeping between you will grow here.")
                 .font(.interTight(size: 13))
                 .foregroundStyle(Color.cinSub)
                 .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 24)
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
