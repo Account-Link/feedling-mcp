@@ -2000,6 +2000,13 @@ def identity_init():
         return jsonify({"error": "envelope.visibility must be 'shared' or 'local_only'"}), 400
     if envelope["visibility"] == "shared" and not envelope.get("K_enclave"):
         return jsonify({"error": "envelope with visibility=shared requires K_enclave"}), 400
+    # Defense-in-depth: refuse envelopes whose claimed owner_user_id doesn't
+    # match the authenticated caller. The enclave's AEAD AAD check would also
+    # catch this later (decrypt fails on owner_user_id ≠ authorized_user_id),
+    # but rejecting at write time keeps the on-disk state consistent with the
+    # auth boundary. memory_add already does this — bring identity inline.
+    if envelope["owner_user_id"] != store.user_id:
+        return jsonify({"error": "envelope.owner_user_id does not match caller"}), 403
 
     # days_with_user is mandatory at init — Agent must compute and submit it.
     # We persist it as relationship_started_at (a fixed anchor) so subsequent
@@ -2056,6 +2063,10 @@ def identity_replace():
         return jsonify({"error": "envelope.visibility must be 'shared' or 'local_only'"}), 400
     if envelope["visibility"] == "shared" and not envelope.get("K_enclave"):
         return jsonify({"error": "envelope with visibility=shared requires K_enclave"}), 400
+    # Defense-in-depth: same owner check identity_init now does. See comment
+    # there for why.
+    if envelope["owner_user_id"] != store.user_id:
+        return jsonify({"error": "envelope.owner_user_id does not match caller"}), 403
 
     created_at = existing.get("created_at") if existing else now
     # Preserve the existing relationship anchor unless the caller explicitly
