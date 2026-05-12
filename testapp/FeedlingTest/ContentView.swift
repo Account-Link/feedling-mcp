@@ -1926,13 +1926,17 @@ private struct RailToggle: View {
     var body: some View {
         VStack(spacing: 8) {
             ZStack(alignment: .leading) {
+                // OFF uses cinSub (the same muted gray as surrounding
+                // secondary text + the "OFF" caption below). The earlier
+                // cinFg was too high-contrast for a relaxed off state
+                // and visually competed with the active primary content.
                 Capsule()
-                    .fill(displayedOn ? Color.cinAccent1 : Color.cinFg)
+                    .fill(displayedOn ? Color.cinAccent1 : Color.cinSub)
                     .frame(width: trackWidth - handleSize, height: 1.5)
                     .offset(x: handleSize / 2)
 
                 Circle()
-                    .strokeBorder(displayedOn ? Color.cinAccent1 : Color.cinFg, lineWidth: 1.5)
+                    .strokeBorder(displayedOn ? Color.cinAccent1 : Color.cinSub, lineWidth: 1.5)
                     .background(Circle().fill(Color.cinBg))
                     .frame(width: handleSize, height: handleSize)
                     .offset(x: displayedOn ? trackWidth - handleSize : 0)
