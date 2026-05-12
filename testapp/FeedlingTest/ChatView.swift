@@ -14,16 +14,24 @@ struct ChatView: View {
     var agentName: String { identityVM.identity?.agentName.isEmpty == false ? identityVM.identity!.agentName : "—" }
     var dayCount: Int { identityVM.identity?.daysWithUser ?? 0 }
 
-    /// Input-bar placeholder. During onboarding the agent doesn't have a name
-    /// yet, so "给 — 写点什么…" reads as broken. Show a generic prompt that
-    /// makes it obvious the user can type back to whatever message just
-    /// landed (typically a "what should I call you" from the bootstrap loop).
+    /// Matches the rest of the app: zh phone → Chinese, anything else → English.
+    /// Mirrors the pattern used in ChatEmptyStateView and SettingsView.
+    private let isChinese: Bool =
+        Locale.preferredLanguages.first?.hasPrefix("zh") ?? false
+
+    /// Input-bar placeholder. Before the agent's name is set (early
+    /// onboarding) we fall back to a generic prompt that doesn't render
+    /// the literal "—" agent name. Bilingual: an English-system user
+    /// should never see Chinese placeholder text.
     private var placeholderText: String {
-        if voice.isRecording { return "正在听…" }
-        if identityVM.identity?.agentName.isEmpty == false {
-            return "给 \(identityVM.identity!.agentName) 写点什么…"
+        if voice.isRecording {
+            return isChinese ? "正在听…" : "Listening…"
         }
-        return "回复你的 agent…"
+        if identityVM.identity?.agentName.isEmpty == false {
+            let name = identityVM.identity!.agentName
+            return isChinese ? "给 \(name) 写点什么…" : "Write to \(name)…"
+        }
+        return isChinese ? "回复你的 agent…" : "Reply to your agent…"
     }
 
     /// Onboarding state = "agent hasn't moved in yet." The four bootstrap
