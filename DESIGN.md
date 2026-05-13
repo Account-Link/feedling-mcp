@@ -17,8 +17,9 @@ here first.
 - **Space / industry:** Consumer AI companion × iOS utility × crypto /
   privacy infrastructure. Rare combination; no direct peer.
 - **Project type:** Primarily a native iOS app. Supporting marketing
-  surface is minimal today (`README.md`, `skill/SKILL.md`). DESIGN.md
-  serves the app first; any future marketing page inherits from it.
+  surface is minimal today (`README.md`, `deploy/SELF_HOSTING.md`,
+  and the public skill at io-onboarding). DESIGN.md serves the app
+  first; any future marketing page inherits from it.
 - **Peers surveyed (2026-04-20):** Linear (discipline reference),
   Granola (warmth reference, wrong-for-us), Dia (extreme-minimalism
   reference, too far), Replika (companion reference, too saccharine),

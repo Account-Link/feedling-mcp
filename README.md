@@ -13,7 +13,7 @@ Agent 是大脑，Feedling 是身体。
 2. **FastMCP server** (`backend/mcp_server.py`) — MCP protocol for Claude.ai / Claude Desktop
 3. **Enclave app** (`backend/enclave_app.py`) — TDX-CVM process that holds the content private key, terminates its own TLS, and runs the decrypt proxy
 4. **iOS app** (`testapp/`) — Chat · Identity · Garden · Settings, plus Live Activity / Dynamic Island, Broadcast Extension for screen capture, and a live **audit card** that re-verifies the enclave on every open
-5. **Skill** (`skill/SKILL.md`) — main loop spec for all agent modes (MCP via Claude.ai / Claude Desktop, and HTTP-mode agents via OpenClaw / Hermes)
+5. **Skill** — the agent's bootstrap + behavior spec. Lives in a separate public repo so it can be hot-updated without an iOS rebuild: <https://github.com/teleport-computer/io-onboarding>. Covers both MCP-mode (Claude Desktop / Code / OpenClaw / Cursor / Hermes) and HTTP-mode (custom agent backends paired with `feedling-chat-resident`) — Appendix A in the skill maps each MCP tool to its HTTP equivalent.
 6. **Contracts** (`contracts/`) — `FeedlingAppAuth` on Ethereum Sepolia, the on-chain allow-list of authorized `compose_hash`es
 7. **Tools** (`tools/`) — `audit_live_cvm.py` CLI that mirrors the iOS audit checks; DCAP verifier; envelope round-trip tests
 
@@ -27,9 +27,13 @@ feedling-mcp-v1/
 ├── tools/          ← audit_live_cvm.py + DCAP verifier + envelope tests
 ├── tests/          ← multi-tenant isolation + MCP session unit tests (pytest)
 ├── docs/           ← DESIGN_E2E.md · AUDIT.md · CHANGELOG.md
-├── skill/          ← SKILL.md for HTTP-mode agents (OpenClaw / chat-resident)
 ├── DESIGN.md       ← visual / UI design tokens
 └── CLAUDE.md       ← repo-level conventions for Claude Code
+
+The agent skill — what the AI reads when a user pastes the onboarding
+URL into their runtime — lives in the public companion repo
+github.com/teleport-computer/io-onboarding, NOT inside this repo,
+so updates are visible to all installed apps without an iOS rebuild.
 ```
 
 ---
@@ -167,9 +171,10 @@ shipped:
 ## Architecture
 
 ```
-Claude.ai / Claude Desktop       OpenClaw / Hermes / HTTP agents
+Claude.ai / Claude Desktop /      Non-MCP agent backends
+OpenClaw / Cursor / Hermes        (via feedling-chat-resident)
         │                               │
-        │ MCP SSE (port 5002 / TLS)     │ HTTP + SKILL.md (port 5001 / TLS)
+        │ MCP SSE (port 5002 / TLS)     │ HTTP + envelopes (port 5001 / TLS)
         ▼                               ▼
 ┌──────────────────────────────────────────────────────────┐
 │                         VPS host                         │
@@ -396,33 +401,32 @@ Self-hosted users derive the same shape using their own domain:
 claude mcp add feedling --transport sse "https://mcp.<your-domain>/sse?key=<api_key>"
 ```
 
-### OpenClaw / HTTP-skill agents
+### OpenClaw / HTTP-mode agents
+
+OpenClaw (and other MCP-capable agent runtimes) use the same MCP path
+as Claude Desktop — point them at the `mcp.feedling.app/sse` endpoint
+above and they'll fetch the live skill from io-onboarding automatically.
+
+For **non-MCP** agent backends (a custom Python script, a plain
+Anthropic/OpenAI loop, a local Llama endpoint), install the
+HTTP-mode bridge:
 
 ```bash
-mkdir -p ~/.openclaw/skills/feedling
-cp skill/SKILL.md ~/.openclaw/skills/feedling/SKILL.md
+cp deploy/chat_resident.env.example ~/feedling-chat-resident.env
+chmod 600 ~/feedling-chat-resident.env
+# Edit ~/feedling-chat-resident.env — set FEEDLING_API_URL, FEEDLING_API_KEY,
+# AGENT_MODE, and one of FEEDLING_ENCLAVE_URL / FEEDLING_MCP_URL.
+sudo cp deploy/feedling-chat-resident.service /etc/systemd/system/
+sudo systemctl enable --now feedling-chat-resident
 ```
 
-`~/.openclaw/openclaw.json`:
+See `tools/README.md` for the full setup — the agent backend exposes
+either an HTTP `/chat` endpoint or a CLI command; the consumer handles
+v1 envelope wrap + decrypt source + checkpoints.
 
-```json
-{
-  "skills": {
-    "entries": {
-      "feedling": {
-        "env": {
-          "FEEDLING_API_URL": "https://api.feedling.app",
-          "FEEDLING_API_KEY": "<your_api_key>"
-        }
-      }
-    }
-  }
-}
-```
-
-Self-hosted users: see `skill/SKILL.md` → **Self-Hosted Setup** for
-an end-to-end SSH runbook an agent can follow to deploy the server
-itself.
+Self-hosted users: see [`deploy/SELF_HOSTING.md`](deploy/SELF_HOSTING.md)
+for an end-to-end SSH runbook (clone, deps, env, systemd, HTTPS via
+Caddy, DNS, iOS pointing at your URL+key).
 
 ---
 
@@ -476,6 +480,8 @@ outside a user directory.
 | Redeploy the CVM or rotate `compose_hash` | `deploy/DEPLOYMENTS.md` |
 | See landmark diffs by session (current state lives here too) | `docs/CHANGELOG.md` |
 | Work on visuals / UI | `DESIGN.md` |
-| Set up a resident chat consumer for an HTTP/CLI agent | `skill/SKILL.md § Chat Resident Consumer` |
+| Run your own backend on your VPS | `deploy/SELF_HOSTING.md` |
+| Set up a resident chat consumer for a non-MCP agent backend | `tools/README.md` |
+| Read the agent skill (what your AI follows during bootstrap) | <https://github.com/teleport-computer/io-onboarding> |
 | Diagnose why chat messages aren't getting replies | `python tools/check_chat_pipeline.py` |
 | Run the multi-tenant isolation regression suite locally | `pytest tests/` |

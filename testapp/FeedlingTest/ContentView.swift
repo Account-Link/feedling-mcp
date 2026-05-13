@@ -1844,9 +1844,12 @@ struct RunbookView: View {
     }
 
     private func load() async {
-        // Best-effort: fetch the authoritative SKILL.md from GitHub raw.
-        // Falls back to a baked pointer if network is unavailable.
-        let url = URL(string: "https://raw.githubusercontent.com/teleport-computer/feedling-mcp/main/skill/SKILL.md")!
+        // Best-effort: fetch the authoritative self-hosting runbook from
+        // GitHub raw. Falls back to a baked pointer if network fails.
+        // (Previously this pointed at skill/SKILL.md, which mixed agent
+        // skill content with ops content. Those got split 2026-05-12:
+        // agent skill → io-onboarding/skill.md; ops → SELF_HOSTING.md.)
+        let url = URL(string: "https://raw.githubusercontent.com/teleport-computer/feedling-mcp/main/deploy/SELF_HOSTING.md")!
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
             if let s = String(data: data, encoding: .utf8) {
@@ -1855,13 +1858,15 @@ struct RunbookView: View {
             }
         } catch {}
         runbookText = """
-Couldn't fetch the latest runbook from GitHub.
+Couldn't fetch the latest self-hosting runbook from GitHub.
 
-Point your agent at:
-  https://github.com/teleport-computer/feedling-mcp/blob/main/skill/SKILL.md
+Open it directly:
+  https://github.com/teleport-computer/feedling-mcp/blob/main/deploy/SELF_HOSTING.md
 
-The runbook walks through: clone, deps, env, systemd units,
-Caddy + Let's Encrypt, DNS, iOS → your URL + key.
+It walks through: clone, deps, env, systemd units, Caddy + Let's Encrypt,
+DNS, iOS → your URL + key. Your agent will fetch its skill separately
+from https://raw.githubusercontent.com/teleport-computer/io-onboarding/main/skill.md
+once the server is up.
 
 Your data stays on your VPS. We stop being in the loop.
 """

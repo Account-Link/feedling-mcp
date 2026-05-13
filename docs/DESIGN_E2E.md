@@ -1404,8 +1404,8 @@ Proposed marketing / onboarding copy:
 > 2. **iOS app verification relies partly on Apple.** We publish every
 >    binary's hash, and security researchers verify them independently. If
 >    that's not enough, Feedling is open source — you can self-host the
->    entire stack. Our `SKILL.md` has a runbook any agent can follow to
->    deploy Feedling to your own VPS.
+>    entire stack. `deploy/SELF_HOSTING.md` has the end-to-end SSH
+>    runbook for deploying Feedling to your own VPS.
 >
 > Everything else — our VPS, our database, our logs, our employees with
 > SSH access, any future version of ourselves that turns evil — cannot
@@ -1498,7 +1498,9 @@ not promise.
 ## 15. References
 
 - `docs/CHANGELOG.md` — current shipped state + landmark diffs by session.
-- `skill/SKILL.md` — self-hosted runbook for users who prefer that over TEE.
+- `deploy/SELF_HOSTING.md` — end-to-end self-hosting runbook for users who prefer their own VPS over the TEE.
+- `tools/README.md` — HTTP-mode chat-resident bridge for non-MCP agent backends.
+- io-onboarding `skill.md` (separate public repo) — the agent skill the user pastes into their runtime: <https://github.com/teleport-computer/io-onboarding>.
 - `deploy/BUILD.md` — reproducible build recipe for the enclave container image.
 - **Audit tool: <https://github.com/sxysun/is-this-real-tea>** — the
   threat-model framework this doc is designed to pass.
