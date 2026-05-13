@@ -17,6 +17,23 @@ above is for the agent. Don't conflate them.
 
 ---
 
+## A note on encryption
+
+Feedling's v1 envelope encryption runs in self-hosted mode too — the
+iOS client wraps content before sending, the chat-resident daemon wraps
+replies, and the enclave service runs locally (in simulator mode
+without TDX hardware) and decrypts on demand for your agent.
+**You don't need to operate any of this**; it's automatic.
+
+The trust-model justification for encryption (an untrusted cloud
+operator) doesn't apply when you ARE the operator — but the code path
+is shared with cloud for simplicity, gives you defense-in-depth
+against accidental disk exposure, backup leaks, and log pollution, and
+costs you nothing operationally. If you want a plaintext mode to skip
+the crypto entirely, file an issue — it's possible but a real refactor.
+
+---
+
 ## 0. Pre-flight
 
 Before you start:
