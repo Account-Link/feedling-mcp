@@ -10,7 +10,7 @@ If your agent disagrees with anything here after reading the code,
 **trust your agent**. This document describes what the code is
 supposed to do; the code itself is the source of truth.
 
-> Repo: <https://github.com/Account-Link/feedling-mcp>
+> Repo: <https://github.com/teleport-computer/feedling-mcp>
 > Running enclave: `app_id=051a174f2457a6c474680a5d745372398f97b6ad` on Phala Cloud
 > On-chain release log: [FeedlingAppAuth @ `0x6c8A6f1e…49b88F`](https://sepolia.etherscan.io/address/0x6c8A6f1e3eD4180B2048B808f7C4b2874649b88F) (Eth Sepolia)
 
@@ -65,7 +65,7 @@ shell + code-read + web access.
 
 | # | Claim | How to verify | Effort |
 |---|---|---|---|
-| 1 | The repo you're reading matches the deployed binary. | Check the running `/attestation` endpoint's `git_commit` field; clone that commit; compute its docker image digest locally (`docker buildx` reproducible build); compare to the digest on `ghcr.io/account-link/feedling:<commit>`. Script: `deploy/BUILD.md`. | 30 min |
+| 1 | The repo you're reading matches the deployed binary. | Check the running `/attestation` endpoint's `git_commit` field; clone that commit; compute its docker image digest locally (`docker buildx` reproducible build); compare to the digest on `ghcr.io/teleport-computer/feedling:<commit>`. Script: `deploy/BUILD.md`. | 30 min |
 | 2 | The deployed `compose_hash` is what this repo's `docker-compose.phala.yaml` would produce. | Run `deploy/publish-compose-hash.sh` locally and compare to `/attestation`'s `compose_hash`. | 5 min |
 | 3 | The deployed `compose_hash` is in the on-chain release log. | `cast call --rpc-url <sepolia> 0x6c8A6f1e3eD4180B2048B808f7C4b2874649b88F "isAppAllowed(bytes32)(bool)" 0x<compose_hash>`. Expect `true`. | 1 min |
 | 4 | The TDX quote was signed by Intel hardware. | Run `tools/audit_live_cvm.py`; rows 1–3 are Intel's signature chain + measurement integrity. Script is ~70 lines of Python, easy to read. | 5 min |
@@ -147,8 +147,8 @@ source-review work.
 - `docs/DESIGN_E2E.md` — the full architecture, including §10
   "Threat model" which lists what this system can and cannot
   protect against.
-- `HANDOFF.md` — current state. Read the TL;DR for what's encrypted
-  today vs still plaintext vs not-yet-rewrapped.
+- `docs/CHANGELOG.md` — landmark diffs by session, including what
+  was encrypted at each phase and which paths are now fully v1.
 
 ---
 
@@ -198,7 +198,8 @@ Read this section carefully — it's the list of claims we
 
 ### We're working on
 
-Tracked in `HANDOFF.md` → "What's next":
+Tracked in `docs/CHANGELOG.md` (most recent entries) and on GitHub
+issues:
 
 - **Mainnet migration (Phase E)**: the on-chain contract lives on
   Ethereum Sepolia today. Moving to Ethereum / Base mainnet is
@@ -215,7 +216,7 @@ strip. See `docs/CHANGELOG.md` for the landmark diffs.
 
 ```bash
 # Clone the current repo state the CVM is running.
-git clone https://github.com/Account-Link/feedling-mcp
+git clone https://github.com/teleport-computer/feedling-mcp
 cd feedling-mcp
 
 # Set up an Ethereum Sepolia RPC (any provider — Alchemy,
@@ -259,7 +260,7 @@ and install it via Xcode directly — bypassing any middle party.
 
 ## 7. What to do if something here is wrong
 
-File an issue: <https://github.com/Account-Link/feedling-mcp/issues>.
+File an issue: <https://github.com/teleport-computer/feedling-mcp/issues>.
 
 If you found a real vulnerability, please email
 **security@feedling.app** before filing publicly. We will credit

@@ -14,10 +14,14 @@ tokens defined at the bottom of `DESIGN.md`.
 
 ## Reading order on session start
 
-1. `HANDOFF.md` — current state + what's next + guardrails.
-2. `docs/CHANGELOG.md` — landmark diffs from recent sessions.
-3. `DESIGN.md` — if doing any UI work.
-4. `deploy/DEPLOYMENTS.md` — if doing any enclave/CVM/on-chain work.
+1. `docs/CHANGELOG.md` — landmark diffs from recent sessions; this is
+   the source of truth for "what shipped, when, why."
+2. `DESIGN.md` — if doing any UI work.
+3. `deploy/DEPLOYMENTS.md` — if doing any enclave/CVM/on-chain work.
+
+There is no longer a separate HANDOFF.md — it was a session-relay doc
+from the v0→v1 strip era and was deleted 2026-05-12. Recent state lives
+in the CHANGELOG and in git log.
 
 ## Other repo conventions
 

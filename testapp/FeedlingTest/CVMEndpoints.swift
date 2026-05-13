@@ -10,13 +10,11 @@ import Foundation
 /// simulator runs; UserDefaults lets a user flip endpoints in-app without a
 /// rebuild; the default is what ships to the App Store.
 ///
-/// Migration plan (in-flight 2026-04-21): compose moves to prod9 with
-/// dstack-ingress multi-domain TXT routing (prod5/prod7 don't support
-/// `_dstack-app-address.<domain>` records per tutorial 04). Defaults below
-/// still point at the live prod5 CVM so pre-cutover builds keep working;
-/// flip them in one commit once the new prod9 CVM is up and its app_id is
-/// known — or set `feedling.cvm.appId` / `feedling.cvm.gatewayDomain` in
-/// UserDefaults to test against the new CVM without a rebuild.
+/// Production runs on Phala prod9 with dstack-ingress multi-domain TXT
+/// routing (prod5/prod7 don't support `_dstack-app-address.<domain>`
+/// records, which is why we migrated off them). Defaults below point at
+/// the live prod9 CVM. To test against a different CVM without a rebuild,
+/// set `feedling.cvm.appId` / `feedling.cvm.gatewayDomain` in UserDefaults.
 enum CVMEndpoints {
 
     // MARK: - Tunable defaults (update on each CVM migration)

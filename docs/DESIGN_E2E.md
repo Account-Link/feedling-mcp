@@ -3,8 +3,8 @@
 Status: **v0.4 — shipped through Phase D (2026-04-20)**
 Owner: @sxysun
 Historical framing: this doc was written against the multi-tenant backend
-introduced before E2E encryption. See `HANDOFF.md` for the current
-shipped state and `docs/CHANGELOG.md` for landmark diffs.
+introduced before E2E encryption. See `docs/CHANGELOG.md` for the current
+shipped state and landmark diffs.
 
 ---
 
@@ -354,9 +354,9 @@ The quote is served at `https://mcp.feedling.app/attestation` as:
     "git_commit": "abc123...",                 // commit hash of the enclave source
     "image_digest": "sha256:...",              // digest of the container image
     "built_at": "2026-05-01T00:00:00Z",
-    "compose_yaml_url": "https://github.com/Account-Link/feedling-mcp-v1/raw/abc123.../deploy/docker-compose.yaml",
-    "dockerfile_url":   "https://github.com/Account-Link/feedling-mcp-v1/raw/abc123.../deploy/Dockerfile",
-    "build_recipe_url": "https://github.com/Account-Link/feedling-mcp-v1/blob/abc123.../deploy/BUILD.md"
+    "compose_yaml_url": "https://github.com/teleport-computer/feedling-mcp-v1/raw/abc123.../deploy/docker-compose.yaml",
+    "dockerfile_url":   "https://github.com/teleport-computer/feedling-mcp-v1/raw/abc123.../deploy/Dockerfile",
+    "build_recipe_url": "https://github.com/teleport-computer/feedling-mcp-v1/blob/abc123.../deploy/BUILD.md"
   },
   "dstack_meta": {
     "base_image_measurement": "...",           // dstack OS MRTD + RTMR0-2 (published by Phala)
@@ -1426,7 +1426,7 @@ Point `is-this-real-tea` at our repo + deployed endpoint:
 ```
 Read https://raw.githubusercontent.com/sxysun/is-this-real-tea/main/AGENT.md
 and then audit this TEE app:
-  repo: https://github.com/Account-Link/feedling-mcp-v1
+  repo: https://github.com/teleport-computer/feedling-mcp-v1
   url:  https://mcp.feedling.app
 ```
 
@@ -1445,7 +1445,7 @@ The audit tool will check, and we commit to passing all of these:
 
 ### 14.2 Artifacts we publish
 
-- **Source:** https://github.com/Account-Link/feedling-mcp-v1
+- **Source:** https://github.com/teleport-computer/feedling-mcp-v1
 - **Build recipe + expected image digest:** `deploy/BUILD.md` on every
   tagged release.
 - **Release-signing pubkey fingerprint:** pinned in iOS binary, also
@@ -1497,10 +1497,9 @@ not promise.
 
 ## 15. References
 
-- `HANDOFF.md` — current shipped state + forward roadmap.
+- `docs/CHANGELOG.md` — current shipped state + landmark diffs by session.
 - `skill/SKILL.md` — self-hosted runbook for users who prefer that over TEE.
-- `deploy/BUILD.md` (to be written in Phase 1) — reproducible build recipe
-  for the enclave container image.
+- `deploy/BUILD.md` — reproducible build recipe for the enclave container image.
 - **Audit tool: <https://github.com/sxysun/is-this-real-tea>** — the
   threat-model framework this doc is designed to pass.
 - **dstack framework:** <https://github.com/Dstack-TEE/dstack>

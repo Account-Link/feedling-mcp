@@ -1846,7 +1846,7 @@ struct RunbookView: View {
     private func load() async {
         // Best-effort: fetch the authoritative SKILL.md from GitHub raw.
         // Falls back to a baked pointer if network is unavailable.
-        let url = URL(string: "https://raw.githubusercontent.com/Account-Link/feedling-mcp/main/skill/SKILL.md")!
+        let url = URL(string: "https://raw.githubusercontent.com/teleport-computer/feedling-mcp/main/skill/SKILL.md")!
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
             if let s = String(data: data, encoding: .utf8) {
@@ -1858,7 +1858,7 @@ struct RunbookView: View {
 Couldn't fetch the latest runbook from GitHub.
 
 Point your agent at:
-  https://github.com/Account-Link/feedling-mcp/blob/main/skill/SKILL.md
+  https://github.com/teleport-computer/feedling-mcp/blob/main/skill/SKILL.md
 
 The runbook walks through: clone, deps, env, systemd units,
 Caddy + Let's Encrypt, DNS, iOS → your URL + key.

@@ -754,7 +754,7 @@ Every step has a **Verify** line — do not move on until it passes.
 
 ### 1. Clone the repo
 ```bash
-ssh <user>@<host> "git clone https://github.com/Account-Link/feedling-mcp ~/feedling-mcp"
+ssh <user>@<host> "git clone https://github.com/teleport-computer/feedling-mcp ~/feedling-mcp"
 ```
 **Verify:** `ssh <user>@<host> "ls ~/feedling-mcp/backend/app.py"` prints the path.
 

@@ -638,9 +638,14 @@ struct AuditCardView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
-            // Open-source pointers — the docs a user hands to their agent
-            // for "is this safe?" + "how do I migrate?" questions.
-            Link(destination: URL(string: "https://github.com/Account-Link/feedling-mcp/blob/main/docs/AUDIT.md")!) {
+            // Open-source pointers — the doc a user hands to their agent
+            // for "is this safe?" questions, plus a source-browse link.
+            // The repo lives on the `teleport-computer` org now; the older
+            // `Account-Link` URL still 301-redirects but we link directly.
+            // The migration guide row used to link to docs/MIGRATION.md;
+            // that doc was retired 2026-05-12 (the v0→v1 / SINGLE_USER →
+            // multi-tenant migration it described is long since complete).
+            Link(destination: URL(string: "https://github.com/teleport-computer/feedling-mcp/blob/main/docs/AUDIT.md")!) {
                 HStack {
                     Image(systemName: "doc.text.magnifyingglass")
                     Text("Read the audit guide (for your agent)")
@@ -648,14 +653,7 @@ struct AuditCardView: View {
                 }
             }
             .padding(.top, 4)
-            Link(destination: URL(string: "https://github.com/Account-Link/feedling-mcp/blob/main/docs/MIGRATION.md")!) {
-                HStack {
-                    Image(systemName: "arrow.triangle.branch")
-                    Text("Migration guide (self-hosted → cloud)")
-                        .font(.caption)
-                }
-            }
-            Link(destination: URL(string: "https://github.com/Account-Link/feedling-mcp")!) {
+            Link(destination: URL(string: "https://github.com/teleport-computer/feedling-mcp")!) {
                 HStack {
                     Image(systemName: "chevron.left.forwardslash.chevron.right")
                     Text("Browse the source on GitHub")

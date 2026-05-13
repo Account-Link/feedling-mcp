@@ -25,9 +25,9 @@ feedling-mcp-v1/
 │                     + Caddyfile + systemd + setup.sh + DEPLOYMENTS.md
 ├── contracts/      ← FeedlingAppAuth (Solidity, Sepolia)
 ├── tools/          ← audit_live_cvm.py + DCAP verifier + envelope tests
-├── docs/           ← DESIGN_E2E.md · AUDIT.md · CHANGELOG.md · MIGRATION.md
-├── skill/          ← SKILL.md for OpenClaw (HTTP mode)
-├── HANDOFF.md      ← current state — read this first
+├── tests/          ← multi-tenant isolation + MCP session unit tests (pytest)
+├── docs/           ← DESIGN_E2E.md · AUDIT.md · CHANGELOG.md
+├── skill/          ← SKILL.md for HTTP-mode agents (OpenClaw / chat-resident)
 ├── DESIGN.md       ← visual / UI design tokens
 └── CLAUDE.md       ← repo-level conventions for Claude Code
 ```
@@ -114,15 +114,13 @@ green live against the running CVM:
    its SPKI sha256 matches the attested pubkey fingerprint
 8. All cryptographic signatures check out
 
-Canonical reference screenshot:
-`docs/screenshots/audit_card_phase3_tls_pinned.png` (6/6 card,
-pre–Phase C.2). Current deploy is 8/8 green.
+Current deploy is 8/8 green.
 
 ### 2. Command-line auditor (anyone, no iOS required)
 
 ```bash
 cd tools
-uv run audit_live_cvm.py --cvm-url https://<cvm-host>-5003s.dstack-pha-prod5.phala.network
+uv run audit_live_cvm.py --cvm-url https://<cvm-host>-5003s.dstack-pha-prod9.phala.network
 ```
 
 Mirrors all 8 rows of the iOS card. Good for CI, third-party
@@ -131,16 +129,17 @@ reviewers, and agent-driven verification.
 ### 3. Read the source on GitHub
 
 The image running in the CVM is
-`ghcr.io/account-link/feedling:<git-commit>` (public). The git
+`ghcr.io/teleport-computer/feedling:<git-commit>` (public). The git
 commit is baked into the image and surfaced in
 `GET /attestation` as `git_commit`. Compare to this repo's
 `git log` — if it doesn't match, don't trust the card.
 
 ---
 
-## Status (as of 2026-05-02)
+## Status (as of 2026-05-12)
 
-Read `HANDOFF.md` for the current snapshot. TL;DR:
+See `docs/CHANGELOG.md` for the full landmark history. TL;DR of what's
+shipped:
 
 **Shipped (Phases A–D + post-launch)**
 - [x] v0/SINGLE_USER strip — multi-tenant only; plaintext writes return 400
@@ -472,12 +471,11 @@ outside a user directory.
 
 | If you want to … | Read |
 |---|---|
-| Know the current state of the project | `HANDOFF.md` |
 | Understand the full encryption / enclave design | `docs/DESIGN_E2E.md` |
 | Verify the running enclave yourself | `docs/AUDIT.md` |
 | Redeploy the CVM or rotate `compose_hash` | `deploy/DEPLOYMENTS.md` |
-| See landmark diffs by session | `docs/CHANGELOG.md` |
+| See landmark diffs by session (current state lives here too) | `docs/CHANGELOG.md` |
 | Work on visuals / UI | `DESIGN.md` |
-| Move an existing self-hosted user to Feedling Cloud | `docs/MIGRATION.md` |
 | Set up a resident chat consumer for an HTTP/CLI agent | `skill/SKILL.md § Chat Resident Consumer` |
 | Diagnose why chat messages aren't getting replies | `python tools/check_chat_pipeline.py` |
+| Run the multi-tenant isolation regression suite locally | `pytest tests/` |

@@ -23,7 +23,7 @@ corresponding signed build attestation in GitHub Releases containing:
 
 ```bash
 # Clone the exact commit referenced in the on-chain AppAuth event
-git clone https://github.com/Account-Link/feedling-mcp.git
+git clone https://github.com/teleport-computer/feedling-mcp.git
 cd feedling-mcp
 git checkout <git_commit_from_appauth>
 
