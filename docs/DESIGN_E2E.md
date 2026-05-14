@@ -1,10 +1,17 @@
 # Feedling End-to-End Encryption — Design Doc (v0.4)
 
-Status: **v0.4 — shipped through Phase D (2026-04-20)**
+Status: **historical design doc — shipped through Phase D (2026-04-20);
+current production is prod9 pure-CVM as of Phase E**
 Owner: @sxysun
 Historical framing: this doc was written against the multi-tenant backend
 introduced before E2E encryption. See `docs/CHANGELOG.md` for the current
 shipped state and landmark diffs.
+
+Current live topology is summarized in `README.md` and
+`deploy/DEPLOYMENTS.md`: `api.feedling.app` and `mcp.feedling.app`
+terminate at `dstack-ingress` inside the prod9 CVM, while `/attestation`
+keeps enclave-owned TLS on `:5003` for certificate pinning. Some diagrams
+and endpoint examples below intentionally preserve the older design history.
 
 ---
 
@@ -354,9 +361,9 @@ The quote is served at `https://mcp.feedling.app/attestation` as:
     "git_commit": "abc123...",                 // commit hash of the enclave source
     "image_digest": "sha256:...",              // digest of the container image
     "built_at": "2026-05-01T00:00:00Z",
-    "compose_yaml_url": "https://github.com/teleport-computer/feedling-mcp-v1/raw/abc123.../deploy/docker-compose.yaml",
-    "dockerfile_url":   "https://github.com/teleport-computer/feedling-mcp-v1/raw/abc123.../deploy/Dockerfile",
-    "build_recipe_url": "https://github.com/teleport-computer/feedling-mcp-v1/blob/abc123.../deploy/BUILD.md"
+    "compose_yaml_url": "https://github.com/teleport-computer/feedling-mcp/raw/abc123.../deploy/docker-compose.phala.yaml",
+    "dockerfile_url":   "https://github.com/teleport-computer/feedling-mcp/raw/abc123.../deploy/Dockerfile",
+    "build_recipe_url": "https://github.com/teleport-computer/feedling-mcp/blob/abc123.../deploy/BUILD.md"
   },
   "dstack_meta": {
     "base_image_measurement": "...",           // dstack OS MRTD + RTMR0-2 (published by Phala)
@@ -1184,7 +1191,7 @@ can migrate off Phala later without changing the cryptographic construction.
 
 **Implication:** Phase 1 integrates with dstack (Phala's TDX runtime). The
 enclave container must be publishable to Phala's infrastructure. Our
-`deploy/docker-compose.yaml` stays the unit of deployment.
+`deploy/docker-compose.phala.yaml` is the production CVM deployment unit.
 
 ### 12.2 MRTD pre-approval cadence: **monthly batches + review-card for emergency patches**
 
@@ -1302,7 +1309,7 @@ guarantee we cannot bypass even if we wanted to. See §10 threat model
 
 ### 12.11 Env-var hygiene and image pinning: **no operator-settable security knobs**
 
-Every security-relevant env in `deploy/docker-compose.yaml` is baked into
+Every security-relevant env in `deploy/docker-compose.phala.yaml` is baked into
 the compose (covered by `compose_hash`) or derived from an attested
 dstack primitive at runtime. All docker images are pinned by `@sha256:…`,
 never by tag. The iOS audit (§5.2 step 5) enforces this statically —
@@ -1426,7 +1433,7 @@ Point `is-this-real-tea` at our repo + deployed endpoint:
 ```
 Read https://raw.githubusercontent.com/sxysun/is-this-real-tea/main/AGENT.md
 and then audit this TEE app:
-  repo: https://github.com/teleport-computer/feedling-mcp-v1
+  repo: https://github.com/teleport-computer/feedling-mcp
   url:  https://mcp.feedling.app
 ```
 
@@ -1445,7 +1452,7 @@ The audit tool will check, and we commit to passing all of these:
 
 ### 14.2 Artifacts we publish
 
-- **Source:** https://github.com/teleport-computer/feedling-mcp-v1
+- **Source:** https://github.com/teleport-computer/feedling-mcp
 - **Build recipe + expected image digest:** `deploy/BUILD.md` on every
   tagged release.
 - **Release-signing pubkey fingerprint:** pinned in iOS binary, also

@@ -3,7 +3,7 @@
 > Landmark diffs over time. Two months from now, this is how we remember
 > when a decision was made and why.
 >
-> Source-of-truth for "where we are now" is `HANDOFF.md`.
+> Source-of-truth for "where we are now" is this changelog plus `git log`.
 > `PROJECT_BRIEF.md` and `ROADMAP.md` were retired 2026-04-20 — historical
 > references to them below are preserved verbatim.
 
@@ -12,8 +12,8 @@
 ## 给 Claude Code 的说明
 
 **每次开新对话时**，请按顺序读：
-1. `HANDOFF.md`（当前状态 + 下一步 + guardrails）
-2. `CHANGELOG.md`（最近的变化——尤其是最上面 3-5 条）
+1. `CHANGELOG.md`（最近的变化——尤其是最上面 3-5 条）
+2. `CLAUDE.md`（当前 repo-level guardrails；`HANDOFF.md` 已删除）
 
 **每次完成一个 task 或做出决策时**，在文档顶部追加一条记录。格式见下面。
 
@@ -46,6 +46,31 @@
 ---
 
 ## 记录正文（最新的在上面）
+
+---
+
+## 2026-05-13
+
+### [DONE] README caught up to prod9 pure-CVM architecture
+
+- Updated `README.md` to describe the current production shape:
+  `dstack-ingress`, Flask backend, FastMCP, and enclave all run inside
+  the Phala prod9 TDX CVM.
+- Rewrote stale VPS/Caddy and Phase C.2 MCP-TLS claims: custom-domain
+  TLS now terminates at `dstack-ingress`; the attestation port keeps
+  its own pinnable TLS; content privacy rests on v1 envelopes sealed to
+  `enclave_content_pk`.
+- Refreshed the audit command, status checklist, deploy notes, HTTP
+  endpoint inventory, MCP tool count, and config reference to match the
+  current source.
+- Updated `tools/README.md` so the audit utility snippet uses the
+  current env+curl flow instead of the retired `--cvm-url` flag.
+- Updated `docs/AUDIT.md`, `docs/DESIGN_E2E.md`,
+  `deploy/DEPLOYMENTS.md`, `deploy/BUILD.md`,
+  `ios/FeedlingDCAP/README.md`, and `CLAUDE.md` for prod9/current-state
+  clarity and redacted retired host/user/APNs identifiers from tracked
+  docs.
+- Corrected the changelog preamble itself now that `HANDOFF.md` is gone.
 
 ---
 
@@ -112,7 +137,7 @@ phase). Defaults still point at prod5 so pre-cutover builds work; flip
 to prod9 in a follow-up commit once app_id is known.
 
 **Broadcast extension**: `SharedConfig.defaultIngestEndpoint` replaces
-three `ws://54.209.126.4:9998/ingest` fallbacks. Extension is a
+three `ws://[retired VPS IP redacted]:9998/ingest` fallbacks. Extension is a
 separate target and can't import `CVMEndpoints`; the real endpoint is
 still written by `FeedlingAPI.init` to App Group UserDefaults, so the
 fallback only matters on very first broadcast.
@@ -144,9 +169,9 @@ publishes compose_hash, flips `CVM_ID` repo var, auto-commits iOS
 `CVMEndpoints` bump `[skip ci]`. Run `audit_live_cvm.py` + fresh iOS
 install to confirm 8/8 + 6/6. Then trigger `retire-prod5-vps.yml` with
 `confirm=yes-delete-prod5` → `phala cvms delete` prod5, SSH stop+mask
-VPS systemd units + tombstone, purge VPS IP from CF, delete stale
-`VPS_*` repo vars/secret. See `HANDOFF.md` §"Migration (in-flight,
-2026-04-21)" for the full runbook.
+VPS systemd units + tombstone, purge retired VPS DNS from CF, delete
+stale `VPS_*` repo vars/secret. `HANDOFF.md` was later retired; current
+deployment state lives in `deploy/DEPLOYMENTS.md`.
 
 ### [DONE] Bootstrap + retire workflows for CI-driven prod9 migration
 
@@ -161,9 +186,9 @@ only with mandatory `confirm` inputs.
   bump tagged `[skip ci]`). Pre-flight gate aborts if a CVM named
   `feedling-enclave-v2` already exists (prevents double-deploy).
 - `retire-prod5-vps.yml` deletes the prod5 CVM, SSHes the VPS as
-  `openclaw` and stops/disables/masks the `feedling-backend`
+  `[retired service user]` and stops/disables/masks the `feedling-backend`
   + `feedling-mcp` systemd-user units (drops `~/RETIRED.md`), purges
-  any CF record still pointing at `54.209.126.4`, and removes
+  any CF record still pointing at `[retired VPS IP redacted]`, and removes
   `VPS_HOST`/`VPS_USER`/`VPS_DEPLOY_KEY` from repo state. Safety
   gate refuses to run unless `CVM_ID` has already been flipped away
   from the hardcoded prod5 UUID (i.e., bootstrap ran successfully
@@ -353,7 +378,7 @@ whose private key is provably inside the TDX enclave. Closes task #30.
   hostname and a CA-valid cert.
 
 **Operational**
-- CF DNS: new A record `mcp.feedling.app → 54.209.126.4` (VPS
+- CF DNS: new A record `mcp.feedling.app → [retired VPS IP redacted]` (VPS
   where Caddy runs). DNS-only (not Cloudflare-proxied) so Caddy
   can do its own HTTP-01 ACME for the public-facing `mcp.feedling.app`
   cert without Cloudflare terminating first.
@@ -687,7 +712,7 @@ attestation-details page and its "how we get them" affordance.
 - Local E2E against dstack simulator: seeded 3 v0 chat + 3 v0 memory, iOS launched with seeded api_key, migration reported `ok=6`, server afterwards had 0 v0 / 3+3 v1 items, enclave decrypt returned correct plaintext for all.
 
 **Follow-up (A.6e)**
-- Only one real prod user today (@sxysun's friend). After her iOS launches the updated app and the migration flips her data to v1, strip the v0 accept branches in backend handlers, the v0 fallback paths in MCP tools, and the `/v1/content/rewrap` endpoint itself (single-use). Tracked as task #23.
+- Only one real prod user today (a private tester). After her iOS launches the updated app and the migration flips her data to v1, strip the v0 accept branches in backend handlers, the v0 fallback paths in MCP tools, and the `/v1/content/rewrap` endpoint itself (single-use). Tracked as task #23.
 
 ---
 

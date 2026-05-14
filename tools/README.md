@@ -193,11 +193,18 @@ Mirrors the 8 audit checks the iOS app runs. Good for CI gates,
 third-party reviewers, agents doing "is this safe" checks.
 
 ```bash
-uv run audit_live_cvm.py --cvm-url https://<cvm-host>-5003s.dstack-pha-prod9.phala.network
+export FEEDLING_CVM_APP_ID=9798850e096d770293c67305c6cfdceed68c1d28
+export FEEDLING_CVM_GATEWAY_DOMAIN=dstack-pha-prod9.phala.network
+export FEEDLING_ATTESTATION_URL="https://${FEEDLING_CVM_APP_ID}-5003s.${FEEDLING_CVM_GATEWAY_DOMAIN}/attestation"
+export ETH_SEPOLIA_RPC_URL="https://sepolia.infura.io/v3/<key>"
+export FEEDLING_APP_AUTH_CONTRACT=0x6c8A6f1e3eD4180B2048B808f7C4b2874649b88F
+
+curl -sk "$FEEDLING_ATTESTATION_URL" > /tmp/fl_cvm_attest.json
+python3 tools/audit_live_cvm.py
 ```
 
-Exit code 0 = all 8 rows green. See `docs/AUDIT.md` for what each row
-proves.
+Exit code 0 = all rows pass; on prod9 row 8 is a green disclosure about
+ingress-terminated MCP TLS. See `docs/AUDIT.md` for what each row proves.
 
 ---
 

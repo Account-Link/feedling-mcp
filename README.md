@@ -11,18 +11,21 @@ Agent 是大脑，Feedling 是身体。
 
 1. **Flask HTTP backend** (`backend/app.py`) — iOS + HTTP-skill agent API
 2. **FastMCP server** (`backend/mcp_server.py`) — MCP protocol for Claude.ai / Claude Desktop
-3. **Enclave app** (`backend/enclave_app.py`) — TDX-CVM process that holds the content private key, terminates its own TLS, and runs the decrypt proxy
-4. **iOS app** (`testapp/`) — Chat · Identity · Garden · Settings, plus Live Activity / Dynamic Island, Broadcast Extension for screen capture, and a live **audit card** that re-verifies the enclave on every open
-5. **Skill** — the agent's bootstrap + behavior spec. Lives in a separate public repo so it can be hot-updated without an iOS rebuild: <https://github.com/teleport-computer/io-onboarding>. Covers both MCP-mode (Claude Desktop / Code / OpenClaw / Cursor / Hermes) and HTTP-mode (custom agent backends paired with `feedling-chat-resident`) — Appendix A in the skill maps each MCP tool to its HTTP equivalent.
-6. **Contracts** (`contracts/`) — `FeedlingAppAuth` on Ethereum Sepolia, the on-chain allow-list of authorized `compose_hash`es
-7. **Tools** (`tools/`) — `audit_live_cvm.py` CLI that mirrors the iOS audit checks; DCAP verifier; envelope round-trip tests
+3. **Production CVM stack** (`deploy/docker-compose.phala.yaml`) — dstack-ingress + Flask + FastMCP + enclave services running inside one Phala TDX CVM
+4. **Enclave app** (`backend/enclave_app.py`) — owns the content private key, serves `/attestation` on its own pinnable TLS port, and runs the decrypt proxy
+5. **iOS app** (`testapp/`) — Chat · Identity · Garden · Settings, plus Live Activity / Dynamic Island, Broadcast Extension for screen capture, and a live **audit card** that re-verifies the enclave on every open
+6. **Skill** — the agent's bootstrap + behavior spec. Lives in a separate public repo so it can be hot-updated without an iOS rebuild: <https://github.com/teleport-computer/io-onboarding>. Covers both MCP-mode (Claude Desktop / Code / OpenClaw / Cursor / Hermes) and HTTP-mode (custom agent backends paired with `feedling-chat-resident`) — Appendix A in the skill maps each MCP tool to its HTTP equivalent.
+7. **Contracts** (`contracts/`) — `FeedlingAppAuth` on Ethereum Sepolia, the on-chain allow-list of authorized `compose_hash`es
+8. **Tools** (`tools/`) — `audit_live_cvm.py` CLI that mirrors the iOS audit checks; DCAP verifier; envelope round-trip tests
 
 ```
 feedling-mcp-v1/
 ├── backend/        ← Flask (5001) + FastMCP (5002) + enclave_app (5003)
 ├── testapp/        ← iOS SwiftUI app + Widget + Broadcast Extension
-├── deploy/         ← docker-compose.yaml (host) + docker-compose.phala.yaml (CVM)
-│                     + Caddyfile + systemd + setup.sh + DEPLOYMENTS.md
+├── deploy/         ← docker-compose.yaml (local/self-host)
+│                     + docker-compose.phala.yaml (production CVM)
+│                     + Caddyfile/systemd/setup.sh for self-hosting
+│                     + DEPLOYMENTS.md
 ├── contracts/      ← FeedlingAppAuth (Solidity, Sepolia)
 ├── tools/          ← audit_live_cvm.py + DCAP verifier + envelope tests
 ├── tests/          ← multi-tenant isolation + MCP session unit tests (pytest)
@@ -40,8 +43,9 @@ so updates are visible to all installed apps without an iOS rebuild.
 
 ## What guarantees does Feedling give you?
 
-The trust story, in one page. Full derivation in
-`docs/DESIGN_E2E.md`; live-verify procedure in `docs/AUDIT.md`.
+The trust story, in one page. `docs/DESIGN_E2E.md` has the historical
+derivation, `docs/AUDIT.md` has the broader source-review guide, and
+the current live-verify command is below.
 
 1. **Content-at-rest is ciphertext.** Chat, memory moments, identity
    card, agent nudges, agent replies, screen frames — every write path
@@ -55,12 +59,12 @@ The trust story, in one page. Full derivation in
    plaintext writes with `400 plaintext_write_rejected`.
 
 2. **Keys are bound to the enclave, not the operator.** The enclave's
-   content private key and TLS private key are derived from
-   **dstack-KMS** inside the TDX CVM at boot. The operator of the
-   Phala host, the VPS root, and anyone with DB access see only
-   ciphertext and public keys. Keys stay stable across compose
-   updates for this `app_id`, so `compose_hash` rotations don't
-   trigger a user-visible rewrap dance.
+   content private key and attestation-port TLS private key are
+   derived from **dstack-KMS** inside the TDX CVM at boot. The Phala
+   host operator, the dstack-ingress layer, and anyone with backend
+   disk access see only ciphertext and public keys. Keys stay stable
+   across compose updates for this `app_id`, so `compose_hash`
+   rotations don't trigger a user-visible rewrap dance.
 
 3. **Which code is actually running is provable.** The enclave
    produces a DCAP-signed TDX **attestation quote**. `REPORT_DATA`
@@ -69,10 +73,12 @@ The trust story, in one page. Full derivation in
      CEKs to — so you can't be MITM'd onto a different pubkey)
    - `sha256(attestation-port TLS cert DER)` (so the iOS app pins
      the exact cert it's talking to)
-   - `mcp_tls_cert_pubkey_fingerprint_hex` (SPKI sha256 of the
-     **MCP-port Let's Encrypt cert's public key** — that key is
-     derived from dstack-KMS at path `feedling-mcp-tls-v1`, so it
-     survives 90-day LE renewals)
+   Current production runs on Phala prod9 with `dstack-ingress`
+   terminating `api.feedling.app` and `mcp.feedling.app` inside the
+   CVM. The older Phase C.2 MCP TLS pubkey pin is retired in this
+   topology, so `mcp_tls_cert_pubkey_fingerprint_hex` is intentionally
+   empty and the audit card surfaces that as a transport disclosure,
+   not a content-privacy failure.
    RTMR3 event-log replay proves that the `compose_hash` measured
    into the quote matches the compose file in this repo.
 
@@ -84,11 +90,13 @@ The trust story, in one page. Full derivation in
    log is **public transparency**, not the security boundary: the
    real boundary is the DCAP quote + `compose_hash` binding.
 
-5. **MITM is detectable, not implicitly trusted.** iOS pins the
-   live attestation-port cert's `sha256(DER)` to the fingerprint
-   in the quote, and pins the live MCP-port LE cert's SPKI sha256
-   to the fingerprint in the quote. Network-level interception
-   surfaces as a failed audit row, not silent compromise.
+5. **Attestation MITM is detectable, and content privacy does not
+   depend on custom-domain TLS.** iOS pins the live attestation-port
+   cert's `sha256(DER)` to the fingerprint in the quote. The public
+   `api.feedling.app` and `mcp.feedling.app` domains use standard
+   Let's Encrypt TLS at `dstack-ingress`; that protects bystanders
+   and normal network traffic, while content confidentiality comes
+   from the v1 envelopes sealed to `enclave_content_pk`.
 
 6. **Multi-tenant isolation.** Each user is registered via
    `POST /v1/users/register`, gets an api_key, and lives under
@@ -105,30 +113,37 @@ together give you defense in depth.
 
 ### 1. iOS audit card (on-device, one tap)
 
-Open the app → Settings → **Privacy → Audit card**. 8 rows turn
-green live against the running CVM:
+Open the app → Settings → **Privacy → Audit card**. The card checks
+the running CVM live from the device:
 
-1. `/attestation` reachable + parses
-2. DCAP quote chains to Intel SGX Root CA
-3. Measurements non-zero + `mr_config_id[0]=0x01`
-4. `compose_hash` authorized on `FeedlingAppAuth` (Sepolia)
-5. RTMR3 event log replay matches `compose_hash` + `mr_config_id`
+1. Intel TDX hardware attestation and PCK chain
+2. Body ECDSA signature
+3. Base-image pin/reference
+4. `compose_hash` binding via `mr_config_id` and RTMR3 event-log replay
+5. `compose_hash` authorization on `FeedlingAppAuth` (Ethereum Sepolia)
 6. Attestation-port TLS cert `sha256(DER)` matches REPORT_DATA
-7. MCP-port Let's Encrypt cert verifies against the public CA *and*
-   its SPKI sha256 matches the attested pubkey fingerprint
-8. All cryptographic signatures check out
-
-Current deploy is 8/8 green.
+7. Current prod9 transport disclosure: `api.feedling.app` and
+   `mcp.feedling.app` use standard Let's Encrypt TLS at
+   `dstack-ingress`; content privacy is enforced by the envelope key
+   bound to `enclave_content_pk`
 
 ### 2. Command-line auditor (anyone, no iOS required)
 
 ```bash
-cd tools
-uv run audit_live_cvm.py --cvm-url https://<cvm-host>-5003s.dstack-pha-prod9.phala.network
+export FEEDLING_CVM_APP_ID=9798850e096d770293c67305c6cfdceed68c1d28
+export FEEDLING_CVM_GATEWAY_DOMAIN=dstack-pha-prod9.phala.network
+export FEEDLING_ATTESTATION_URL="https://${FEEDLING_CVM_APP_ID}-5003s.${FEEDLING_CVM_GATEWAY_DOMAIN}/attestation"
+export ETH_SEPOLIA_RPC_URL="https://sepolia.infura.io/v3/<key>"
+export FEEDLING_APP_AUTH_CONTRACT=0x6c8A6f1e3eD4180B2048B808f7C4b2874649b88F
+
+curl -sk "$FEEDLING_ATTESTATION_URL" > /tmp/fl_cvm_attest.json
+python3 tools/audit_live_cvm.py
 ```
 
-Mirrors all 8 rows of the iOS card. Good for CI, third-party
-reviewers, and agent-driven verification.
+Mirrors the iOS checks. Row 8 is green with disclosure on prod9 when
+`mcp_tls_cert_pubkey_fingerprint_hex` is empty, because MCP TLS is now
+ingress-terminated and content-layer envelope crypto remains the
+privacy boundary.
 
 ### 3. Read the source on GitHub
 
@@ -140,20 +155,22 @@ commit is baked into the image and surfaced in
 
 ---
 
-## Status (as of 2026-05-12)
+## Status (as of 2026-05-13)
 
 See `docs/CHANGELOG.md` for the full landmark history. TL;DR of what's
 shipped:
 
-**Shipped (Phases A–D + post-launch)**
+**Shipped (Phases A–E + post-launch)**
 - [x] v0/SINGLE_USER strip — multi-tenant only; plaintext writes return 400
 - [x] iOS end-to-end: chat / memory / identity / nudges / agent replies all v1 envelopes
-- [x] TDX CVM live on Phala Cloud with on-chain `compose_hash` authorization
-- [x] In-enclave TLS on both attestation (5003) and MCP (5002) ports
-- [x] ACME-DNS-01 inside the CVM — Let's Encrypt cert with private key provably inside TDX
-- [x] iOS audit card 8/8 green; `tools/audit_live_cvm.py` 8/8 green
+- [x] Pure-CVM production stack live on Phala prod9: dstack-ingress + backend + MCP + enclave
+- [x] `api.feedling.app` and `mcp.feedling.app` routed through dstack-ingress inside the CVM
+- [x] Attestation port (5003) still terminates its own dstack-KMS-derived TLS for pinning
+- [x] On-chain `compose_hash` authorization via `FeedlingAppAuth` on Ethereum Sepolia
+- [x] iOS audit card and `tools/audit_live_cvm.py` cover prod9 ingress disclosure + enclave content-key trust
 - [x] CI: `backend/test_api.py` rewritten for envelope-only backend, green on GitHub Actions
-- [x] Prod user migrated to multi-tenant on current image; registration race fixed
+- [x] CI deploys the Phala CVM from `deploy/docker-compose.phala.yaml` and publishes the live compose hash
+- [x] Prod user migrated to multi-tenant on current image; registration race and cross-tenant isolation regressions fixed
 - [x] Screen recording (Broadcast Extension) — encrypted frame ingest, agent reads via `decrypt_frame`
 - [x] Live Activity / Dynamic Island — agent push + chat sync; onboarding slide to enable
 - [x] Proactive messaging loop — semantic-first screen analysis, agent decides when to reach out
@@ -162,7 +179,7 @@ shipped:
 - [x] Identity page: `signature` field displayed; bilingual empty state
 - [x] SKILL.md: main loop spec for both MCP and HTTP agents; memory quality rewrite (friend test)
 
-**Deferred (Phase E, post-launch)**
+**Deferred (post-launch)**
 - [ ] Migrate on-chain `FeedlingAppAuth` to Ethereum mainnet
 - [ ] Claude.ai connector submission
 
@@ -171,17 +188,23 @@ shipped:
 ## Architecture
 
 ```
-Claude.ai / Claude Desktop /      Non-MCP agent backends
-OpenClaw / Cursor / Hermes        (via feedling-chat-resident)
-        │                               │
-        │ MCP SSE (port 5002 / TLS)     │ HTTP + envelopes (port 5001 / TLS)
-        ▼                               ▼
-┌──────────────────────────────────────────────────────────┐
-│                         VPS host                         │
-│  Caddy  ──►  backend (Flask, 5001)                       │
-│         ──►  mcp     (FastMCP SSE, 5002, →  backend)     │
-└──────────────────────────────────────────────────────────┘
-        │ APNs (JWT + .p8)       ▲ WebSocket (port 9998, Bearer api_key)
+Claude.ai / Claude Desktop /       Non-MCP agent backends
+OpenClaw / Cursor / Hermes         (via feedling-chat-resident)
+        │                                │
+        │ MCP SSE                        │ HTTPS + envelopes
+        ▼                                ▼
+┌────────────────────────────────────────────────────────────────┐
+│                    Phala prod9 TDX CVM                         │
+│  dstack-ingress (443, LE TLS)                                  │
+│      ├── mcp.feedling.app ──► mcp     (FastMCP SSE, 5002)      │
+│      └── api.feedling.app ──► backend (Flask API, WS, 5001)    │
+│                                      │                         │
+│                                      ▼                         │
+│                              enclave_app (5003)                │
+│                              content private key               │
+│                              /attestation + decrypt proxy      │
+└────────────────────────────────────────────────────────────────┘
+        │ APNs (JWT + .p8)       ▲ WebSocket ingest (9998, Bearer api_key)
         ▼                        │
 ┌──────────────────────────────────────────────────────────┐
 │                       iPhone (iOS)                       │
@@ -189,21 +212,9 @@ OpenClaw / Cursor / Hermes        (via feedling-chat-resident)
 │  Dynamic Island / Live Activity · Broadcast Extension    │
 └──────────────────────────────────────────────────────────┘
 
-                                         TDX CVM (Phala dstack)
-                                         ┌──────────────────────┐
-    iOS audit card ──pins sha256(DER)──► │ enclave_app (5003)   │
-    MCP reads (decrypt proxy)  ────────► │   content priv key   │
-    LE cert (mcp.feedling.app, 5002) ──► │   from dstack-KMS    │
-                                         │   REPORT_DATA bakes: │
-                                         │   - content_pk_fpr   │
-                                         │   - tls cert_der_fpr │
-                                         │   - mcp spki fpr     │
-                                         └──────────────────────┘
-                                              │
-                                              │ compose_hash authorized
-                                              ▼
-                                    FeedlingAppAuth (Sepolia)
-                                    0x6c8A6f1e3eD4180B2048B808f7C4b2874649b88F
+    iOS audit card ──pins sha256(DER) on -5003s passthrough──► enclave_app
+    compose_hash authorized on Ethereum Sepolia ─────────────► FeedlingAppAuth
+                                                               0x6c8A6f1e3eD4180B2048B808f7C4b2874649b88F
 ```
 
 ---
@@ -214,14 +225,23 @@ OpenClaw / Cursor / Hermes        (via feedling-chat-resident)
 
 | Process | File | Port | Purpose |
 |---------|------|------|---------|
+| dstack-ingress | `deploy/docker-compose.phala.yaml` | 443 | Production TLS + SNI routing for `api.feedling.app` and `mcp.feedling.app` inside the CVM |
 | Flask backend | `backend/app.py` | 5001 | iOS + agent HTTP API, envelope storage |
 | MCP server | `backend/mcp_server.py` | 5002 | MCP SSE for Claude.ai / Claude Desktop |
-| Enclave app | `backend/enclave_app.py` | 5003 | TDX CVM: `/attestation`, decrypt proxy, MCP-port TLS |
+| Enclave app | `backend/enclave_app.py` | 5003 | TDX CVM: `/attestation`, own pinnable TLS, decrypt proxy |
 
-The host-side `backend` and `mcp` services run on the VPS and proxy
-via Caddy. The `enclave` service is deployed separately to a Phala
-CVM using `deploy/docker-compose.phala.yaml` — that file's
-`compose_hash` is what the on-chain contract authorizes.
+Production is CVM-only. `deploy/docker-compose.phala.yaml` runs
+`ingress`, `backend`, `mcp`, and `enclave` together inside the Phala
+prod9 TDX CVM; that file's live `compose_hash` is what the on-chain
+contract authorizes. `api.feedling.app` and `mcp.feedling.app` are
+plain HTTP upstreams behind `dstack-ingress`. The `enclave` service
+keeps its own TLS on `:5003` and is reached through the dstack-gateway
+`-5003s.` passthrough so iOS can pin its cert fingerprint against
+REPORT_DATA.
+
+The local/self-hosting path still uses `deploy/docker-compose.yaml`,
+systemd units, and optionally Caddy on a VPS you control. See
+`deploy/SELF_HOSTING.md`.
 
 There is **no** `chat_bridge.py` anymore. Retired 2026-04-20 when
 MCP's `feedling_chat_post_message` landed and agent replies started
@@ -229,7 +249,7 @@ wrapping to v1 envelopes directly inside the CVM.
 
 ### Run (quick start)
 
-**Docker / docker-compose (host services):**
+**Docker / docker-compose (local or self-hosted host services):**
 
 ```bash
 cp deploy/feedling.env.example deploy/.env   # APNs, public base URL, etc.
@@ -238,18 +258,29 @@ docker compose -f deploy/docker-compose.yaml --env-file deploy/.env up -d --buil
 
 Brings up `backend` (5001) + `mcp` (5002). Data persists in the
 named volume `feedling_data` (mounted at `/data`). Drop the APNs
-`.p8` into that volume to enable push.
+`.p8` into that volume to enable push. This compose is for local
+development and self-hosting; it is not the production prod9 CVM
+topology.
 
-**Phala CVM (enclave):**
+**Phala CVM (production stack):**
 
 ```bash
-phala deploy -c deploy/docker-compose.phala.yaml -n feedling-enclave \
-  -e CF_ZONE_ID=... -e CF_API_TOKEN=...
-bash deploy/publish-compose-hash.sh   # authorize on-chain
+phala deploy \
+  --cvm-id "$(tr -d '[:space:]' < deploy/prod-cvm-id.txt)" \
+  -c deploy/docker-compose.phala.yaml \
+  -e CF_ZONE_ID=... \
+  -e CF_API_TOKEN=... \
+  -e APNS_KEY_P8_B64=... \
+  --wait
+
+./deploy/publish-compose-hash.sh eth_sepolia
 ```
 
-See `deploy/DEPLOYMENTS.md` for the full enclave redeploy runbook
-and `docs/AUDIT.md` for the live-verify procedure.
+Normal production deploys are CI-driven on pushes to `main`: GitHub
+Actions waits for the GHCR image, pins `deploy/docker-compose.phala.yaml`
+to the current short SHA, deploys the CVM, then publishes the live
+dstack-computed `compose_hash` on Sepolia. See `deploy/DEPLOYMENTS.md`
+for deployment records and `docs/AUDIT.md` for live verification.
 
 **Bare-metal / systemd (host only):**
 
@@ -266,7 +297,10 @@ Creates a venv under `~/feedling-venv`, installs deps, writes
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/v1/users/register` | Multi-tenant registration → returns per-user `api_key` |
+| GET | `/v1/users/whoami` | Return caller id, user public key, and live enclave pubkey metadata |
+| POST | `/v1/users/public-key` | Repair/update the caller's content public key |
 | POST | `/v1/bootstrap` | First-connection trigger; returns instructions for Agent |
+| GET | `/v1/bootstrap/status` | Bootstrap progress/events for the iOS status surface |
 | GET | `/v1/identity/get` | Read identity envelope (response includes live `days_with_user` from server anchor) |
 | POST | `/v1/identity/init` | Write identity envelope (once, 5 dimensions). Requires `days_with_user` to set the relationship anchor |
 | POST | `/v1/identity/replace` | In-place rewrite of envelope. `days_with_user` optional — preserves anchor if omitted |
@@ -278,25 +312,32 @@ Creates a venv under `~/feedling-venv`, installs deps, writes
 | POST | `/v1/content/swap` | In-place envelope swap (visibility toggles) |
 | GET | `/v1/content/export` | Export all user content as envelopes |
 | POST | `/v1/account/reset` | Wipe this user's data + rotate api_key |
+| GET | `/v1/screen/ios` | iOS screen/frame aggregation |
+| GET | `/v1/screen/mac` | Mock Mac activity payload used by early demos |
 | GET | `/v1/screen/analyze` | Semantic-first screen analysis + `rate_limit_ok` |
 | GET | `/v1/screen/summary` | Today's screen-time rollup (top app, minutes, pickups) |
+| GET | `/v1/sources` | Source list for screen/activity data |
 | GET | `/v1/screen/frames/latest` | Latest frame metadata (v1 envelope; image is ciphertext) |
 | GET | `/v1/screen/frames` | List recent frames (metadata only) |
+| GET | `/v1/screen/frames/<filename>` | Raw encrypted frame envelope file |
+| GET | `/v1/screen/frames/<id>/envelope` | Raw v1 frame envelope JSON for enclave decrypt |
 | GET | `/v1/screen/frames/<id>/decrypt` | Enclave decrypt → plaintext OCR + optional base64 JPEG |
-| GET | `/v1/screen/frames/<id>/image` | Raw JPEG bytes, `Accept-Ranges: bytes` for parallel fetch |
+| GET | `/v1/screen/frames/<id>/image` | Enclave-decrypted JPEG bytes, `Accept-Ranges: bytes` for parallel fetch |
 | POST | `/v1/push/dynamic-island` | Push to Dynamic Island |
 | POST | `/v1/push/live-activity` | Update Live Activity |
+| POST | `/v1/push/live-start` | Start a Live Activity via push-to-start token |
+| POST | `/v1/push/notification` | Send a standard APNs notification |
 | GET | `/v1/push/tokens` | List registered APNs tokens |
 | POST | `/v1/push/register-token` | iOS app registers APNs token |
 | GET | `/v1/chat/history` | Fetch chat envelopes |
 | POST | `/v1/chat/message` | User sends a message envelope (iOS app) |
-| POST | `/v1/chat/response` | Agent posts a reply envelope |
+| POST | `/v1/chat/response` | Agent posts a text or image reply envelope |
 | GET | `/v1/chat/poll` | Long-poll: blocks until user message |
 
 All write endpoints that take content enforce v1 envelope shape and
 reject plaintext with `400 plaintext_write_rejected`.
 
-### MCP tools (19 total)
+### MCP tools (20 total)
 
 | Tool | Maps to |
 |------|---------|
@@ -318,6 +359,7 @@ reject plaintext with `400 plaintext_write_rejected`.
 | `feedling_screen_summary` | GET /v1/screen/summary |
 | `feedling_screen_decrypt_frame` | GET /v1/screen/frames/<id>/decrypt — Image block + OCR for agent vision |
 | `feedling_chat_post_message` | wraps to v1 envelope → POST /v1/chat/response |
+| `feedling_chat_post_image` | wraps a base64 image as `content_type=image` → POST /v1/chat/response |
 | `feedling_chat_get_history` | GET /v1/chat/history |
 
 The `?key=<api_key>` on the SSE URL is captured by an ASGI
@@ -434,18 +476,21 @@ Caddy, DNS, iOS pointing at your URL+key).
 
 | Variable | Value |
 |----------|-------|
-| `FEEDLING_API_URL` | `http://localhost:5001` (VPS local) |
+| `FEEDLING_API_URL` | `http://localhost:5001` locally; `https://api.feedling.app` in production |
 | `FEEDLING_DATA_DIR` | `~/feedling-data/` |
 | `FEEDLING_MCP_TRANSPORT` | `sse` (default) or `streamable-http` |
+| `FEEDLING_CVM_APP_ID` | `9798850e096d770293c67305c6cfdceed68c1d28` (production iOS default) |
+| `FEEDLING_CVM_GATEWAY_DOMAIN` | `dstack-pha-prod9.phala.network` |
+| Public API domain | `api.feedling.app` via dstack-ingress |
+| Public MCP domain | `mcp.feedling.app` via dstack-ingress |
 | Flask port | `5001` |
 | MCP port | `5002` |
 | Enclave port | `5003` (in CVM only) |
-| WebSocket port | `9998` |
+| WebSocket port | `9998` (`wss://<app_id>-9998.<gateway>/ingest` in production) |
 | App Group | `group.com.feedling.mcp` |
-| Team ID | `DC9JH5DRMY` |
 | Main bundle ID | `com.feedling.mcp` |
-| APNs Key ID | `5TH55X5U7T` |
-| APNs `.p8` path | `~/feedling-data/AuthKey_5TH55X5U7T.p8` (`chmod 600`) |
+| APNs Team / Key ID | Set via `APNS_TEAM_ID` and `APNS_KEY_ID`; production values live in CI/Phala env, not docs |
+| APNs key | Self-host: `~/feedling-data/AuthKey_<KEY_ID>.p8` or `APNS_KEY_PATH` (`chmod 600`); production CVM: `APNS_KEY_P8_B64` injected via Phala env |
 
 ### Multi-tenant data layout
 
@@ -453,7 +498,7 @@ Caddy, DNS, iOS pointing at your URL+key).
 ~/feedling-data/
 ├── users.json                  # [{user_id, api_key_hash, public_key, created_at}, …]
 ├── .pepper                     # 32-byte HMAC secret, chmod 600
-├── AuthKey_5TH55X5U7T.p8       # APNs key, chmod 600
+├── AuthKey_<KEY_ID>.p8         # APNs key, chmod 600 (self-host only)
 └── <user_id>/
     ├── frames/                 # per-user screen frame envelopes
     ├── chat.json               # v1 envelopes

@@ -11,7 +11,7 @@ If your agent disagrees with anything here after reading the code,
 supposed to do; the code itself is the source of truth.
 
 > Repo: <https://github.com/teleport-computer/feedling-mcp>
-> Running enclave: `app_id=051a174f2457a6c474680a5d745372398f97b6ad` on Phala Cloud
+> Running enclave: `app_id=9798850e096d770293c67305c6cfdceed68c1d28` on Phala Cloud prod9
 > On-chain release log: [FeedlingAppAuth @ `0x6c8A6f1e…49b88F`](https://sepolia.etherscan.io/address/0x6c8A6f1e3eD4180B2048B808f7C4b2874649b88F) (Eth Sepolia)
 
 ---
@@ -50,11 +50,12 @@ isolation). Operator publishing a malicious compose = visible
 on-chain, and users who've accepted an older `compose_hash` see the
 change in the app's consent modal before any new release runs.
 
-The residual trust surface: Intel's TDX silicon, Phala's
-dstack-gateway TEE (operator-controlled TLS endpoint for pre-Phase-3
-URLs — Phase 3 onward terminates TLS in our enclave), and the
-Feedling team's Ethereum key (used to sign `addComposeHash` txes).
-Each is documented below with concrete mitigations.
+The residual trust surface: Intel's TDX silicon, Phala/dstack
+infrastructure, standard CA/DNS trust for `api.feedling.app` and
+`mcp.feedling.app`, and the Feedling team's Ethereum key used to
+publish `addComposeHash` transactions. The attestation endpoint still
+uses enclave-owned TLS on the `-5003s.` route so the app can pin the
+certificate fingerprint signed into the TDX quote.
 
 ---
 
@@ -68,8 +69,8 @@ shell + code-read + web access.
 | 1 | The repo you're reading matches the deployed binary. | Check the running `/attestation` endpoint's `git_commit` field; clone that commit; compute its docker image digest locally (`docker buildx` reproducible build); compare to the digest on `ghcr.io/teleport-computer/feedling:<commit>`. Script: `deploy/BUILD.md`. | 30 min |
 | 2 | The deployed `compose_hash` is what this repo's `docker-compose.phala.yaml` would produce. | Run `deploy/publish-compose-hash.sh` locally and compare to `/attestation`'s `compose_hash`. | 5 min |
 | 3 | The deployed `compose_hash` is in the on-chain release log. | `cast call --rpc-url <sepolia> 0x6c8A6f1e3eD4180B2048B808f7C4b2874649b88F "isAppAllowed(bytes32)(bool)" 0x<compose_hash>`. Expect `true`. | 1 min |
-| 4 | The TDX quote was signed by Intel hardware. | Run `tools/audit_live_cvm.py`; rows 1–3 are Intel's signature chain + measurement integrity. Script is ~70 lines of Python, easy to read. | 5 min |
-| 5 | The TLS cert on the `-5003s.` and `-5002s.` URLs is the one the enclave attested. | `tools/audit_live_cvm.py` rows 7 and 8 pin `sha256(cert.DER)` vs the attested fingerprint. | 1 min |
+| 4 | The TDX quote was signed by Intel hardware. | Run `tools/audit_live_cvm.py`; rows 1–3 are Intel's signature chain + measurement integrity. The script is small enough to read end to end. | 5 min |
+| 5 | The attestation TLS cert on the `-5003s.` URL is the one the enclave attested. | `tools/audit_live_cvm.py` row 7 pins `sha256(cert.DER)` vs the attested fingerprint. Row 8 is now a prod9 disclosure: MCP uses standard Let's Encrypt TLS at `dstack-ingress`; content privacy is enforced by envelopes sealed to `enclave_content_pk`. | 1 min |
 | 6 | The backend code doesn't decrypt content. | Read `backend/app.py`. `/v1/chat/message`, `/v1/memory/add`, `/v1/identity/init`, `/v1/content/swap` all require v1 envelopes and store them verbatim — no crypto primitives called, and plaintext bodies now 400. The only place envelope bodies are decrypted is `backend/enclave_app.py`, which runs inside the TDX container. | 20 min |
 | 7 | Identity.nudge can't silently mutate encrypted cards. | The HTTP `/v1/identity/nudge` endpoint was removed in the 2026-04-20 v0 strip. Identity mutation now only happens through MCP `feedling.identity.nudge` (`backend/mcp_server.py`), which runs inside the TDX container and does decrypt-mutate-rewrap before POSTing a full v1 envelope to `/v1/identity/replace`. Plaintext mutation is no longer expressible on the wire. | 2 min |
 | 8 | The iOS app actually pins the TLS cert, not just displays a green check. | Read `testapp/FeedlingTest/AuditCardView.swift` `PinningCaptureDelegate` + `AuditViewModel.run`. The delegate captures the server's `sha256(cert.DER)` during the TLS handshake; the viewmodel compares it to `bundle.enclave_tls_cert_fingerprint_hex`. Mismatch ⇒ red row + "MITM detected". | 10 min |
@@ -91,8 +92,9 @@ source-review work.
   (`derive_keys`), attestation bundle assembly, per-user content
   decrypt handlers. Read top-to-bottom; ~800 lines.
 - `backend/dstack_tls.py` — deterministic TLS cert derivation from
-  dstack-KMS. Both the attestation port (5003) and MCP port (5002)
-  use this.
+  dstack-KMS for the attestation port. Earlier MCP-in-enclave TLS
+  modes used the same helper; prod9 now terminates public MCP TLS at
+  `dstack-ingress`.
 - `backend/content_encryption.py` — Python mirror of iOS's
   `ContentEncryption.swift`. Same primitives on both sides; if they
   drift, AEAD verification fails on read-back.
@@ -107,8 +109,9 @@ source-review work.
   user sees in Settings → Privacy. Worth reading end-to-end;
   surfaces every check in a labelled row + a tap-to-expand
   mechanism reveal per row.
-- `tools/audit_live_cvm.py` — the CLI auditor. ~70 lines of Python;
-  runs the same 8 checks as the iOS card. Exit code 0 = all green.
+- `tools/audit_live_cvm.py` — the CLI auditor. It runs the same
+  security checks as the iOS card; on prod9 row 8 is a green
+  disclosure about ingress-terminated MCP TLS.
 
 ### On-chain
 
@@ -187,9 +190,12 @@ Read this section carefully — it's the list of claims we
 - **The running `compose_hash` is what the Feedling team
   authorized.** It's in a public contract with a transaction hash
   we can point you at.
-- **The TLS cert that your phone shakes hands with on `-5003s.`
-  and `-5002s.` really is generated inside the enclave.** We pin
-  `sha256(cert.DER)` against a value signed by Intel's hardware.
+- **The TLS cert that your phone uses for `/attestation` on `-5003s.`
+  really is generated inside the enclave.** We pin
+  `sha256(cert.DER)` against a value signed by Intel's hardware. The
+  public API and MCP domains use normal Let's Encrypt TLS at
+  `dstack-ingress`; that is transport protection, not the content
+  privacy boundary.
 - **The enclave's decryption key is bound to the `compose_hash`.**
   A new compose_hash = a new key = old data re-wrapping needed
   (or the key needs to be the same across `compose_hash` rotations,
@@ -201,7 +207,7 @@ Read this section carefully — it's the list of claims we
 Tracked in `docs/CHANGELOG.md` (most recent entries) and on GitHub
 issues:
 
-- **Mainnet migration (Phase E)**: the on-chain contract lives on
+- **Mainnet migration**: the on-chain contract lives on
   Ethereum Sepolia today. Moving to Ethereum / Base mainnet is
   the last step of the roadmap. Sepolia is a testnet — the
   release log could technically reorg, though it hasn't.
@@ -223,19 +229,21 @@ cd feedling-mcp
 # Infura, or a public node).
 export ETH_SEPOLIA_RPC_URL="https://sepolia.infura.io/v3/<key>"
 export FEEDLING_APP_AUTH_CONTRACT="0x6c8A6f1e3eD4180B2048B808f7C4b2874649b88F"
+export FEEDLING_CVM_APP_ID=9798850e096d770293c67305c6cfdceed68c1d28
+export FEEDLING_CVM_GATEWAY_DOMAIN=dstack-pha-prod9.phala.network
+export FEEDLING_ATTESTATION_URL="https://${FEEDLING_CVM_APP_ID}-5003s.${FEEDLING_CVM_GATEWAY_DOMAIN}/attestation"
 
 # Fetch the live attestation.
-curl -sk https://051a174f2457a6c474680a5d745372398f97b6ad-5003s.dstack-pha-prod5.phala.network/attestation \
-  > /tmp/fl_cvm_attest.json
+curl -sk "$FEEDLING_ATTESTATION_URL" > /tmp/fl_cvm_attest.json
 
-# Run the auditor. Expected: all 8 rows green.
+# Run the auditor. Expected: rows pass; row 8 is a prod9 disclosure.
 python3 tools/audit_live_cvm.py
 ```
 
-The auditor's source is `tools/audit_live_cvm.py` — ~100 lines. If
-you're suspicious of the auditor itself, the checks it performs
-are mechanical (re-implement them in any language that speaks
-TLS + SHA-256 + a Sepolia RPC).
+The auditor's source is `tools/audit_live_cvm.py`. If you're suspicious
+of the auditor itself, the checks it performs are mechanical
+(re-implement them in any language that speaks TLS + SHA-256 + a
+Sepolia RPC).
 
 ---
 

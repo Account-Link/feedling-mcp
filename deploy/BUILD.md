@@ -10,8 +10,11 @@ corresponding signed build attestation in GitHub Releases containing:
 
 - The base image digest in use (from `deploy/Dockerfile`, `ARG PYTHON_IMAGE=python@sha256:…`)
 - The expected output image digest (`sha256:…`) that this recipe should produce
-- The sha256 of `deploy/docker-compose.yaml` at that commit (this is the
-  plaintext input to the `compose_hash` we publish on-chain via AppAuth)
+- The production compose input for that commit,
+  `deploy/docker-compose.phala.yaml`. In live-CVM mode the final
+  `compose_hash` comes from dstack after deploy because dstack injects
+  launch metadata; `deploy/publish-compose-hash.sh` reads that live
+  value before publishing to AppAuth.
 
 ## Prerequisites
 
@@ -40,7 +43,8 @@ docker image inspect feedling-repro:local --format '{{index .RepoDigests 0}}' \
 
 Compare the printed digest against the expected digest published in the
 GitHub Release for that commit. If they match, the image you hold is
-byte-identical to the one that produced the on-chain `compose_hash`.
+byte-identical to the one referenced by the production compose that
+produced the on-chain `compose_hash`.
 
 ## Refreshing pins (maintainers only)
 

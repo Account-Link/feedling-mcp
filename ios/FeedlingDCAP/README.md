@@ -26,11 +26,10 @@ architecture.
 
 ## Status
 
-**Phase 1 spike:** quote parsing is implemented + tested against a real
-TDX quote captured from the dstack simulator. Signature chain
-verification (Intel DCAP PCK walk + ECDSA-P256) is stubbed in
-`Sources/FeedlingDCAP/Verifier.swift` with implementation notes. That's
-the Phase 1E next step.
+This package is the Swift mirror of the Python DCAP parser/verifier used
+by `tools/audit_live_cvm.py`. It is covered by `swift test` and the main
+iOS app carries the production audit implementation under
+`testapp/FeedlingTest/DCAP/`.
 
 ## Test
 

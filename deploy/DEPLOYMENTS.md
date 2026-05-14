@@ -1,38 +1,57 @@
 # Feedling deployment records
 
-Canonical record of deployed artifacts. Every deployment is a line; nothing
-here is ever edited or deleted — entries accumulate as we move through the
-phases.
+Canonical record of deployed artifacts. Entries accumulate as we move through
+the phases. Historical operational identifiers may be redacted after
+retirement when keeping the exact value no longer helps verification.
 
 ## Live services
 
-### Prod VPS (multi-tenant)
+### Production CVM (prod9, current)
 
 | | |
 |---|---|
-| Host | `ubuntu@54.209.126.4` (login), services run as `openclaw` |
-| Install root | `/home/openclaw/feedling-mcp` |
-| Data dir | `/home/openclaw/feedling-data` (wiped + re-seeded on 2026-04-20) |
-| Services | `feedling-backend.service`, `feedling-mcp.service` — user-level systemd units under `/home/openclaw/.config/systemd/user/`. (The old `feedling-chat-bridge.service` was retired on 2026-04-20 when MCP's `feedling.chat.post_message` took over agent replies.) |
+| Provider | Phala Cloud dstack on prod9 (`dstack-pha-prod9.phala.network`) |
+| CVM ID | `0711c9a4-afdc-40c6-ba49-d8cb95f7e850` |
+| App ID | `9798850e096d770293c67305c6cfdceed68c1d28` |
+| Instance ID | `6fe9b54c9f2b428158c3e74de615d0f0a0c457ba` |
+| Compose | `deploy/docker-compose.phala.yaml` — `ingress`, `backend`, `mcp`, `enclave` |
+| Current image | `ghcr.io/teleport-computer/feedling:0361b19` |
+| Live git commit | `0361b191694293439a47fe5e2939f4eb424c8a9e` |
+| Live compose hash | `0x8327b0fb6094331c9ecc46c34a77f442052f1f54e9741fb8cae09b0b4ce427ee` |
+| Public API | `https://api.feedling.app` via `dstack-ingress` |
+| Public MCP | `https://mcp.feedling.app/sse?key=<api_key>` via `dstack-ingress` |
+| Attestation | `https://9798850e096d770293c67305c6cfdceed68c1d28-5003s.dstack-pha-prod9.phala.network/attestation` |
+| WS ingest | `wss://9798850e096d770293c67305c6cfdceed68c1d28-9998.dstack-pha-prod9.phala.network/ingest` |
+| TLS model | `api.feedling.app` + `mcp.feedling.app` terminate at `dstack-ingress`; `/attestation` keeps its own dstack-KMS-derived TLS on `:5003` for iOS pinning. |
+| MCP pubkey pin | Retired in prod9 architecture: `mcp_tls_cert_pubkey_fingerprint_hex` is empty by design; content-layer envelopes sealed to `enclave_content_pk` are the privacy boundary. |
+| Deploy path | GitHub Actions `deploy-cvm` pins the GHCR image tag, deploys this CVM via Phala, then publishes the live dstack-computed compose hash on Sepolia. |
+
+### Retired VPS (historical, redacted)
+
+| | |
+|---|---|
+| Host | Retired VPS IP redacted |
+| Install root | Retired host path redacted |
+| Data dir | Retired host path redacted; wiped + re-seeded on 2026-04-20 |
+| Services | `feedling-backend.service`, `feedling-mcp.service` — user-level systemd units on the retired host. The old `feedling-chat-bridge.service` was retired on 2026-04-20 when MCP's `feedling.chat.post_message` took over agent replies. |
 | Mode | Multi-tenant only. Per-user HMAC-peppered api_keys issued by `POST /v1/users/register`; no shared key, no `SINGLE_USER` env var anymore. |
 | Ports | Flask `:5001`, MCP SSE `:5002`, WebSocket ingest `:9998` |
-| APNs key | `/home/openclaw/feedling-data/AuthKey_5TH55X5U7T.p8` |
-| Current commit | `78b51a6` (v0 / SINGLE_USER strip, 2026-04-20) |
-| Backups | `/home/openclaw/feedling-data.bak.YYYYMMDD-HHMMSS` — created automatically on each upgrade |
+| APNs key | Retired path redacted |
+| Last commit | `78b51a6` (v0 / SINGLE_USER strip, 2026-04-20) |
+| Backups | Retired host backup paths redacted |
 
 Flip history: The VPS originally ran in `SINGLE_USER=true` mode with
 a shared `FEEDLING_API_KEY`. Prod user's data was silently migrated v0→v1
 on 2026-04-20 (task #32), and the same day the SINGLE_USER/v0 stack was
 stripped entirely (tasks #23/#33). After the strip, the data directory
-was wiped (keeping `.pepper` + `AuthKey_5TH55X5U7T.p8`) and the user
-reinstalled fresh against a multi-tenant backend via the normal
-`POST /v1/users/register` flow from iOS.
+was wiped and the user reinstalled fresh against a multi-tenant backend
+via the normal `POST /v1/users/register` flow from iOS.
 
 ## On-chain
 
 ## Live
 
-### Phase 1 testnet (current)
+### Ethereum Sepolia release log (current)
 
 | | |
 |---|---|
@@ -42,7 +61,7 @@ reinstalled fresh against a multi-tenant backend via the normal
 | Deployed at | block 10691079, tx `0x752f213ae95f6759a86750dab9545c79c6841ad7838082ddf6ad5271d117915f` |
 | First `addComposeHash` | block 10691089, tx `0x6ea7f87fc597352bd1007adb6cf0d5d5b4e787dd9ea6915d0a890089b5813893` for the simulator compose_hash `ea549f02e1a25fabd1cb788380e033ec5461b2ffe4328d753642cf035452e48b` |
 | Explorer | https://sepolia.etherscan.io/address/0x6c8A6f1e3eD4180B2048B808f7C4b2874649b88F |
-| Purpose | Phase 1 integration testing only. Not yet on Base — we deployed where the test wallet happened to be funded. Will be re-deployed to Base Sepolia before Phase 2 to match production chain choice per `docs/DESIGN_E2E.md` §12.14. |
+| Purpose | Current public release log for authorized Feedling CVM compose hashes. Moving this log to mainnet remains deferred. |
 | Deployer key status | **Throwaway. Rotate before any Phase 2 work.** The private key was pasted in a chat transcript (Apr 19, 2026) and must not be reused for anything that holds real value. |
 
 ### Phase 2 TDX CVM (superseded by Phase 3, 2026-04-20)
@@ -172,31 +191,31 @@ reinstalled fresh against a multi-tenant backend via the normal
 | On-chain entry | compose_hash `0x23a2c286…`: Sepolia tx `0xe2a9ceab0334cc2133baede9daca94c79956f5f9d7c5751a97955b9e9e78426a`. |
 | Audit evidence | CLI **8/8** green (`tools/audit_live_cvm.py`). Row 8 now proves: (a) MCP port 5002 presents a Let's Encrypt-signed cert with SAN=mcp.feedling.app, CA-verified against system roots via manual x509 verification; (b) cert pubkey SPKI sha256 matches attested value — cert key is provably inside the TDX-attested CVM. |
 | SNI quirk | Phala's dstack-gateway routes connections by SNI and only accepts its own `-PORTs.*.phala.network` hostname. Row 8 of the audit script connects with the gateway hostname as SNI, then verifies the served cert manually. Caddy on the VPS mirrors this (`tls_server_name` = gateway hostname + `tls_insecure_skip_verify` in `deploy/Caddyfile`). Trust root is the attestation, not Caddy. |
-| Routing | `mcp.feedling.app` DNS → Caddy on VPS `54.209.126.4` (A record at `37bec2c25ad8959659dcc14c244fce4e` zone, DNS-only, not proxied) → reverse-proxies to `-5002s.dstack-pha-prod5.phala.network` with gateway SNI. Claude.ai / Claude Desktop clients see a CA-valid Caddy cert for `mcp.feedling.app`; audit-aware clients can pin directly against the attested pubkey fingerprint via the `-5002s.` path. |
+| Routing | `mcp.feedling.app` DNS → Caddy on VPS `[retired VPS IP redacted]` (A record at `37bec2c25ad8959659dcc14c244fce4e` zone, DNS-only, not proxied) → reverse-proxies to `-5002s.dstack-pha-prod5.phala.network` with gateway SNI. Claude.ai / Claude Desktop clients see a CA-valid Caddy cert for `mcp.feedling.app`; audit-aware clients can pin directly against the attested pubkey fingerprint via the `-5002s.` path. |
 | Secrets | `CF_ZONE_ID` + `CF_API_TOKEN` injected via `phala deploy -e KEY=VALUE` (encrypted env channel, not baked into compose_hash). Token scope: `Zone:DNS:Edit` for `feedling.app` only. |
 | Purpose | First Feedling deployment where the MCP-port cert is a real CA-signed LE cert (not self-signed dstack-KMS) whose private key is provably inside the TDX enclave. Agents (Claude.ai / mobile MCP clients) get a cert their OS trusts out of the box AND auditors can verify the pubkey is enclave-bound. `mcp.feedling.app` is now end-to-end trusted without trusting the gateway operator on the audit-aware path. |
 | Retired by | Phase D deploy below. |
 
-### Phase E migration — pure-CVM, ingress-terminated TLS (in-flight, 2026-04-21)
+### Phase E migration — pure-CVM, ingress-terminated TLS (running, 2026-04-22)
 
-**Status**: code + compose + CI ready on `main`. `phala deploy` to prod9
-not yet executed. Once it runs the table below gets filled in with the
-real app_id / compose_hash / Sepolia tx.
+**Status**: prod9 is live. The VPS split was retired; production now runs
+from the single CVM described in **Production CVM (prod9, current)** above.
 
 | | |
 |---|---|
 | Provider | Phala Cloud dstack on node `prod9` — ONLY gateway that supports `_dstack-app-address.<domain>` TXT routing (prod5/prod7 don't). |
 | Name | `feedling-enclave-v2` (new CVM → new app_id → new on-chain authorization required). |
-| App ID | TBD after `phala cvms get feedling-enclave-v2` post-deploy. |
+| App ID | `9798850e096d770293c67305c6cfdceed68c1d28` |
+| CVM ID | `0711c9a4-afdc-40c6-ba49-d8cb95f7e850` |
 | Compose | `deploy/docker-compose.phala.yaml` — now 4 services: `ingress` (dstack-ingress 2.2 multi-domain, HAProxy-based), `enclave` (decrypt + attestation, own TLS on :5003), `backend` (Flask HTTP + WS ingest), `mcp` (FastMCP SSE, plain HTTP behind ingress). |
-| Dry-run compose_hash | `0x1f0169bab4b1ee19058bd72bdb1fb46cc9b1b9de75a1e2a348134959c908efb9` (with `:78b51a6` image pin; real hash TBD after CI bumps to a fresh image tag). |
+| Current live compose_hash | `0x8327b0fb6094331c9ecc46c34a77f442052f1f54e9741fb8cae09b0b4ce427ee` (from `/attestation`, 2026-05-13). |
 | TLS termination | **Migrated**: mcp.feedling.app + api.feedling.app are terminated by `dstack-ingress` inside the CVM (LE certs issued via CF DNS-01, `CLOUDFLARE_API_TOKEN` injected via `phala deploy -e`, not in compose_hash). `enclave` service still terminates its own TLS on :5003 (reached via `-5003s.` passthrough) — iOS audit card Row 7 still pins `sha256(cert.DER)` to REPORT_DATA. WS ingest on :9998 stays gateway-TLS with FrameEnvelope v1 app-layer crypto. |
 | MCP pubkey pin (Phase C.2) | **Retired**: `FEEDLING_MCP_TLS_IN_ENCLAVE=false` on the enclave service, so `mcp_tls_cert_pubkey_fingerprint_hex` is empty. iOS audit card shows the existing "Pre-Phase-C.2 deployment" disclosure row. Content-layer envelope crypto (enclave_content_pk) remains the real trust boundary for reads/writes. |
-| VPS | **Decommissioned**: `deploy-vps` CI job deleted; `api.feedling.app` + `mcp.feedling.app` DNS A records move off `54.209.126.4` and onto dstack-gateway. Prod user re-onboards from scratch per 2026-04-21 user direction (no v0→v1-style migration path). |
-| iOS | `testapp/FeedlingTest/CVMEndpoints.swift` centralizes URL construction via `appId` + `gatewayDomain` (env / UserDefaults / compiled defaults). Flip defaults to prod9 in a follow-up commit once app_id is known. |
-| On-chain | compose_hash will be auto-published on Eth Sepolia by the `deploy-cvm` CI job on push to main (now uses `FEEDLING_COMPOSE_FILE=deploy/docker-compose.phala.yaml` so it hashes the compose that actually boots). |
+| VPS | **Decommissioned**: `deploy-vps` CI job deleted; `api.feedling.app` + `mcp.feedling.app` DNS moved off the retired host and onto dstack-gateway/ingress. Prod user re-onboards from scratch per 2026-04-21 user direction (no v0→v1-style migration path). |
+| iOS | `testapp/FeedlingTest/CVMEndpoints.swift` centralizes URL construction via `appId` + `gatewayDomain`; compiled defaults now point at prod9. |
+| On-chain | compose_hash is auto-published on Eth Sepolia by the `deploy-cvm` CI job after each CVM deploy. |
 
-### Phase D TDX CVM — multi-tenant-only, envelope-only backend (running, 2026-04-20)
+### Phase D TDX CVM — multi-tenant-only, envelope-only backend (superseded by Phase E, 2026-04-22)
 
 | | |
 |---|---|
@@ -211,24 +230,18 @@ real app_id / compose_hash / Sepolia tx.
 | MCP TLS pubkey fingerprint (port 5002) | `e98665a3e94ac90a0a26453a73e16d5a569f791c181cfbc6ba98598f358cf63e` — unchanged; LE cert key is still derived from `feedling-mcp-tls-v1`. |
 | MRTD | `f06dfda6dce1cf904d4e2bab1dc37063…` (unchanged — same base image) |
 | On-chain entry | compose_hash `0xd92bcd3c…`: Sepolia tx `0x235f0120d6982cbf8872e927ee2e59133627177ca9d3f862554d748ac6e60c7c` (block 10696873). Every prior compose hash still `isAppAllowed()=true`. |
-| Audit evidence | CLI **8/8** green (`tools/audit_live_cvm.py`) against `compose_hash=0xd92bcd3c…`. VPS flat-layout data wiped same day (keeping `.pepper` + `AuthKey_5TH55X5U7T.p8`) — prod user reinstalls fresh via `POST /v1/users/register`. |
+| Audit evidence | CLI **8/8** green (`tools/audit_live_cvm.py`) against `compose_hash=0xd92bcd3c…`. VPS flat-layout data wiped same day — prod user reinstalls fresh via `POST /v1/users/register`. |
 | Purpose | First Feedling deployment where the backend has no plaintext-write path at all. There is no `SINGLE_USER` flag, no shared `FEEDLING_API_KEY`, no v0→v1 migration endpoint, and no chat-bridge daemon. Every chat message, memory entry, and identity card landing on disk is a v1 envelope wrapped for the enclave's content pk. |
 
 ## Planned
 
-### Phase 2 pre-prod
+### Mainnet release log migration
 
-- Redeploy `FeedlingAppAuth` to **Base Sepolia** (8453 testnet, chain 84532).
-- Fresh deployer keypair (current one compromised).
-- Update `backend/enclave_app.py` defaults + iOS pinned contract address.
-- Re-publish current compose_hash on the new chain.
-
-### Phase 5 production cutover
-
-- Deploy to **Base mainnet** (chain 8453).
-- Fresh deployer keypair, moved to a hardware wallet or HSM.
-- Basescan source verification.
-- iOS release with new pinned address, shipped ~1 week before users are migrated so the accept-list is already pre-approved.
+- Redeploy `FeedlingAppAuth` to a mainnet environment.
+- Use a fresh deployer keypair held in hardware-backed custody.
+- Verify source on the relevant explorer.
+- Ship an iOS update with the new pinned contract address before
+  moving users to the new release log.
 
 ## How to re-run the deploy
 

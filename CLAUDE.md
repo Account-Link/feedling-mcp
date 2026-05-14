@@ -25,12 +25,12 @@ in the CHANGELOG and in git log.
 
 ## Other repo conventions
 
-- TDX enclave operations — cross-reference
-  `/Users/sxysun/Desktop/suapp/dstack-tutorial` when something about
-  keys/attestation/gateway/TLS is non-obvious.
-- Prod user count: **1** (`@sxysun`'s friend, on VPS in multi-tenant
-  mode after the 2026-04-20 SINGLE_USER/v0 strip). Migrations + clean
-  reinstalls are fair game per task #23.
+- TDX enclave operations — cross-reference the local `dstack-tutorial`
+  clone if available when keys/attestation/gateway/TLS details are
+  non-obvious.
+- Prod user count is intentionally tiny. Clean reinstall migrations are
+  acceptable when explicitly scoped by the task; do not publish personal
+  tester details in docs.
 - `/v1/content/swap` is the ongoing in-place envelope-swap endpoint
   (visibility toggles). There is no v0→v1 migration path anymore;
   plaintext writes now return 400.
