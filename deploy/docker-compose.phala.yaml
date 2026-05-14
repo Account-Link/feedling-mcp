@@ -9,7 +9,7 @@
 #
 # IMPORTANT: this replaces the prior VPS+CVM split. DNS A-records for
 # both `mcp.feedling.app` and `api.feedling.app` are migrated off
-# `54.209.126.4` and onto Phala's dstack-gateway. Existing prod users
+# the retired VPS host and onto Phala's dstack-gateway. Existing prod users
 # re-onboard from scratch (per user direction 2026-04-21).
 #
 # REQUIRED CVM NODE: prod9 (dstack-pha-prod9). Multi-domain TXT routing
@@ -61,7 +61,7 @@ services:
       DNS_PROVIDER: "cloudflare"
       GATEWAY_DOMAIN: "_.dstack-pha-prod9.phala.network"
       SET_CAA: "true"
-      CERTBOT_EMAIL: "sxysun9@gmail.com"
+      CERTBOT_EMAIL: "security@feedling.app"
       # Multi-domain mode: one container, two SNI-routed upstreams.
       DOMAINS: |
         mcp.feedling.app

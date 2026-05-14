@@ -32,22 +32,22 @@ Expected usage:
     python3 tools/audit_live_cvm.py
 """
 import json, os, sys, hashlib, socket, ssl, subprocess
+from pathlib import Path
 from urllib.parse import urlparse
-sys.path.insert(0, "/Users/sxysun/Desktop/suapp/feedling-mcp-v1/tools/dcap")
+sys.path.insert(0, str(Path(__file__).resolve().parent / "dcap"))
 from dcap_parse import parse_quote
 
 # Centralized endpoint resolution — mirrors iOS CVMEndpoints.swift.
-# Defaults still point at prod5 so pre-cutover runs keep working; flip
-# via env when testing against the prod9 CVM, and bake the new defaults
-# here once the migration lands.
+# Defaults point at the current prod9 production CVM. Override via env
+# when auditing a staging or replacement CVM.
 CVM_APP_ID = os.environ.get(
-    "FEEDLING_CVM_APP_ID", "051a174f2457a6c474680a5d745372398f97b6ad",
+    "FEEDLING_CVM_APP_ID", "9798850e096d770293c67305c6cfdceed68c1d28",
 )
 CVM_GATEWAY = os.environ.get(
-    "FEEDLING_CVM_GATEWAY_DOMAIN", "dstack-pha-prod5.phala.network",
+    "FEEDLING_CVM_GATEWAY_DOMAIN", "dstack-pha-prod9.phala.network",
 )
 DEFAULT_ATTESTATION_URL = f"https://{CVM_APP_ID}-5003s.{CVM_GATEWAY}/attestation"
-DEFAULT_MCP_URL = f"https://{CVM_APP_ID}-5002s.{CVM_GATEWAY}/"
+DEFAULT_MCP_URL = "https://mcp.feedling.app/"
 
 att = json.load(open("/tmp/fl_cvm_attest.json"))
 rows = {}
@@ -142,12 +142,12 @@ else:
     except Exception as e:
         row(7, "TLS cert bound to attestation", False, f"TLS fetch failed: {e}")
 
-# Row 8: MCP port (5002) has a Let's Encrypt cert whose key is bound to attestation.
-# Phase C.2: MCP acquires an LE cert via ACME-DNS-01 inside the CVM.
-# The cert key is derived from dstack-KMS at 'feedling-mcp-tls-v1' — stable key,
-# only the CA-signed wrapper changes on renewal. The attestation bundle includes
-# mcp_tls_cert_pubkey_fingerprint_hex = sha256(SubjectPublicKeyInfo DER of that key).
-# We verify: (a) cert is CA-valid for mcp.feedling.app; (b) pubkey fingerprint matches.
+# Row 8: transport disclosure for MCP.
+# Historical Phase C.2: MCP acquired its own LE cert via ACME-DNS-01 inside the
+# CVM and the attestation bundle carried sha256(SubjectPublicKeyInfo DER).
+# Current prod9: MCP is plain HTTP behind dstack-ingress. The bundle leaves
+# mcp_tls_cert_pubkey_fingerprint_hex empty, so Row 8 records that transport is
+# ingress-terminated and content-layer envelope crypto remains the trust boundary.
 attested_mcp_pk = att.get("mcp_tls_cert_pubkey_fingerprint_hex", "")
 if not attested_mcp_pk:
     # Post-prod9 migration: MCP terminates plain HTTP behind

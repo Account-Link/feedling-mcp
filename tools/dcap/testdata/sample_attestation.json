@@ -19,8 +19,8 @@
     "git_commit": "dev",
     "image_digest": "sha256:dev",
     "built_at": "dev",
-    "compose_yaml_url": "https://github.com/Account-Link/feedling-mcp-v1/raw/main/deploy/docker-compose.yaml",
-    "build_recipe_url": "https://github.com/Account-Link/feedling-mcp-v1/blob/main/deploy/BUILD.md"
+    "compose_yaml_url": "https://github.com/teleport-computer/feedling-mcp/raw/main/deploy/docker-compose.phala.yaml",
+    "build_recipe_url": "https://github.com/teleport-computer/feedling-mcp/blob/main/deploy/BUILD.md"
   },
   "app_auth": {
     "contract": "0x6c8A6f1e3eD4180B2048B808f7C4b2874649b88F",
