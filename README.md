@@ -155,7 +155,7 @@ commit is baked into the image and surfaced in
 
 ---
 
-## Status (as of 2026-05-13)
+## Status (as of 2026-05-14)
 
 See `docs/CHANGELOG.md` for the full landmark history. TL;DR of what's
 shipped:

@@ -15,9 +15,10 @@ retirement when keeping the exact value no longer helps verification.
 | App ID | `9798850e096d770293c67305c6cfdceed68c1d28` |
 | Instance ID | `6fe9b54c9f2b428158c3e74de615d0f0a0c457ba` |
 | Compose | `deploy/docker-compose.phala.yaml` — `ingress`, `backend`, `mcp`, `enclave` |
-| Current image | `ghcr.io/teleport-computer/feedling:0361b19` |
-| Live git commit | `0361b191694293439a47fe5e2939f4eb424c8a9e` |
-| Live compose hash | `0x8327b0fb6094331c9ecc46c34a77f442052f1f54e9741fb8cae09b0b4ce427ee` |
+| Current image | `ghcr.io/teleport-computer/feedling:0573be3` |
+| Live git commit | `0573be37114c61ef2d55bf36ac57c2f06e1bdc7f` |
+| Live built at | `2026-05-14T02:57:56Z` |
+| Live compose hash | `0x01dd452868a645a830642af6e122e882f34a40a436d22e4ad4a2978e1dd6570f` |
 | Public API | `https://api.feedling.app` via `dstack-ingress` |
 | Public MCP | `https://mcp.feedling.app/sse?key=<api_key>` via `dstack-ingress` |
 | Attestation | `https://9798850e096d770293c67305c6cfdceed68c1d28-5003s.dstack-pha-prod9.phala.network/attestation` |
@@ -208,7 +209,7 @@ from the single CVM described in **Production CVM (prod9, current)** above.
 | App ID | `9798850e096d770293c67305c6cfdceed68c1d28` |
 | CVM ID | `0711c9a4-afdc-40c6-ba49-d8cb95f7e850` |
 | Compose | `deploy/docker-compose.phala.yaml` — now 4 services: `ingress` (dstack-ingress 2.2 multi-domain, HAProxy-based), `enclave` (decrypt + attestation, own TLS on :5003), `backend` (Flask HTTP + WS ingest), `mcp` (FastMCP SSE, plain HTTP behind ingress). |
-| Current live compose_hash | `0x8327b0fb6094331c9ecc46c34a77f442052f1f54e9741fb8cae09b0b4ce427ee` (from `/attestation`, 2026-05-13). |
+| Current live compose_hash | `0x01dd452868a645a830642af6e122e882f34a40a436d22e4ad4a2978e1dd6570f` (from `/attestation`, 2026-05-14). |
 | TLS termination | **Migrated**: mcp.feedling.app + api.feedling.app are terminated by `dstack-ingress` inside the CVM (LE certs issued via CF DNS-01, `CLOUDFLARE_API_TOKEN` injected via `phala deploy -e`, not in compose_hash). `enclave` service still terminates its own TLS on :5003 (reached via `-5003s.` passthrough) — iOS audit card Row 7 still pins `sha256(cert.DER)` to REPORT_DATA. WS ingest on :9998 stays gateway-TLS with FrameEnvelope v1 app-layer crypto. |
 | MCP pubkey pin (Phase C.2) | **Retired**: `FEEDLING_MCP_TLS_IN_ENCLAVE=false` on the enclave service, so `mcp_tls_cert_pubkey_fingerprint_hex` is empty. iOS audit card shows the existing "Pre-Phase-C.2 deployment" disclosure row. Content-layer envelope crypto (enclave_content_pk) remains the real trust boundary for reads/writes. |
 | VPS | **Decommissioned**: `deploy-vps` CI job deleted; `api.feedling.app` + `mcp.feedling.app` DNS moved off the retired host and onto dstack-gateway/ingress. Prod user re-onboards from scratch per 2026-04-21 user direction (no v0→v1-style migration path). |

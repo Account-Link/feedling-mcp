@@ -49,6 +49,22 @@
 
 ---
 
+## 2026-05-14
+
+### [DONE] Production docs and privacy sweep after prod9 redeploy
+
+- Refreshed live deployment records against `/attestation` after the
+  privacy cleanup redeployed prod9: running commit
+  `0573be37114c61ef2d55bf36ac57c2f06e1bdc7f`, compose hash
+  `0x01dd452868a645a830642af6e122e882f34a40a436d22e4ad4a2978e1dd6570f`.
+- Removed stale private deployment references from the production compose,
+  made `tools/audit_live_cvm.py` portable instead of using a local absolute
+  path, and updated sample attestation URLs to the current GitHub repo.
+- Re-ran the targeted privacy/stale scan, DCAP parser tests, syntax check,
+  and GitHub Actions CI/publish flows.
+
+---
+
 ## 2026-05-13
 
 ### [DONE] README caught up to prod9 pure-CVM architecture
