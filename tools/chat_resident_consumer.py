@@ -834,6 +834,12 @@ def post_reply(content: str) -> None:
 
     Falls back to plaintext only when encryption is unavailable — this will
     return 400 on v1 backends and is logged as an error so it's visible.
+
+    Handles `bootstrap_incomplete` 409 by logging the structured error
+    (stage, memory_count, required) and returning without raising — the
+    user-side agent skipped bootstrap, and re-raising would cause the
+    daemon to loop on this dead-end forever. The operator sees what's
+    wrong in the log instead.
     """
     url = f"{FEEDLING_API_URL}/v1/chat/response"
 
@@ -853,7 +859,7 @@ def post_reply(content: str) -> None:
         resp = httpx.post(
             url, json={"envelope": envelope}, headers=_HEADERS, timeout=15
         )
-        resp.raise_for_status()
+        _handle_post_reply_response(resp)
         return
 
     # Encryption unavailable — plaintext path (will 400 on v1 backends).
@@ -865,6 +871,32 @@ def post_reply(content: str) -> None:
         url, json={"content": content, "push_live_activity": False},
         headers=_HEADERS, timeout=15,
     )
+    _handle_post_reply_response(resp)
+
+
+def _handle_post_reply_response(resp) -> None:
+    """Inspect a /v1/chat/response response. Re-raises 4xx/5xx EXCEPT for
+    the structured `bootstrap_incomplete` 409, which we want to surface in
+    operator logs without crashing the daemon (a crash would put the
+    process into an restart-loop trying the same dead-end content forever).
+    """
+    if resp.status_code == 409:
+        try:
+            body = resp.json()
+        except Exception:
+            body = {}
+        if body.get("error") == "bootstrap_incomplete":
+            log.error(
+                "chat_response rejected: bootstrap_incomplete stage=%s "
+                "memory_count=%s identity_written=%s — the upstream agent "
+                "skipped Pass 1-3 / Step 5. Have the user re-run "
+                "bootstrap from the start prompt; until then this user's "
+                "Feedling chat is dead-ended.",
+                body.get("stage"),
+                body.get("memory_count"),
+                body.get("identity_written"),
+            )
+            return
     resp.raise_for_status()
 
 

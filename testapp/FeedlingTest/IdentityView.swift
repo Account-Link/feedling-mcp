@@ -158,8 +158,8 @@ struct IdentityView: View {
                 .font(.newsreader(size: 22, italic: true))
                 .foregroundStyle(Color.cinSub)
             Text(isChinese
-                 ? "等 TA 入住完，这里会有 TA 的名字、性格几个维度、还有 TA 想跟你说的第一句话。"
-                 : "Once he's settled in, you'll find his name, a few sides of who he is, and the first thing he wants to say to you.")
+                 ? "Agent 走完 onboarding 后，这里会有 TA 的名字、性格维度、和 TA 想跟你说的第一句话。"
+                 : "After your agent completes onboarding, you'll see their name, dimensions, and the first thing they want to say to you.")
                 .font(.interTight(size: 13))
                 .foregroundStyle(Color.cinSub)
                 .multilineTextAlignment(.center)

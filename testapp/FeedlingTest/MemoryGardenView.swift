@@ -122,8 +122,8 @@ struct MemoryGardenView: View {
                 .font(.newsreader(size: 22, italic: true))
                 .foregroundStyle(Color.cinSub)
             Text(isChinese
-                 ? "等 TA 入住完，这里会种下你们之间值得记住的瞬间。"
-                 : "Once he's settled in, the moments worth keeping between you will grow here.")
+                 ? "Agent 写下第一张卡之后，这里就会有内容。"
+                 : "Once your agent writes its first card, moments will appear here.")
                 .font(.interTight(size: 13))
                 .foregroundStyle(Color.cinSub)
                 .multilineTextAlignment(.center)

@@ -338,10 +338,29 @@ def _check_vision_gate(api_key: str | None) -> dict | None:
 # was removed — agents must pass days_with_user at init time.
 
 
-def _get(path: str, params: dict | None = None, ctx: Context | None = None) -> dict:
-    r = _FLASK_HTTP.get(f"{FLASK_BASE}{path}", params=params, headers=_headers(ctx))
+def _passthrough_4xx(r) -> dict:
+    """Convert an httpx Response into a tool-return dict, with special
+    handling for 4xx so the Agent sees the structured error body (e.g. the
+    `bootstrap_incomplete` 409 from app.py) instead of an httpx exception
+    string. 5xx still raises — those are server bugs we want to surface
+    loudly to telemetry, not pretend to handle.
+    """
+    if 400 <= r.status_code < 500:
+        try:
+            body = r.json()
+        except Exception:
+            body = {"error": f"http_{r.status_code}", "detail": r.text[:500]}
+        if isinstance(body, dict):
+            body.setdefault("status_code", r.status_code)
+            return body
+        return {"error": f"http_{r.status_code}", "body": body}
     r.raise_for_status()
     return r.json()
+
+
+def _get(path: str, params: dict | None = None, ctx: Context | None = None) -> dict:
+    r = _FLASK_HTTP.get(f"{FLASK_BASE}{path}", params=params, headers=_headers(ctx))
+    return _passthrough_4xx(r)
 
 
 def _get_decrypted(path: str, params: dict | None = None, ctx: Context | None = None) -> dict:
@@ -356,20 +375,17 @@ def _get_decrypted(path: str, params: dict | None = None, ctx: Context | None = 
     if not ENCLAVE_BASE:
         return _get(path, params=params, ctx=ctx)
     r = _ENCLAVE_HTTP.get(f"{ENCLAVE_BASE}{path}", params=params, headers=_headers(ctx))
-    r.raise_for_status()
-    return r.json()
+    return _passthrough_4xx(r)
 
 
 def _post(path: str, body: dict, ctx: Context | None = None) -> dict:
     r = _FLASK_HTTP.post(f"{FLASK_BASE}{path}", json=body, headers=_headers(ctx))
-    r.raise_for_status()
-    return r.json()
+    return _passthrough_4xx(r)
 
 
 def _delete(path: str, params: dict | None = None, ctx: Context | None = None) -> dict:
     r = _FLASK_HTTP.delete(f"{FLASK_BASE}{path}", params=params, headers=_headers(ctx))
-    r.raise_for_status()
-    return r.json()
+    return _passthrough_4xx(r)
 
 
 def _whoami_pubkeys(ctx: Context | None = None) -> tuple[str, bytes | None, bytes | None]:
@@ -645,6 +661,72 @@ def screen_decrypt_frame(
 # ---------------------------------------------------------------------------
 
 
+# Echo-template phrases observed leaking from misconfigured Agent runtimes
+# (OpenClaw 2026-05-15 incident: "收到，我在。你刚刚说的是: <user message>" —
+# the runtime's fallback path when its real LLM backend wasn't reachable).
+# These strings never appear in real Agent replies; their presence is a
+# strong signal the runtime is in a degraded mode. Match case-insensitively.
+_ECHO_TEMPLATE_PHRASES = (
+    "你刚刚说的是",
+    "你刚刚说的是:",
+    "你刚刚说的是：",
+    "收到，我在。",
+    "收到, 我在.",
+    "收到，我在",
+    "agent 暂时无法响应",
+)
+
+# Smallest plausible Agent reply. Empty or near-empty content is almost
+# always a runtime bug, not an intentional terse reply.
+_MIN_REPLY_LEN = 2
+
+
+def _check_chat_content_quality(content: str, ctx: Context | None = None) -> dict | None:
+    """Refuse obviously-broken Agent replies before they hit chat history.
+
+    Returns an error dict (to be returned as the tool result) when content
+    looks like an echo template, fallback string, or empty payload. Returns
+    None when content is acceptable.
+
+    This is plaintext-time defense — backend sees only ciphertext and can't
+    apply heuristics. Match here, surface a clear error so the Agent learns
+    what went wrong instead of seeing its garbage land in the user's chat.
+    """
+    if content is None:
+        return {
+            "error": "content_empty",
+            "required": "Pass a non-empty `content` string. Empty replies are not allowed.",
+        }
+    stripped = content.strip()
+    if len(stripped) < _MIN_REPLY_LEN:
+        return {
+            "error": "content_too_short",
+            "length": len(stripped),
+            "required": (
+                f"Reply must be at least {_MIN_REPLY_LEN} characters. Got "
+                f"{len(stripped)}. This usually means the Agent runtime's "
+                "LLM backend returned an empty completion."
+            ),
+        }
+    lowered = stripped.lower()
+    for phrase in _ECHO_TEMPLATE_PHRASES:
+        if phrase.lower() in lowered:
+            print(f"[chat_quality] rejected echo-template phrase={phrase!r} "
+                  f"content_preview={stripped[:80]!r}")
+            return {
+                "error": "echo_template_detected",
+                "matched_phrase": phrase,
+                "required": (
+                    "Your reply matched a known echo-bot template "
+                    f"({phrase!r}). This usually means your runtime's LLM "
+                    "backend failed and a fallback echo kicked in. Fix the "
+                    "runtime — do NOT retry posting this content. Generate "
+                    "a real reply that addresses the user's actual message."
+                ),
+            }
+    return None
+
+
 @mcp.tool(
     name="feedling_chat_post_message",
     description=(
@@ -669,6 +751,13 @@ def chat_post_message(
       through ONE `/v1/chat/response` request (same backend code path), which avoids
       split-brain failures where push succeeds but chat writeback is missed.
     """
+    # Quality gate: refuse obvious echo / template replies before sealing
+    # the envelope. Plaintext is available here (we're about to encrypt it);
+    # backend can't run this check because it only sees ciphertext.
+    quality = _check_chat_content_quality(content, ctx=ctx)
+    if quality is not None:
+        return quality
+
     if push_live_activity:
         blocked = _check_vision_gate(_current_api_key(ctx))
         if blocked:

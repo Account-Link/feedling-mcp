@@ -186,21 +186,19 @@ def _register(base_url: str) -> tuple[str, str]:
 def _user_flow(base_url: str, slot_idx: int) -> dict:
     """Full-flow exercise for one user. Runs in its own thread. Returns
     the dict the test asserts against — caller checks isolation across
-    every user's result simultaneously."""
+    every user's result simultaneously.
+
+    Order matches the skill protocol: memories are written FIRST (Pass 1-3),
+    then identity (Step 5 derivation), then chat (Step 6+). The backend
+    enforces this with `bootstrap_incomplete` 409s on identity_init /
+    chat_response if prerequisites aren't satisfied — see
+    tests/test_bootstrap_gates.py for the gate behavior, and
+    backend/app.py `_gate_bootstrap_for_*`.
+    """
     user_id, api_key = _register(base_url)
     H = {"X-API-Key": api_key}
 
-    # --- identity init ---
-    iv_marker = f"identity-{slot_idx}"
-    iv_env = _stub_envelope(user_id, iv_marker)
-    r = requests.post(
-        f"{base_url}/v1/identity/init",
-        json={"envelope": iv_env, "days_with_user": 30 + slot_idx},
-        headers=H, timeout=TIMEOUT,
-    )
-    assert r.status_code == 201, f"identity_init failed for {user_id}: {r.text}"
-
-    # --- 5 memories ---
+    # --- 5 memories FIRST (bootstrap gate requires ≥3 before identity_init) ---
     memory_markers = []
     for i in range(5):
         m_marker = f"memory-{slot_idx}-{i}"
@@ -213,6 +211,16 @@ def _user_flow(base_url: str, slot_idx: int) -> dict:
         )
         assert r.status_code in (200, 201), f"memory_add failed: {r.status_code} {r.text}"
         memory_markers.append(m_marker)
+
+    # --- identity init (now allowed; memory floor satisfied) ---
+    iv_marker = f"identity-{slot_idx}"
+    iv_env = _stub_envelope(user_id, iv_marker)
+    r = requests.post(
+        f"{base_url}/v1/identity/init",
+        json={"envelope": iv_env, "days_with_user": 30 + slot_idx},
+        headers=H, timeout=TIMEOUT,
+    )
+    assert r.status_code == 201, f"identity_init failed for {user_id}: {r.text}"
 
     # --- 5 text chat messages + 3 image messages ---
     chat_markers = []
@@ -422,10 +430,27 @@ def test_cross_tenant_key_swap_returns_correct_users_data(backend):
 def test_envelope_owner_user_id_mismatch_rejected(backend):
     """All v1 envelope-accepting endpoints must reject envelopes whose
     owner_user_id ≠ authenticated caller. Catches the latent
-    defense-in-depth bug we fixed alongside the time-import bug."""
+    defense-in-depth bug we fixed alongside the time-import bug.
+
+    Order note: P1 added a bootstrap-stage gate (identity_init 409s
+    until memory_count ≥ floor). The owner_user_id check runs AFTER
+    that gate, so this test seeds A's memories first to reach the
+    owner-check code path.
+    """
     base_url = backend["base_url"]
     a_uid, a_key = _register(base_url)
     b_uid, _ = _register(base_url)
+
+    # Seed A's memories so identity_init reaches the owner check, not the gate.
+    for i in range(3):
+        m_env = _stub_envelope(a_uid, f"a-mem-{i}")
+        m_env["occurred_at"] = "2026-04-01T00:00:00"
+        r = requests.post(
+            f"{base_url}/v1/memory/add",
+            json={"envelope": m_env},
+            headers={"X-API-Key": a_key}, timeout=TIMEOUT,
+        )
+        assert r.status_code in (200, 201), f"seed memory_add failed: {r.text}"
 
     # identity_init with B's owner_user_id while authenticated as A → 403
     bad_env = _stub_envelope(b_uid, "bad-init")  # claims owner=B

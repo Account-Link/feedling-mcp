@@ -6,6 +6,13 @@ struct ChatView: View {
     @EnvironmentObject var vm: ChatViewModel
     @EnvironmentObject var identityVM: IdentityViewModel
     @StateObject private var voice = VoiceInputManager()
+    // Polls /v1/bootstrap/status — drives the system-health banner shown
+    // when an Agent has started chatting but skipped Pass 1-3 / identity.
+    // The server's gate (`bootstrap_incomplete` 409) makes that combination
+    // impossible going forward, but pre-fix users may still see it in their
+    // chat history. The banner makes the broken-bootstrap state explicit so
+    // the user knows the agent didn't actually do the work.
+    @StateObject private var bootstrap = BootstrapStatusViewModel()
 
     @State private var micPulse: Bool = false
     @State private var keyboardHeight: CGFloat = 0
@@ -47,6 +54,35 @@ struct ChatView: View {
         vm.messages.isEmpty && !vm.isWaitingForReply
     }
 
+    /// Returns a warning string when the chat surface is open (the agent
+    /// has posted at least one message) BUT the server still considers
+    /// bootstrap incomplete — i.e. the agent fabricated completion.
+    ///
+    /// Backstop for: legacy pre-P1 chats where agent reached chat without
+    /// satisfying the memory/identity prereqs. Going forward the server
+    /// gates these writes with `bootstrap_incomplete` 409, so this banner
+    /// should rarely trigger on new accounts. It still matters because
+    /// existing users with broken bootstraps need to know what's wrong.
+    private func bootstrapHealthWarning() -> String? {
+        let status = bootstrap.status
+        if status.isComplete { return nil }
+        if status.memoriesCount < 3 {
+            return isChinese
+                ? "记忆花园是空的（\(status.memoriesCount)/3 张）—— Agent 跳过了写卡步骤。让它回去把 Pass 1-3 走完。"
+                : "Memory garden is empty (\(status.memoriesCount)/3 cards) — your agent skipped writing memories. Ask it to redo Pass 1-3."
+        }
+        if !status.identityWritten {
+            return isChinese
+                ? "Identity 卡没写入。Agent 在用空白身份和你聊天。"
+                : "Identity card not written. Your agent is chatting without an identity."
+        }
+        // memories ≥ 3 AND identity written but is_complete false →
+        // chat_loop_verified is false, i.e. agent posted but hasn't actually
+        // replied to a user message yet. That's normal in the seconds after
+        // the Step 6 greeting before the user has responded — don't alarm.
+        return nil
+    }
+
     var body: some View {
         ZStack(alignment: .bottom) {
             Color.cinBg.ignoresSafeArea()
@@ -56,6 +92,9 @@ struct ChatView: View {
                 } else {
                     header
                     Divider().overlay(Color.cinFg)
+                    if let warning = bootstrapHealthWarning() {
+                        SystemHealthBanner(message: warning, isChinese: isChinese)
+                    }
                     populatedMessageList
                 }
             }
@@ -66,7 +105,10 @@ struct ChatView: View {
         // The root container ignores keyboard safe area, so we track keyboard
         // height here and manually push the chat ZStack above the keyboard.
         .padding(.bottom, keyboardHeight)
-        .onAppear { vm.startPolling() }
+        .onAppear {
+            vm.startPolling()
+            bootstrap.startPolling()
+        }
         .onDisappear { voice.stop() }
         .onChange(of: voice.liveTranscript) { text in
             guard !text.isEmpty else { return }
@@ -589,5 +631,40 @@ final class VoiceInputManager: ObservableObject {
 
     private func cleanUp() {
         request = nil; task = nil; isRecording = false; audioLevel = 0; liveTranscript = ""
+    }
+}
+
+// MARK: - System health banner
+
+/// Slim accent-1 banner pinned under the chat header when the server says
+/// bootstrap isn't complete but the chat is already populated. Surfaces the
+/// "agent skipped a step" failure mode to the user directly instead of
+/// letting it stay invisible behind seemingly-normal chat traffic.
+struct SystemHealthBanner: View {
+    let message: String
+    let isChinese: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.cinAccent1)
+            Text(message)
+                .font(.interTight(size: 12))
+                .foregroundStyle(Color.cinFg)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.cinAccent1Soft)
+        .overlay(
+            Rectangle()
+                .fill(Color.cinAccent1)
+                .frame(height: 1),
+            alignment: .bottom
+        )
     }
 }

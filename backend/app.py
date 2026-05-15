@@ -1850,8 +1850,16 @@ def chat_response():
     `title` / `subtitle` / `data` fields trigger an APNs Live Activity
     update; `push_body` is plaintext metadata (user-visible on lockscreen)
     and is never stored in chat.
+
+    Bootstrap gate: this endpoint 409s if memory_count < BOOTSTRAP_MEMORY_FLOOR
+    or identity is not yet written. See _gate_bootstrap_for_chat for the
+    rationale — runtime-level skill text isn't enough to stop hallucinated
+    bootstrap completion; the server has to enforce it.
     """
     store = require_user()
+    gated = _gate_bootstrap_for_chat(store)
+    if gated is not None:
+        return gated
     payload = request.get_json(silent=True) or {}
     envelope = payload.get("envelope")
     if envelope is None:
@@ -1963,6 +1971,119 @@ def _live_days_with_user(identity: dict) -> int:
     return max(0, (datetime.now() - started).days)
 
 
+# ---------------------------------------------------------------------------
+# Bootstrap stage gating
+# ---------------------------------------------------------------------------
+#
+# Multiple production incidents (2026-05-13..15) showed Agent runtimes
+# (OpenClaw in particular) skipping the memory-write phase of bootstrap
+# and going straight to identity_init / chat_post. The Agent's own narrative
+# would claim "I wrote 18 cards" while the server actually had zero — pure
+# hallucination of completion.
+#
+# Skill-text rules alone cannot enforce this; behavior depends on the
+# runtime's attention, prompt adherence, and failure modes. Server-side
+# gates make the contract explicit: writes that violate the protocol
+# return 409 with the missing prerequisite, and the Agent must satisfy
+# the prerequisite before retrying.
+#
+# Floor (3 cards) matches iOS ChatEmptyStateView's display threshold and
+# the skill's lowest tier (< 1 month relationship). The skill targets are
+# higher; this floor is a backstop, not a target.
+
+BOOTSTRAP_MEMORY_FLOOR = 3
+
+# Public skill URL — included in 409 responses so Agents that don't carry
+# the skill in context can refetch it. Single source of truth.
+_SKILL_URL = "https://raw.githubusercontent.com/teleport-computer/io-onboarding/main/skill.md"
+
+
+def _bootstrap_state(store) -> dict:
+    """Snapshot of bootstrap completion for `store`. Read-only; safe to call
+    on every write path. Source of truth: on-disk identity + memory files.
+
+    Returns:
+        {"memory_count": int, "identity_written": bool, "stage": str}
+        stage ∈ {"needs_memory", "needs_identity", "main_loop"}
+    """
+    moments = _load_moments(store)
+    memory_count = len(moments) if isinstance(moments, list) else 0
+    identity_written = _load_identity(store) is not None
+    if memory_count < BOOTSTRAP_MEMORY_FLOOR:
+        stage = "needs_memory"
+    elif not identity_written:
+        stage = "needs_identity"
+    else:
+        stage = "main_loop"
+    return {
+        "memory_count": memory_count,
+        "identity_written": identity_written,
+        "stage": stage,
+    }
+
+
+def _gate_bootstrap_for_chat(store):
+    """Refuse /v1/chat/response when bootstrap is incomplete.
+
+    Returns a (response, status) tuple to be returned by the caller, or None
+    when the call may proceed. The response body carries `stage` and
+    `required` so the Agent receives an actionable error rather than a
+    generic 403/500.
+    """
+    state = _bootstrap_state(store)
+    if state["stage"] == "main_loop":
+        return None
+    if state["stage"] == "needs_memory":
+        required = (
+            f"Write at least {BOOTSTRAP_MEMORY_FLOOR} memory cards via "
+            f"feedling_memory_add_moment (currently {state['memory_count']}), "
+            "then call feedling_identity_init, BEFORE you can post chat. "
+            "Do not fabricate Pass 4 summaries — the cards must actually exist."
+        )
+    else:  # needs_identity
+        required = (
+            "Call feedling_identity_init with the derived identity card "
+            "(7 dimensions + days_with_user) BEFORE you can post chat."
+        )
+    print(f"[gate:{store.user_id}] chat_response blocked stage={state['stage']} "
+          f"mem={state['memory_count']} id={state['identity_written']}")
+    return jsonify({
+        "error": "bootstrap_incomplete",
+        "stage": state["stage"],
+        "memory_count": state["memory_count"],
+        "memory_floor": BOOTSTRAP_MEMORY_FLOOR,
+        "identity_written": state["identity_written"],
+        "required": required,
+        "skill_url": _SKILL_URL,
+    }), 409
+
+
+def _gate_bootstrap_for_identity_init(store):
+    """Refuse /v1/identity/init when fewer than the floor of memories exist.
+
+    Identity must be DERIVED from memories per skill protocol — writing
+    identity before any memories means the Agent skipped the four passes
+    and is making up dimensions from thin air.
+    """
+    state = _bootstrap_state(store)
+    if state["memory_count"] >= BOOTSTRAP_MEMORY_FLOOR:
+        return None
+    print(f"[gate:{store.user_id}] identity_init blocked mem={state['memory_count']}")
+    return jsonify({
+        "error": "bootstrap_incomplete",
+        "stage": "needs_memory",
+        "memory_count": state["memory_count"],
+        "memory_floor": BOOTSTRAP_MEMORY_FLOOR,
+        "required": (
+            f"Write at least {BOOTSTRAP_MEMORY_FLOOR} memory cards via "
+            f"feedling_memory_add_moment (currently {state['memory_count']}) "
+            "BEFORE calling feedling_identity_init. Identity dimensions must "
+            "be derived from real cards, not invented."
+        ),
+        "skill_url": _SKILL_URL,
+    }), 409
+
+
 @app.route("/v1/identity/get", methods=["GET"])
 def identity_get():
     store = require_user()
@@ -1982,11 +2103,19 @@ def identity_init():
     """Initialize the identity card as a v1 envelope. body_ct wraps
     {agent_name, self_introduction, dimensions} serialized as JSON.
     Plaintext metadata: id, created_at, updated_at. See DESIGN_E2E.md §3.2.
+
+    Bootstrap gate: requires memory_count >= BOOTSTRAP_MEMORY_FLOOR. Identity
+    must be DERIVED from memories per skill protocol; writing identity with
+    zero memories means the Agent invented dimensions instead of reading
+    cards. See _gate_bootstrap_for_identity_init.
     """
     store = require_user()
     existing = _load_identity(store)
     if existing is not None:
         return jsonify({"error": "already_initialized", "identity": existing}), 409
+    gated = _gate_bootstrap_for_identity_init(store)
+    if gated is not None:
+        return gated
 
     payload = request.get_json(silent=True) or {}
     envelope = payload.get("envelope")
@@ -2359,7 +2488,11 @@ def bootstrap_status():
     # same lock so we don't race with /v1/chat/response writes.
     with store.chat_lock:
         chat_msgs = list(store.chat_messages)
-    agent_msgs = [m for m in chat_msgs if isinstance(m, dict) and m.get("role") == "agent"]
+    # /v1/chat/response historically stamps role="openclaw" (legacy from when
+    # the only supported agent was OpenClaw). Treat both as agent-authored.
+    # See test_bootstrap_status_role_schema in tests/ for the regression.
+    _AGENT_ROLES = ("agent", "openclaw")
+    agent_msgs = [m for m in chat_msgs if isinstance(m, dict) and m.get("role") in _AGENT_ROLES]
     agent_msg_count = len(agent_msgs)
     last_agent_msg_ts = ""
     if agent_msg_count > 0:
@@ -2391,7 +2524,7 @@ def bootstrap_status():
         role = m.get("role")
         if role == "user":
             seen_user = True
-        elif role == "agent" and seen_user:
+        elif role in _AGENT_ROLES and seen_user:
             chat_loop_verified = True
             break
 
