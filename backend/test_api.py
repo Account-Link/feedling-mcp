@@ -144,6 +144,51 @@ requests.delete = _auth_delete
 
 
 # ---------------------------------------------------------------------------
+# Satisfy bootstrap-stage gate (added 2026-05-15)
+#
+# /v1/chat/response and /v1/identity/init 409 with `bootstrap_incomplete`
+# until the user has written ≥3 memories AND initialized identity. The
+# legacy linear test order (chat → identity) predates that gate, so we
+# seed memories + identity here before any chat-response assertion runs.
+#
+# Idempotent under --key mode: identity_init returns 409 already_initialized
+# if it's been set before, which is fine — bootstrap is still satisfied.
+# ---------------------------------------------------------------------------
+
+def _seed_bootstrap_state():
+    if not USER_ID:
+        return
+    for i in range(3):
+        env = {
+            "v": 1,
+            "body_ct": base64.b64encode(uuid.uuid4().bytes * 4).decode(),
+            "nonce": base64.b64encode(uuid.uuid4().bytes[:12] * 2).decode(),
+            "K_user": base64.b64encode(uuid.uuid4().bytes * 3).decode(),
+            "K_enclave": base64.b64encode(uuid.uuid4().bytes * 3).decode(),
+            "visibility": "shared",
+            "owner_user_id": USER_ID,
+            "occurred_at": "2026-04-01T00:00:00",
+        }
+        _orig_post(f"{BASE_URL}/v1/memory/add",
+                   json={"envelope": env}, headers=AUTH_HEADERS, timeout=5)
+    seed_id_env = {
+        "v": 1,
+        "body_ct": base64.b64encode(uuid.uuid4().bytes * 4).decode(),
+        "nonce": base64.b64encode(uuid.uuid4().bytes[:12] * 2).decode(),
+        "K_user": base64.b64encode(uuid.uuid4().bytes * 3).decode(),
+        "K_enclave": base64.b64encode(uuid.uuid4().bytes * 3).decode(),
+        "visibility": "shared",
+        "owner_user_id": USER_ID,
+    }
+    _orig_post(f"{BASE_URL}/v1/identity/init",
+               json={"envelope": seed_id_env, "days_with_user": 1},
+               headers=AUTH_HEADERS, timeout=5)
+
+
+_seed_bootstrap_state()
+
+
+# ---------------------------------------------------------------------------
 # v1 envelope helper — dummy ciphertext; server never decrypts.
 # ---------------------------------------------------------------------------
 
