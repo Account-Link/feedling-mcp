@@ -161,6 +161,11 @@ struct HealthCheckView: View {
     private var diagnosticRows: some View {
         VStack(spacing: 0) {
             diagnosticRow(
+                title: "Verify reply pipeline",
+                description: "服务端发个 synthetic ping 等 30s 看 agent 真的回。抓 stopgap / 假 bridge。",
+                action: { runVerifyLoop() }
+            )
+            diagnosticRow(
                 title: "Test chat round-trip",
                 description: "发一条 ping 给 agent，去 Chat 看回复。",
                 action: { runChatPing() }
@@ -175,6 +180,34 @@ struct HealthCheckView: View {
                 description: "刷新一条本地预览到锁屏 / 灵动岛。",
                 action: { runLiveActivityTest() }
             )
+        }
+    }
+
+    /// Server-side synthetic ping. Server posts a marker user message,
+    /// waits 30 s for an agent reply, returns result. Distinct from
+    /// "test chat round-trip" because (a) the ping is invisible to the
+    /// user's chat history (synthetic message is GC'd), (b) the server
+    /// directly observes whether a real reply landed, (c) catches the
+    /// stopgap-bridge failure mode where the chat *appears* responsive
+    /// but is actually a template echo bot.
+    private func runVerifyLoop() {
+        showToast("Pinging agent — wait up to 30s")
+        Task {
+            do {
+                let result = try await api.verifyChatLoop()
+                await MainActor.run {
+                    if result.passing {
+                        let t = String(format: "%.1f", result.responseTimeSec ?? 0)
+                        showToast("Loop alive · agent replied in \(t)s")
+                    } else {
+                        showToast("Loop DEAD — agent didn't reply. Check daemon.")
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    showToast("Verify failed: \(error.localizedDescription)")
+                }
+            }
         }
     }
 

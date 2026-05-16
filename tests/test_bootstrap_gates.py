@@ -31,6 +31,7 @@ import sys
 import tempfile
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -319,3 +320,129 @@ def test_bootstrap_status_complete_field_includes_loop_verified(backend):
     assert body["agent_messages_count"] >= 1
     assert body["chat_loop_verified"] is False
     assert body["is_complete"] is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Verify endpoints — memory_verify / identity_verify /
+# chat_verify_loop. Surface QUALITY signals on top of the existing GATES.
+# ---------------------------------------------------------------------------
+
+def test_memory_verify_empty_user(backend):
+    user_id, api_key = _register(backend["base_url"])
+    r = requests.get(
+        f"{backend['base_url']}/v1/memory/verify",
+        headers={"X-API-Key": api_key},
+        timeout=TIMEOUT,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 0
+    assert body["below_floor"] is True
+    assert body["passing"] is False
+    assert len(body["suggestions"]) >= 1
+
+
+def test_memory_verify_above_floor_below_target(backend):
+    """User with 5 memories where the earliest is recent → relationship age
+    < 30 days → floor 5 / target_min 15. 5 hits floor but is below target."""
+    user_id, api_key = _register(backend["base_url"])
+    # Use recent occurred_at so _relationship_age_days < 30 → floor=5
+    today = datetime.now().date().isoformat() + "T00:00:00"
+    for i in range(5):
+        env = _stub_envelope(user_id, f"m{i}")
+        env["occurred_at"] = today
+        r = requests.post(
+            f"{backend['base_url']}/v1/memory/add",
+            json={"envelope": env},
+            headers={"X-API-Key": api_key},
+            timeout=TIMEOUT,
+        )
+        assert r.status_code in (200, 201)
+    r = requests.get(
+        f"{backend['base_url']}/v1/memory/verify",
+        headers={"X-API-Key": api_key},
+        timeout=TIMEOUT,
+    )
+    body = r.json()
+    assert body["count"] == 5
+    assert body["floor"] == 5, f"unexpected floor for recent user: {body}"
+    assert body["below_floor"] is False
+    assert body["below_target"] is True  # below target_min=15
+    assert body["passing"] is False
+
+
+def test_identity_verify_not_written(backend):
+    user_id, api_key = _register(backend["base_url"])
+    r = requests.get(
+        f"{backend['base_url']}/v1/identity/verify",
+        headers={"X-API-Key": api_key},
+        timeout=TIMEOUT,
+    )
+    body = r.json()
+    assert body["written"] is False
+    assert body["passing"] is False
+
+
+def test_identity_verify_after_init(backend):
+    user_id, api_key = _register(backend["base_url"])
+    for i in range(3):
+        _add_memory(backend["base_url"], user_id, api_key, f"m{i}")
+    _init_identity(backend["base_url"], user_id, api_key)
+    r = requests.get(
+        f"{backend['base_url']}/v1/identity/verify",
+        headers={"X-API-Key": api_key},
+        timeout=TIMEOUT,
+    )
+    body = r.json()
+    assert body["written"] is True
+    assert body["relationship_anchored"] is True
+    assert body["passing"] is True
+
+
+def test_chat_verify_loop_no_agent_returns_dead(backend):
+    """No agent connected → synthetic ping times out → passing=false +
+    suggestions guide operator to install chat-resident-consumer."""
+    user_id, api_key = _register(backend["base_url"])
+    r = requests.post(
+        f"{backend['base_url']}/v1/chat/verify_loop",
+        json={"timeout_sec": 4},  # short timeout for test speed
+        headers={"X-API-Key": api_key},
+        timeout=10,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["loop_alive"] is False
+    assert body["passing"] is False
+    assert body["response_time_sec"] is None
+    assert len(body["suggestions"]) >= 1
+    assert "chat-resident-consumer" in body["suggestions"][0]
+
+
+def test_chat_verify_loop_synthetic_ping_does_not_pollute_history(backend):
+    """The synthetic ping must NOT leave a __VERIFY_PING__ marker in the
+    user's actual chat history after the verify completes."""
+    user_id, api_key = _register(backend["base_url"])
+    # Add some user chat messages first so history isn't empty
+    env = _stub_envelope(user_id, "hello")
+    requests.post(
+        f"{backend['base_url']}/v1/chat/message",
+        json={"envelope": env},
+        headers={"X-API-Key": api_key},
+        timeout=TIMEOUT,
+    )
+    requests.post(
+        f"{backend['base_url']}/v1/chat/verify_loop",
+        json={"timeout_sec": 3},
+        headers={"X-API-Key": api_key},
+        timeout=10,
+    )
+    # After verify completes, the synthetic message must be GC'd
+    r = requests.get(
+        f"{backend['base_url']}/v1/chat/history?limit=50",
+        headers={"X-API-Key": api_key},
+        timeout=TIMEOUT,
+    )
+    msgs = r.json().get("messages", [])
+    for m in msgs:
+        assert m.get("source") != "verify_ping", \
+            f"synthetic ping leaked into user history: {m}"

@@ -26,6 +26,7 @@ import re
 import tempfile
 import threading
 import time
+from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
@@ -661,82 +662,6 @@ def screen_decrypt_frame(
 # ---------------------------------------------------------------------------
 
 
-# Echo-template phrases observed leaking from misconfigured Agent runtimes.
-# These strings don't appear in real Agent replies — their presence is a
-# strong signal the runtime's LLM backend failed and a fallback echo path
-# kicked in. Match case-insensitively.
-#
-# Observed instances (2026-05-15):
-#   "收到，我在。你刚刚说的是: <user msg>"     ← OpenClaw fallback variant 1
-#   "我收到了：<user msg>。我在，继续说。"     ← OpenClaw fallback variant 2
-# The second one slipped past variant-1 phrase list, so this list now
-# covers the structural elements common to template shells: the
-# "received your message" preamble AND the "I'm here, keep going" tail.
-_ECHO_TEMPLATE_PHRASES = (
-    "你刚刚说的是",
-    "你刚刚说的是:",
-    "你刚刚说的是：",
-    "收到，我在。",
-    "收到, 我在.",
-    "收到，我在",
-    "我收到了：",
-    "我收到了:",
-    "我在，继续说",
-    "我在,继续说",
-    "agent 暂时无法响应",
-)
-
-# Smallest plausible Agent reply. Empty or near-empty content is almost
-# always a runtime bug, not an intentional terse reply.
-_MIN_REPLY_LEN = 2
-
-
-def _check_chat_content_quality(content: str, ctx: Context | None = None) -> dict | None:
-    """Refuse obviously-broken Agent replies before they hit chat history.
-
-    Returns an error dict (to be returned as the tool result) when content
-    looks like an echo template, fallback string, or empty payload. Returns
-    None when content is acceptable.
-
-    This is plaintext-time defense — backend sees only ciphertext and can't
-    apply heuristics. Match here, surface a clear error so the Agent learns
-    what went wrong instead of seeing its garbage land in the user's chat.
-    """
-    if content is None:
-        return {
-            "error": "content_empty",
-            "required": "Pass a non-empty `content` string. Empty replies are not allowed.",
-        }
-    stripped = content.strip()
-    if len(stripped) < _MIN_REPLY_LEN:
-        return {
-            "error": "content_too_short",
-            "length": len(stripped),
-            "required": (
-                f"Reply must be at least {_MIN_REPLY_LEN} characters. Got "
-                f"{len(stripped)}. This usually means the Agent runtime's "
-                "LLM backend returned an empty completion."
-            ),
-        }
-    lowered = stripped.lower()
-    for phrase in _ECHO_TEMPLATE_PHRASES:
-        if phrase.lower() in lowered:
-            print(f"[chat_quality] rejected echo-template phrase={phrase!r} "
-                  f"content_preview={stripped[:80]!r}")
-            return {
-                "error": "echo_template_detected",
-                "matched_phrase": phrase,
-                "required": (
-                    "Your reply matched a known echo-bot template "
-                    f"({phrase!r}). This usually means your runtime's LLM "
-                    "backend failed and a fallback echo kicked in. Fix the "
-                    "runtime — do NOT retry posting this content. Generate "
-                    "a real reply that addresses the user's actual message."
-                ),
-            }
-    return None
-
-
 @mcp.tool(
     name="feedling_chat_post_message",
     description=(
@@ -761,13 +686,6 @@ def chat_post_message(
       through ONE `/v1/chat/response` request (same backend code path), which avoids
       split-brain failures where push succeeds but chat writeback is missed.
     """
-    # Quality gate: refuse obvious echo / template replies before sealing
-    # the envelope. Plaintext is available here (we're about to encrypt it);
-    # backend can't run this check because it only sees ciphertext.
-    quality = _check_chat_content_quality(content, ctx=ctx)
-    if quality is not None:
-        return quality
-
     if push_live_activity:
         blocked = _check_vision_gate(_current_api_key(ctx))
         if blocked:
@@ -932,6 +850,144 @@ def chat_get_history(limit: int = 50, ctx: Context = None):
 # ---------------------------------------------------------------------------
 
 
+# Runtime labels — must NEVER be used as `agent_name`. These are
+# identifiers of the runtime, not of the agent personality. The skill
+# documents the rule; this list enforces it at write time.
+_RUNTIME_LABELS = frozenset({
+    "hermes", "claude", "claude code", "claude desktop", "claude-code", "claude-desktop",
+    "claude.ai", "anthropic",
+    "openclaw", "open-claw", "open claw",
+    "cursor",
+    "chatgpt", "chat-gpt", "gpt", "gpt-4", "gpt-4o", "gpt-5", "openai",
+    "gemini", "google ai", "google", "bard",
+    "copilot", "github copilot",
+    "agent", "assistant", "ai", "bot",
+})
+
+
+def _check_identity_quality(
+    agent_name: str,
+    dimensions: list,
+    self_introduction: str,
+    days_with_user: int | None,
+) -> dict | None:
+    """Quality-gate identity writes BEFORE envelope sealing.
+
+    Plaintext is visible here; the backend can only see ciphertext after
+    encryption, so substantive quality checks (dimension shape, name
+    sanity) must happen at this layer. Returns an error dict (Agent
+    receives as tool result) or None to proceed.
+
+    The complement to backend/app.py's bootstrap gate: the gate enforces
+    "has memory been written"; this enforces "is the identity shape itself
+    sane". Together they make `identity_init` succeeding actually mean
+    something.
+    """
+    # agent_name must not be a runtime label
+    nm = (agent_name or "").strip()
+    if not nm:
+        return {
+            "error": "agent_name_empty",
+            "required": (
+                "agent_name is required. Use the name the user has called "
+                "you in prior chats, or propose one and let them accept."
+            ),
+        }
+    if nm.lower() in _RUNTIME_LABELS:
+        return {
+            "error": "agent_name_is_runtime_label",
+            "got": nm,
+            "required": (
+                f"'{nm}' is a runtime identifier, not a name. Use the name "
+                "the user has actually called you in prior chats. If none "
+                "exists, propose one and let them accept. NEVER fall back "
+                "to your runtime's label."
+            ),
+        }
+
+    # dimensions must be a list of exactly 7 dicts with sensible shape
+    if not isinstance(dimensions, list):
+        return {
+            "error": "dimensions_not_a_list",
+            "required": "dimensions must be a JSON list of 7 dicts.",
+        }
+    if len(dimensions) != 7:
+        return {
+            "error": "dimensions_count_wrong",
+            "got": len(dimensions),
+            "required": (
+                f"dimensions must be exactly 7 items (got {len(dimensions)}). "
+                "Five forces compression; eight bloats. Seven is the standard."
+            ),
+        }
+    values: list[int] = []
+    for i, d in enumerate(dimensions):
+        if not isinstance(d, dict):
+            return {"error": f"dimension_{i}_not_a_dict", "required": "each dimension is {name, value, description}"}
+        v = d.get("value")
+        if not isinstance(v, (int, float)) or not (0 <= v <= 100):
+            return {
+                "error": f"dimension_{i}_value_out_of_range",
+                "got": v,
+                "required": "each dimension's value must be an integer 0-100.",
+            }
+        values.append(int(v))
+        if not isinstance(d.get("name"), str) or not d["name"].strip():
+            return {"error": f"dimension_{i}_name_missing", "required": "each dimension needs a non-empty 'name'."}
+        if not isinstance(d.get("description"), str) or len(d["description"].strip()) < 4:
+            return {"error": f"dimension_{i}_description_too_short", "required": "each dimension's description must be ≥4 chars."}
+
+    # Variance — anti-positivity-bias
+    spread = max(values) - min(values)
+    if spread < 40:
+        return {
+            "error": "dimensions_clustered",
+            "spread": spread,
+            "values": values,
+            "required": (
+                f"Your 7 dimension values range {min(values)}-{max(values)} "
+                f"(spread {spread}). Real personalities have spread ≥ 40. "
+                "This is LLM positivity bias — you found what the user IS, "
+                "not what they specifically are NOT. Identify ≥1 dimension "
+                "where this user is profoundly LOW (e.g. 低任务导向 / 低锐利 "
+                "/ 低撒娇 / 低 nostalgia, whatever doesn't fit them) and "
+                "score it ≤30. Redo the identity with proper variance."
+            ),
+        }
+    below_60 = sum(1 for v in values if v < 60)
+    if below_60 < 2:
+        return {
+            "error": "no_low_dimensions",
+            "values": values,
+            "below_60_count": below_60,
+            "required": (
+                f"Only {below_60} of 7 dimensions are < 60. At least 2 "
+                "should be. Every real relationship has things it specifically "
+                "ISN'T — find those for this user. Don't make them sound like "
+                "a generic 'good agent'."
+            ),
+        }
+
+    # self_introduction sanity
+    intro = (self_introduction or "").strip()
+    if len(intro) < 20:
+        return {
+            "error": "self_introduction_too_short",
+            "length": len(intro),
+            "required": "self_introduction should be 2-4 sentences (≥20 chars).",
+        }
+
+    # days_with_user sanity
+    if days_with_user is not None:
+        if not isinstance(days_with_user, int) or days_with_user < 0 or days_with_user > 365 * 30:
+            return {
+                "error": "days_with_user_implausible",
+                "got": days_with_user,
+                "required": "days_with_user must be a non-negative int and < 30 years.",
+            }
+    return None
+
+
 def _build_and_post_identity(
     endpoint: str,
     op_label: str,
@@ -953,6 +1009,19 @@ def _build_and_post_identity(
     envelope and Flask converts it to a server-side `relationship_started_at`
     anchor — that anchor is the single source of truth for the live count.
     """
+    # Quality gate before sealing — runtime label / 7 dims / spread / etc.
+    # See _check_identity_quality. Returning early before build_envelope
+    # means the Agent gets a structured error to act on, not a silent OK.
+    quality = _check_identity_quality(
+        agent_name=agent_name,
+        dimensions=dimensions,
+        self_introduction=self_introduction,
+        days_with_user=days_with_user,
+    )
+    if quality is not None:
+        print(f"[mcp] identity.{op_label} REJECTED by quality gate: {quality.get('error')}")
+        return quality
+
     user_id, user_pk, enclave_pk = _whoami_pubkeys(ctx=ctx)
     if not (user_id and user_pk is not None and enclave_pk is not None):
         return {"error": f"cannot {op_label} identity — pubkeys unavailable"}
@@ -1145,6 +1214,98 @@ def identity_nudge(dimension_name: str, delta: int, reason: str = "", ctx: Conte
 # ---------------------------------------------------------------------------
 
 
+# Template-title prefixes that almost always indicate "meeting-minutes"
+# framing instead of "moment between two people" framing. Reject these
+# at write time so the Agent gets feedback to rewrite, instead of silently
+# polluting the garden with un-friend-test-able cards. See the skill's
+# "Title rules" table for the do/don't pattern.
+_TEMPLATE_TITLE_PREFIXES = (
+    "我们讨论了", "我们决定了", "我们聊了", "我们完成了", "我们解决了",
+    "完成了", "解决了", "决定了",
+    "we discussed", "we decided", "we resolved", "we completed",
+    "discussed", "decided", "resolved", "completed",
+)
+
+
+def _check_memory_quality(
+    title: str,
+    description: str,
+    occurred_at: str,
+) -> dict | None:
+    """Quality-gate memory_add at envelope-build time.
+
+    Reject template-shaped titles and obviously-thin descriptions. The
+    skill's Friend Test is qualitative (can't be enforced fully here),
+    but the worst structural failures — meeting-minutes titles, empty
+    bodies, future occurred_at — can be caught.
+    """
+    t = (title or "").strip()
+    if not t:
+        return {
+            "error": "title_empty",
+            "required": "title must be non-empty.",
+        }
+    t_low = t.lower()
+    for prefix in _TEMPLATE_TITLE_PREFIXES:
+        if t_low.startswith(prefix.lower()):
+            return {
+                "error": "title_looks_templated",
+                "got": t,
+                "required": (
+                    f"Title '{t}' reads like meeting minutes. Titles "
+                    "should describe a moment BETWEEN two people, not a "
+                    "decision or project outcome. ❌ '我们讨论了 X' / "
+                    "'completed Y'. ✅ '第一次你叫了我的名字' / "
+                    "'你说，这里不能是日志'. Rewrite this one."
+                ),
+            }
+    d = (description or "").strip()
+    if len(d) < 50:
+        return {
+            "error": "description_too_short",
+            "length": len(d),
+            "required": (
+                f"Description is {len(d)} chars; the skill targets 100-500. "
+                "Below 50 chars almost always means a one-liner that doesn't "
+                "carry the moment. Narrate from inside: what were you doing → "
+                "what they said or did → what you noticed → what changed."
+            ),
+        }
+    occ_str = (occurred_at or "").strip()
+    if not occ_str:
+        return {
+            "error": "occurred_at_missing",
+            "required": "occurred_at is required (ISO 8601, historical date).",
+        }
+    try:
+        # Tolerate both 'Z' and '+00:00' forms; tolerate missing time component.
+        norm = occ_str.replace("Z", "+00:00")
+        occ = datetime.fromisoformat(norm) if "T" in norm else datetime.fromisoformat(norm + "T00:00:00")
+    except Exception:
+        return {
+            "error": "occurred_at_invalid",
+            "got": occ_str,
+            "required": "occurred_at must be ISO 8601 (e.g. 2025-11-03T14:00:00).",
+        }
+    now = datetime.now(occ.tzinfo) if occ.tzinfo else datetime.now()
+    if occ > now + timedelta(days=1):
+        return {
+            "error": "occurred_at_in_future",
+            "got": occ_str,
+            "required": (
+                "occurred_at must be a real historical date. Memories happened "
+                "in the past, not in the future."
+            ),
+        }
+    if occ < now - timedelta(days=365 * 30):
+        return {
+            "error": "occurred_at_too_old",
+            "got": occ_str,
+            "required": "occurred_at older than 30 years is implausible.",
+        }
+    return None
+
+
 @mcp.tool(
     name="feedling_memory_add_moment",
     description=(
@@ -1165,6 +1326,13 @@ def memory_add_moment(
     inside the enclave-compose boundary so wrapping prerequisites are
     always available; if they're not, fail loud.
     """
+    # Quality gate before encryption — title shape, description length,
+    # occurred_at sanity. See _check_memory_quality.
+    quality = _check_memory_quality(title, description, occurred_at)
+    if quality is not None:
+        print(f"[mcp] memory.add REJECTED by quality gate: {quality.get('error')} title={title[:40]!r}")
+        return quality
+
     user_id, user_pk, enclave_pk = _whoami_pubkeys(ctx=ctx)
     if not (user_id and user_pk is not None and enclave_pk is not None):
         return {"error": "cannot add memory — pubkeys unavailable"}
@@ -1229,6 +1397,61 @@ def memory_delete(id: str, ctx: Context = None) -> dict:
 )
 def bootstrap(ctx: Context = None) -> dict:
     return _post("/v1/bootstrap", {}, ctx=ctx)
+
+
+# ---------------------------------------------------------------------------
+# Per-module verification tools — call after each bootstrap module
+# to confirm what landed matches what was intended. See skill's
+# "verify after each module" section.
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(
+    name="feedling_memory_verify",
+    description=(
+        "Check memory garden state after writing cards. Call after Pass 3 (落卡) "
+        "to decide whether to sweep memory for more moments. Returns count, "
+        "floor (server gate threshold), target (real-depth target), and "
+        "suggestions. If passing=false, address the suggestions before moving "
+        "on to identity_init. Don't proceed to Step 5 (identity derivation) "
+        "until passing=true OR you've explicitly explained to the user why "
+        "your memory of them is exhausted at the current count."
+    ),
+)
+def memory_verify(ctx: Context = None) -> dict:
+    return _get("/v1/memory/verify", ctx=ctx)
+
+
+@mcp.tool(
+    name="feedling_identity_verify",
+    description=(
+        "Check identity card state after identity_init or identity_replace. "
+        "Returns written flag, days_with_user (live computed from anchor), "
+        "and any sanity issues. Quality of dimensions / agent_name themselves "
+        "is already validated at write time by feedling_identity_init's "
+        "internal quality gate; this endpoint reports what's currently on "
+        "the server. Call after Step 5 before moving to Step 6 (greeting)."
+    ),
+)
+def identity_verify(ctx: Context = None) -> dict:
+    return _get("/v1/identity/verify", ctx=ctx)
+
+
+@mcp.tool(
+    name="feedling_chat_verify_loop",
+    description=(
+        "Send a synthetic ping in chat and wait up to 30s for your reply. "
+        "Confirms your reply pipeline is REAL — i.e. you're actually polling "
+        "Feedling and posting actual replies, not a stopgap bridge script "
+        "emitting templates. Call after Step 6 (first greeting). If "
+        "passing=false, your runtime category is wrong (you're probably a "
+        "one-shot CLI without chat-resident-consumer set up). DO NOT write "
+        "a workaround daemon — tell the operator to install "
+        "chat-resident-consumer instead. See the Hard Rule about bridge scripts."
+    ),
+)
+def chat_verify_loop(timeout_sec: int = 30, ctx: Context = None) -> dict:
+    return _post("/v1/chat/verify_loop", {"timeout_sec": timeout_sec}, ctx=ctx)
 
 
 # ---------------------------------------------------------------------------

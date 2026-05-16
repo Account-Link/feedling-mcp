@@ -500,6 +500,27 @@ final class FeedlingAPI: ObservableObject {
         let suggestedFilename: String
     }
 
+    /// /v1/chat/verify_loop response shape. Server posts a synthetic ping
+    /// and waits for the Agent's reply; `passing` is true iff a real
+    /// reply landed within the timeout.
+    struct VerifyLoopResult: Codable {
+        let loopAlive: Bool
+        let responseTimeSec: Double?
+        let pingId: String
+        let timeoutSec: Int
+        let suggestions: [String]
+        let passing: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case loopAlive       = "loop_alive"
+            case responseTimeSec = "response_time_sec"
+            case pingId          = "ping_id"
+            case timeoutSec      = "timeout_sec"
+            case suggestions
+            case passing
+        }
+    }
+
     /// Fetch the user's full content export as a JSON blob. iOS saves it
     /// locally; the server doesn't decrypt anything — ciphertext is in
     /// the blob and the user's content_sk (Keychain) decrypts it if they
@@ -535,6 +556,30 @@ final class FeedlingAPI: ObservableObject {
             filename = "feedling-export-\(userId)-\(ts).json"
         }
         return ExportResult(data: data, suggestedFilename: filename)
+    }
+
+    /// Server-side synthetic ping for the chat reply pipeline. Server
+    /// posts a marker user message, waits up to ~30s for an agent reply,
+    /// returns whether the loop is alive. Direct catcher for the
+    /// "stopgap bridge pretending to be the agent" failure mode.
+    func verifyChatLoop(timeoutSec: Int = 30) async throws -> VerifyLoopResult {
+        let body = try JSONSerialization.data(withJSONObject: ["timeout_sec": timeoutSec])
+        guard let req = authorizedRequest(path: "/v1/chat/verify_loop", method: "POST", body: body) else {
+            throw NSError(domain: "Verify", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "could not build request"])
+        }
+        // Client-side timeout slightly above server's so we don't time
+        // out before the server does.
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = TimeInterval(timeoutSec + 5)
+        let session = URLSession(configuration: config)
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            throw NSError(domain: "Verify",
+                          code: (resp as? HTTPURLResponse)?.statusCode ?? 0,
+                          userInfo: [NSLocalizedDescriptionKey: "verify_loop failed"])
+        }
+        return try JSONDecoder().decode(VerifyLoopResult.self, from: data)
     }
 
     /// Hard-delete the account on the server + wipe local credentials +

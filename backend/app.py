@@ -2552,6 +2552,293 @@ def bootstrap_status():
 
 
 # ---------------------------------------------------------------------------
+# Verification endpoints — Phase 2 of the post-2026-05-15 onboarding
+# robustness work. Per-module checks the Agent can call after each
+# bootstrap module to confirm what landed matches what was intended.
+#
+# Distinct from the bootstrap GATES (/v1/chat/response 409s without
+# memory+identity): gates enforce thresholds (≥3 cards); verify endpoints
+# expose quality + state info (you have 35 cards but target is 30-80,
+# you have N% turning-point cards, etc.) so the Agent can self-assess.
+#
+# Server can only see plaintext metadata (counts, timestamps) on
+# encrypted modules. Deeper quality checks (template-title detection,
+# dimension variance) happen at envelope-build time in mcp_server.py —
+# see Phase 1 _check_identity_quality / _check_memory_quality.
+# ---------------------------------------------------------------------------
+
+
+def _relationship_age_days(store) -> int:
+    """Best-effort relationship age in days. Reads from identity anchor
+    if present; otherwise falls back to earliest memory's occurred_at;
+    finally to 0 (treat as fresh)."""
+    identity = _load_identity(store)
+    if identity and identity.get("relationship_started_at"):
+        try:
+            started = datetime.fromisoformat(identity["relationship_started_at"])
+            return max(0, (datetime.now() - started).days)
+        except Exception:
+            pass
+    moments = _load_moments(store)
+    if moments:
+        try:
+            earliest = min(
+                (m.get("occurred_at", "") for m in moments if isinstance(m, dict) and m.get("occurred_at")),
+            )
+            if earliest:
+                started = datetime.fromisoformat(earliest.replace("Z", "+00:00"))
+                if started.tzinfo:
+                    started = started.replace(tzinfo=None)
+                return max(0, (datetime.now() - started).days)
+        except Exception:
+            pass
+    return 0
+
+
+def _memory_target_for_days(days: int) -> tuple[int, int, int]:
+    """Return (floor, target_min, target_max) for the relationship age."""
+    if days >= 180:
+        return (30, 80, 0)        # target_max=0 means uncapped
+    elif days >= 30:
+        return (15, 30, 80)
+    else:
+        return (5, 15, 30)
+
+
+@app.route("/v1/memory/verify", methods=["GET"])
+def memory_verify():
+    """Check memory garden state against floor / target / quality signals.
+
+    Returns: {count, floor, target_min, target_max, below_floor,
+              below_target, days_since, issues:[...], passing:bool,
+              suggestions:[...]}.
+
+    Agent should call this after Pass 3 to decide whether to sweep again.
+    `passing` is true iff count >= target_min (or floor when no target).
+    """
+    store = require_user()
+    moments = _load_moments(store)
+    count = len(moments) if isinstance(moments, list) else 0
+    days = _relationship_age_days(store)
+    floor, target_min, target_max = _memory_target_for_days(days)
+
+    issues = []
+    suggestions = []
+
+    # Time distribution — server-visible plaintext metadata
+    occurred_ts = []
+    for m in moments:
+        if not isinstance(m, dict):
+            continue
+        occ = m.get("occurred_at", "")
+        if occ:
+            try:
+                dt = datetime.fromisoformat(occ.replace("Z", "+00:00"))
+                if dt.tzinfo:
+                    dt = dt.replace(tzinfo=None)
+                occurred_ts.append(dt)
+            except Exception:
+                pass
+    if occurred_ts and len(occurred_ts) >= 5:
+        # All within last 7 days = suspicious "recent only" sweep
+        spread_days = (max(occurred_ts) - min(occurred_ts)).days
+        if spread_days < 7 and days > 14:
+            issues.append({
+                "type": "narrow_time_window",
+                "spread_days": spread_days,
+                "relationship_days": days,
+            })
+            suggestions.append(
+                f"All {len(occurred_ts)} of your cards are within {spread_days} days of each other, "
+                f"but your relationship is {days} days old. Sweep older history — "
+                "you missed at least 80% of the relationship's span."
+            )
+
+    below_floor = count < floor
+    below_target = count < target_min if target_min else below_floor
+
+    if below_floor:
+        suggestions.append(
+            f"Memory count {count} is below floor {floor}. "
+            f"Sweep your memory of this user for more moments. "
+            "feedling_identity_init will 409 until you cross the floor."
+        )
+    elif below_target:
+        suggestions.append(
+            f"Memory count {count} hit floor {floor} but is below target "
+            f"({target_min}-{target_max or 'uncapped'}). Floor is "
+            "the server's minimum; target is the real depth users expect. "
+            "Sweep again before declaring bootstrap complete."
+        )
+
+    passing = (not below_target) and not issues
+
+    return jsonify({
+        "count": count,
+        "floor": floor,
+        "target_min": target_min,
+        "target_max": target_max,
+        "below_floor": below_floor,
+        "below_target": below_target,
+        "relationship_days": days,
+        "issues": issues,
+        "suggestions": suggestions,
+        "passing": passing,
+    })
+
+
+@app.route("/v1/identity/verify", methods=["GET"])
+def identity_verify():
+    """Check identity card state. Returns shape + sanity of plaintext
+    metadata; the dimensions / agent_name themselves are inside the
+    envelope and were validated at envelope-build time
+    (mcp_server.py _check_identity_quality)."""
+    store = require_user()
+    identity = _load_identity(store)
+    if not identity:
+        return jsonify({
+            "written": False,
+            "passing": False,
+            "suggestions": [
+                "Identity not yet written. Call feedling_identity_init "
+                "after Pass 4 (memory verification with user)."
+            ],
+        })
+
+    issues = []
+    suggestions = []
+
+    days_with_user = _live_days_with_user(identity)
+    if days_with_user < 0:
+        issues.append({"type": "days_with_user_negative", "got": days_with_user})
+    if days_with_user > 365 * 30:
+        issues.append({"type": "days_with_user_implausible", "got": days_with_user})
+
+    relationship_anchored = bool(identity.get("relationship_started_at"))
+    if not relationship_anchored:
+        issues.append({"type": "no_relationship_anchor"})
+        suggestions.append(
+            "relationship_started_at is missing. Use "
+            "feedling_identity_set_relationship_days to set it."
+        )
+
+    return jsonify({
+        "written": True,
+        "days_with_user": days_with_user,
+        "relationship_anchored": relationship_anchored,
+        "created_at": identity.get("created_at", ""),
+        "updated_at": identity.get("updated_at", ""),
+        "issues": issues,
+        "suggestions": suggestions,
+        "passing": len(issues) == 0,
+    })
+
+
+# Synthetic chat-loop ping — server posts a marker user message,
+# polls for agent reply, reports back. This is the direct catcher for
+# "agent claims to be connected but actually isn't replying" failure
+# mode (the 2026-05-15 stopgap incident).
+@app.route("/v1/chat/verify_loop", methods=["POST"])
+def chat_verify_loop():
+    """Synthetic ping: insert a marker user message, wait up to `timeout_sec`
+    for an agent reply, return whether the loop is alive.
+
+    The marker is `__VERIFY_PING__:<uuid>`. Server stores it as a normal
+    user envelope with `synthetic: True` flag. After timeout, marker is
+    GC'd if no reply landed (so the user's actual chat history isn't
+    polluted with sentinel messages).
+
+    Returns:
+      {loop_alive: bool, response_time_sec: float|null, passing: bool,
+       ping_id: str, suggestions: [...]}.
+    """
+    store = require_user()
+    payload = request.get_json(silent=True) or {}
+    timeout_sec = min(int(payload.get("timeout_sec", 30)), 60)
+
+    ping_uuid = uuid.uuid4().hex[:12]
+    ping_marker = f"__VERIFY_PING__:{ping_uuid}"
+
+    # Build a synthetic v1 envelope. Content is sentinel plaintext —
+    # not visible to agent decryption pipelines (they see plaintext
+    # ping_marker via the normal chat history endpoint). Visibility is
+    # local_only so we don't pollute the enclave's shared store.
+    synthetic_env = {
+        "v": 1,
+        "id": uuid.uuid4().hex,
+        "body_ct": base64.b64encode(ping_marker.encode("utf-8")).decode("ascii"),
+        "nonce": base64.b64encode(b"\x00" * 12).decode("ascii"),
+        "K_user": base64.b64encode(b"\x00" * 32).decode("ascii"),
+        "visibility": "local_only",
+        "owner_user_id": store.user_id,
+        "synthetic": True,
+        "synthetic_marker": ping_marker,
+    }
+
+    # append_chat acquires chat_lock internally — don't hold it here or
+    # we'd deadlock on the non-reentrant lock.
+    ping_msg = store.append_chat("user", "verify_ping", synthetic_env)
+    store.notify_chat_waiters()
+    ping_ts = ping_msg["ts"]
+
+    print(f"[verify_loop:{store.user_id}] posted synthetic ping {ping_uuid} at ts={ping_ts}")
+
+    # Wait for agent reply that came AFTER our ping
+    deadline = time.time() + timeout_sec
+    response_time = None
+    found_reply = False
+    while time.time() < deadline:
+        time.sleep(2)
+        with store.chat_lock:
+            chat_msgs = list(store.chat_messages)
+        for m in chat_msgs:
+            if not isinstance(m, dict):
+                continue
+            if m.get("role") not in ("agent", "openclaw"):
+                continue
+            try:
+                m_ts = float(m.get("ts", 0))
+            except Exception:
+                continue
+            if m_ts > ping_ts:
+                response_time = m_ts - ping_ts
+                found_reply = True
+                break
+        if found_reply:
+            break
+
+    # Cleanup: remove synthetic ping from history regardless of outcome,
+    # so the user's actual chat in iOS doesn't show "__VERIFY_PING__".
+    with store.chat_lock:
+        store.chat_messages = [m for m in store.chat_messages
+                               if not (isinstance(m, dict) and m.get("source") == "verify_ping")]
+        store._persist_chat()
+
+    suggestions = []
+    if not found_reply:
+        suggestions.append(
+            "No agent reply within timeout. Likely causes: "
+            "(a) your daemon isn't running — check chat-resident-consumer "
+            "with `systemctl status feedling-chat-resident`; "
+            "(b) your MCP runtime isn't polling — confirm it's a long-running daemon, "
+            "not a one-shot CLI; "
+            "(c) your reply was rejected by an envelope-level error — "
+            "check the daemon's logs for 4xx errors. "
+            "DO NOT 'fix' this by writing a workaround bridge script; "
+            "that always degrades to template echoes. See skill Hard Rule."
+        )
+
+    return jsonify({
+        "loop_alive": found_reply,
+        "response_time_sec": response_time,
+        "ping_id": ping_uuid,
+        "timeout_sec": timeout_sec,
+        "suggestions": suggestions,
+        "passing": found_reply,
+    })
+
+
+# ---------------------------------------------------------------------------
 # Envelope swap: replace an existing chat/memory item's ciphertext in place.
 #
 # Used by the per-item visibility toggle in iOS Settings. The client
