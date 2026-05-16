@@ -743,6 +743,37 @@ def _normalize_agent_replies(raw_reply: str) -> list[str]:
     return [clean] if clean else []
 
 
+# Context-aware echo detection (added 2026-05-15 after observing OpenClaw
+# fallback "我收到了：<user_msg>。我在，继续说。" sneaking past the
+# phrase-only filter in mcp_server.py). When the agent backend's LLM
+# fails, common fallback shape is "<short template prefix><user verbatim>
+# <short template tail>". Detect it heuristically: if the reply contains
+# the user's message verbatim AND has very little new content, it's
+# almost certainly an echo bot, not a real reply.
+#
+# Backstop only — known templates are caught by mcp_server.py's
+# _ECHO_TEMPLATE_PHRASES list at envelope-build time. This heuristic
+# exists for novel templates we haven't seen yet.
+#
+# Tuning rationale:
+# - Skip messages with < 8 chars: short greetings ("你好", "hi") are
+#   too easy to "echo" incidentally in a normal reply ("你好，今天好吗？")
+#   without it actually being a template bot.
+# - require len(reply) - len(user_msg) <= 8: real replies that briefly
+#   quote the user almost always have substantive content beyond the
+#   quote. ≤8 chars beyond user's message ≈ "<verbatim>。我在。" ≈ template.
+def _looks_like_echo(reply: str, user_msg: str) -> bool:
+    if not reply or not user_msg:
+        return False
+    r = reply.strip()
+    u = user_msg.strip()
+    if len(u) < 8:
+        return False
+    if u in r and len(r) - len(u) <= 8:
+        return True
+    return False
+
+
 def call_agent(message: str) -> list[str]:
     if AGENT_MODE == "http":
         raw = call_agent_http(message)
@@ -752,7 +783,24 @@ def call_agent(message: str) -> list[str]:
         raise ValueError(f"unknown AGENT_MODE: {AGENT_MODE!r}")
 
     replies = _normalize_agent_replies(raw)
-    return replies or [FALLBACK_REPLY]
+    if not replies:
+        return [FALLBACK_REPLY]
+
+    # Context-aware echo filter: drop replies that are mostly the user's
+    # own message repeated back. Replace with the standard fallback so the
+    # cooldown logic upstream prevents the daemon from flooding the user
+    # with FALLBACK_REPLY when the agent backend is wedged on an echo loop.
+    filtered: list[str] = []
+    for r in replies:
+        if _looks_like_echo(r, message):
+            log.warning(
+                "dropping echo-shaped reply (user=%r, reply=%r) — upstream "
+                "agent backend likely returning a template, not a real reply",
+                message[:80], r[:120],
+            )
+            continue
+        filtered.append(r)
+    return filtered or [FALLBACK_REPLY]
 
 
 # ---------------------------------------------------------------------------

@@ -661,11 +661,17 @@ def screen_decrypt_frame(
 # ---------------------------------------------------------------------------
 
 
-# Echo-template phrases observed leaking from misconfigured Agent runtimes
-# (OpenClaw 2026-05-15 incident: "收到，我在。你刚刚说的是: <user message>" —
-# the runtime's fallback path when its real LLM backend wasn't reachable).
-# These strings never appear in real Agent replies; their presence is a
-# strong signal the runtime is in a degraded mode. Match case-insensitively.
+# Echo-template phrases observed leaking from misconfigured Agent runtimes.
+# These strings don't appear in real Agent replies — their presence is a
+# strong signal the runtime's LLM backend failed and a fallback echo path
+# kicked in. Match case-insensitively.
+#
+# Observed instances (2026-05-15):
+#   "收到，我在。你刚刚说的是: <user msg>"     ← OpenClaw fallback variant 1
+#   "我收到了：<user msg>。我在，继续说。"     ← OpenClaw fallback variant 2
+# The second one slipped past variant-1 phrase list, so this list now
+# covers the structural elements common to template shells: the
+# "received your message" preamble AND the "I'm here, keep going" tail.
 _ECHO_TEMPLATE_PHRASES = (
     "你刚刚说的是",
     "你刚刚说的是:",
@@ -673,6 +679,10 @@ _ECHO_TEMPLATE_PHRASES = (
     "收到，我在。",
     "收到, 我在.",
     "收到，我在",
+    "我收到了：",
+    "我收到了:",
+    "我在，继续说",
+    "我在,继续说",
     "agent 暂时无法响应",
 )
 
