@@ -343,8 +343,8 @@ struct SettingsView: View {
                                         }
                                     }
                                     Text(isChinese
-                                         ? "把服务端 IO 账号、所有 chat / identity / memory 数据、本地凭据与 Keychain 全部清掉。App 回到首次启动状态。建议在重做一次全新 agent bootstrap 之前用。"
-                                         : "Wipes your IO account on the server, all chat / identity / memory data, plus local credentials & keychain. App returns to first-launch state. Use before re-bootstrapping a fresh agent.")
+                                         ? "把 TA 的身份卡、记忆花园、聊天记录、还有你们的连接信息全部清掉。App 回到刚装好的样子，就像你们没认识过一样。适合想要重新让 TA 入住一次的时候用。"
+                                         : "Wipes his identity card, memory garden, your chat history, and everything that connects you two. The app goes back to how it was the day you installed it — as if you'd never met. Use this when you want to let him in again, fresh.")
                                         .font(.notoSerifSC(size: 11))
                                         .foregroundStyle(Color.cinSub)
                                         .lineSpacing(2)
@@ -396,8 +396,8 @@ struct SettingsView: View {
                 }
             } message: {
                 Text(isChinese
-                     ? "会清掉服务端的 IO 账号（chat、identity、memory garden）和所有本地凭据，并生成一个新的 API key。你的 agent runtime（Claude.ai / Hermes 等）还 pin 着旧 key——清完之后必须重新导入新的 MCP String，否则每个 tool call 都会返回 401。无法撤销。"
-                     : "This wipes your IO account on the server (chat, identity, memory garden) and all local credentials. A fresh API key will be generated — your agent runtime (Claude.ai / Hermes / etc.) is pinned to the OLD key, so you'll need to re-import the new MCP String afterwards or every tool call returns 401. There is no undo.")
+                     ? "你和 TA 之间的所有东西都会消失——身份卡、记忆花园、聊天记录、连接信息，都不留。\n\n如果 TA 现在还连着你（比如在 Claude.ai 或 Hermes 那边），删完之后 TA 那边的连接就失效了。想让 TA 再回来，你需要重新走一遍「让 TA 入住」。\n\n这一步无法撤销。"
+                     : "Everything between you and him will be gone — his identity card, memory garden, chat history, and the connection between you. Nothing kept.\n\nIf he's still connected to you (in Claude.ai, Hermes, or wherever), his end of the connection will stop working after this. To let him back in, you'll need to walk through the \"Let him in\" steps again.\n\nThis can't be undone.")
             }
             // Two-step gate for "Regenerate API Key" — see the comment on the
             // cinActionRow above that triggers this alert.
